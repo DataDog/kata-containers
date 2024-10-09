@@ -20,6 +20,7 @@ build_rootfs() {
 cleanup=true
 aptsources=Ubuntu
 bootstrap=Ubuntu
+hookdir=/kata-containers/tools/osbuilder/hooks
 
 [Ubuntu]
 source=$REPO_URL
