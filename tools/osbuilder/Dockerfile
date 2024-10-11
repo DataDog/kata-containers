@@ -1,5 +1,7 @@
 FROM registry.ddbuild.io/images/base/gbi-ubuntu_2204:release
 
+USER root
+
 ARG GO_VERSION=1.22.2
 ENV GO_HOME="/opt"
 ENV GOCACHE="${GO_HOME}/.cache"
