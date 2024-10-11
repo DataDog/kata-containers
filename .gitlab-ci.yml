@@ -56,6 +56,28 @@ build-img-amd64:
   tags: [ "arch:arm64" ]
   script:
     - cd tools/osbuilder
+    - apt-get update && \
+      apt-get --no-install-recommends -y install \
+      ca-certificates \
+      curl \
+      g++ \
+      gcc-x86-64-linux-gnu \
+      libc6-dev-amd64-cross" \
+      git \
+      gnupg2 \
+      make \
+      makedev \
+      multistrap \
+      musl \
+      musl-dev \
+      musl-tools \
+      protobuf-compiler \
+      xz-utils \
+      pip \
+      python3-dev \
+      zstd && \
+      apt-get clean && rm -rf /var/lib/apt/lists/&& \
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.76.0
     - make -j$(nproc) image-ubuntu
   artifacts:
     paths:
