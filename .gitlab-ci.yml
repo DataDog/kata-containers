@@ -31,11 +31,8 @@ ci-image-img:
   variables:
     IMAGE_NAME: "$CI_PROJECT_NAME/ci"
     IMAGE_TAG: img-$CI_IMAGE
-    CONTEXT_DIR: "./tools/osbuilder/rootfs-builder/ubuntu"
+    CONTEXT_DIR: "./tools/osbuilder"
     TARGET: "build"
-  before_script:
-    - source tools/osbuilder/scripts/lib.sh
-    - OS_VERSION=22.04 IMAGE_REGISTRY=registry.ddbuild.io RUST_TOOLCHAIN=1.76.0 ARCH='$(uname -m)' generate_dockerfile tools/osbuilder/rootfs-builder/ubuntu
 
 
 build-kernel-amd64:
