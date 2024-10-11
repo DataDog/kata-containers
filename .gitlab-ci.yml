@@ -56,7 +56,7 @@ build-img-amd64:
   tags: [ "arch:arm64" ]
   script:
     - cd tools/osbuilder
-    - USE_DOCKER=false make -j$(nproc) image-ubuntu
+    - make -j$(nproc) image-ubuntu
   artifacts:
     paths:
       - tools/osbuilder/kata-*
