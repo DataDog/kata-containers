@@ -35,8 +35,7 @@ ci-image-img:
     TARGET: "build"
   before_script:
     - source tools/osbuilder/scripts/lib.sh
-    - cd tools/osbuilder/rootfs-builder/ubuntu
-    - generate_dockerfile .
+    - generate_dockerfile tools/osbuilder/rootfs-builder/ubuntu
 
 
 build-kernel-amd64:
