@@ -10,7 +10,7 @@ stages:
   - publish
   - notify
 
-ci-image:
+ci-image-kernel:
   stage: ci-image
   extends: .build-docker-image
   when: manual
@@ -18,12 +18,29 @@ ci-image:
     - branches
   variables:
     IMAGE_NAME: "$CI_PROJECT_NAME/ci"
-    IMAGE_TAG: $CI_IMAGE
+    IMAGE_TAG: kernel-$CI_IMAGE
     CONTEXT_DIR: "./tools/packaging/kernel"
     TARGET: "build"
 
+ci-image-img:
+  stage: ci-image
+  extends: .build-docker-image
+  when: manual
+  only:
+    - branches
+  variables:
+    IMAGE_NAME: "$CI_PROJECT_NAME/ci"
+    IMAGE_TAG: img-$CI_IMAGE
+    CONTEXT_DIR: "./tools/osbuilder/rootfs-builder/ubuntu"
+    TARGET: "build"
+  before_script:
+    - source tools/osbuilder/scripts/lib.sh
+    - cd tools/osbuilder/rootfs-builder/ubuntu
+    - generate_dockerfile .
+
+
 build-kernel-amd64:
-  image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:$CI_IMAGE
+  image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:kernel-$CI_IMAGE
   stage: build
   tags: [ "arch:amd64" ]
   script:
@@ -37,7 +54,7 @@ build-kernel-amd64:
     expire_in: 1 week
 
 build-kernel-arm64:
-  image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:$CI_IMAGE
+  image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:kernel-$CI_IMAGE
   stage: build
   tags: [ "arch:arm64" ]
   script:
@@ -51,19 +68,19 @@ build-kernel-arm64:
     expire_in: 1 week
 
 build-img-amd64:
-  image: registry.ddbuild.io/docker:24.0.5
+  image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:img-$CI_IMAGE
   stage: build
-  tags: [ "runner:docker" ]
+  tags: [ "arch:arm64" ]
   script:
     - cd tools/osbuilder
-    - USE_DOCKER=true make -j$(nproc) image-ubuntu
+    - make -j$(nproc) image-ubuntu
   artifacts:
     paths:
       - tools/osbuilder/kata-*
     expire_in: 1 week
 
 publish-artifacts:
-  image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:$CI_IMAGE
+  image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:kernel-$CI_IMAGE
   stage: publish
   only:
     - tags
