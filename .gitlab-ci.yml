@@ -35,7 +35,7 @@ ci-image-img:
     TARGET: "build"
   before_script:
     - source tools/osbuilder/scripts/lib.sh
-    - OS_VERSION=22.04 IMAGE_REGISTRY=registry.ddbuild.io RUST_TOOLCHAIN=1.76.0 generate_dockerfile tools/osbuilder/rootfs-builder/ubuntu
+    - OS_VERSION=22.04 IMAGE_REGISTRY=registry.ddbuild.io RUST_TOOLCHAIN=1.76.0 ARCH='$TARGETARCH' generate_dockerfile tools/osbuilder/rootfs-builder/ubuntu
 
 
 build-kernel-amd64:
