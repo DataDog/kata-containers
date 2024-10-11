@@ -62,7 +62,7 @@ build-img-amd64:
       curl \
       g++ \
       gcc-x86-64-linux-gnu \
-      libc6-dev-amd64-cross" \
+      libc6-dev-amd64-cross \
       git \
       gnupg2 \
       make \
