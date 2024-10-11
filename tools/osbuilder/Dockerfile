@@ -28,6 +28,7 @@ RUN apt-get update && \
     g++ \
     git \
     gnupg2 \
+    libclang-dev \
     make \
     makedev \
     multistrap \
