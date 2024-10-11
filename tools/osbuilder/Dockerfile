@@ -36,9 +36,11 @@ RUN apt-get update && \
     musl-dev \
     musl-tools \
     protobuf-compiler \
-    xz-utils \
+    qemu-utils \
+    parted \
     pip \
     python3-dev \
+    xz-utils \
     zstd && \
     apt-get clean && rm -rf /var/lib/apt/lists/&& \
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.76.0
