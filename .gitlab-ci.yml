@@ -35,7 +35,7 @@ ci-image-img:
     TARGET: "build"
   before_script:
     - source tools/osbuilder/scripts/lib.sh
-    - OS_VERSION=22.04 IMAGE_REGISTRY=registry.ddbuild.io RUST_TOOLCHAIN=1.76.0 ARCH='$TARGETARCH' generate_dockerfile tools/osbuilder/rootfs-builder/ubuntu
+    - OS_VERSION=22.04 IMAGE_REGISTRY=registry.ddbuild.io RUST_TOOLCHAIN=1.76.0 ARCH='$(uname -m)' generate_dockerfile tools/osbuilder/rootfs-builder/ubuntu
 
 
 build-kernel-amd64:
@@ -69,7 +69,7 @@ build-kernel-arm64:
 build-img-amd64:
   image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:img-$CI_IMAGE
   stage: build
-  tags: [ "arch:arm64" ]
+  tags: [ "arch:amd64" ]
   script:
     - cd tools/osbuilder
     - make -j$(nproc) image-ubuntu
