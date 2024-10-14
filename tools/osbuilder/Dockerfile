@@ -40,6 +40,7 @@ RUN apt-get update && \
     parted \
     pip \
     python3-dev \
+    udev \
     xz-utils \
     zstd && \
     apt-get clean && rm -rf /var/lib/apt/lists/&& \
