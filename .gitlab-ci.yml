@@ -65,7 +65,7 @@ build-kernel-arm64:
 build-img-amd64:
   image: registry.ddbuild.io/docker:24.0.5
   stage: build
-  tags: [ "runner:docker" ]
+  tags: [ "docker-in-docker:amd64" ]
   script:
     - cd tools/osbuilder
     - whoami && id
