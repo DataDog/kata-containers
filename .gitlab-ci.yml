@@ -68,7 +68,7 @@ build-img-amd64:
   tags: [ "runner:docker" ]
   script:
     - cd tools/osbuilder
-    - USE_DOCKER= true make -j$(nproc) image-ubuntu
+    - USE_DOCKER=true make -j$(nproc) image-ubuntu
   artifacts:
     paths:
       - tools/osbuilder/kata-*
