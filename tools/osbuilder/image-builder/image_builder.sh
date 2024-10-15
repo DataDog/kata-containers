@@ -190,6 +190,7 @@ build_with_container() {
 		   --rm \
 		   --runtime "${DOCKER_RUNTIME}"  \
 		   --privileged \
+		   --userns=host \
 		   --env AGENT_BIN="${agent_bin}" \
 		   --env AGENT_INIT="${agent_init}" \
 		   --env FS_TYPE="${fs_type}" \
