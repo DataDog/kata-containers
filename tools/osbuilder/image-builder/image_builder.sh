@@ -190,6 +190,7 @@ build_with_container() {
 		   --rm \
 		   --runtime "${DOCKER_RUNTIME}"  \
 		   --privileged \
+		   --userns=host \
 		   --env AGENT_BIN="${agent_bin}" \
 		   --env AGENT_INIT="${agent_init}" \
 		   --env FS_TYPE="${fs_type}" \
@@ -672,6 +673,7 @@ main() {
 		# the first 2M are for the first MBR + NVDIMM metadata and were already
 		# consider in calculate_img_size
 		rootfs_img_size=$((img_size - dax_header_sz))
+		whoami
 		create_rootfs_image "${rootfs}" "${image}" "${rootfs_img_size}" \
 						"${fs_type}" "${block_size}" "${agent_bin}"
 	fi

@@ -1,21 +1,14 @@
-# Copyright (c) 2018 Yash Jain, 2022 IBM Corp.
-#
-# SPDX-License-Identifier: Apache-2.0
+FROM registry.ddbuild.io/images/base/gbi-ubuntu_2204:release
 
-ARG IMAGE_REGISTRY=docker.io
-ARG TARGETARCH
+USER root
 
-FROM ${IMAGE_REGISTRY}/ubuntu:@OS_VERSION@
-@SET_PROXY@
-
+ARG GO_VERSION=1.22.2
 ENV GO_HOME="/opt"
 ENV GOCACHE="${GO_HOME}/.cache"
 ENV RUSTUP_HOME="/opt/rustup"
 ENV CARGO_HOME="/opt/cargo"
 ENV PATH="/opt/cargo/bin/:/opt/go/bin:${PATH}"
 
-ARG GO_VERSION
-ARG RUST_TOOLCHAIN
 ENV GO_HOME="/opt"
 ENV PATH="/opt/go/bin:${PATH}"
 
@@ -33,13 +26,6 @@ RUN apt-get update && \
     ca-certificates \
     curl \
     g++ \
-    $(gcc_arch="@ARCH@" && [ "$(uname -m)" != "$gcc_arch" ] && ( \
-    libc_arch="$gcc_arch" && \
-    [ "$gcc_arch" = aarch64 ] && libc_arch=arm64; \
-    [ "$gcc_arch" = ppc64le ] && gcc_arch=powerpc64le && libc_arch=ppc64el; \
-    [ "$gcc_arch" = s390x ] && gcc_arch=s390x && libc_arch=s390x; \
-    [ "$gcc_arch" = x86_64 ] && gcc_arch=x86-64 && libc_arch=amd64; \
-    echo "gcc-$gcc_arch-linux-gnu libc6-dev-$libc_arch-cross")) \
     git \
     gnupg2 \
     libclang-dev \
@@ -50,12 +36,15 @@ RUN apt-get update && \
     musl-dev \
     musl-tools \
     protobuf-compiler \
-    xz-utils \
+    qemu-utils \
+    parted \
     pip \
     python3-dev \
+    udev \
+    xz-utils \
     zstd && \
     apt-get clean && rm -rf /var/lib/apt/lists/&& \
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${RUST_TOOLCHAIN}
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.76.0
 
 RUN ARCH=$(uname -m); \
     goarch=""; \
