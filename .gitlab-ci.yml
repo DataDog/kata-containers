@@ -34,7 +34,6 @@ ci-image-img:
     CONTEXT_DIR: "./tools/osbuilder"
     TARGET: "build"
 
-
 build-kernel-amd64:
   image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:kernel-$CI_IMAGE
   stage: build
@@ -64,12 +63,12 @@ build-kernel-arm64:
     expire_in: 1 week
 
 build-img-amd64:
-  image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:img-$CI_IMAGE
+  image: registry.ddbuild.io/docker:24.0.5
   stage: build
-  tags: [ "arch:amd64" ]
+  tags: [ "runner:docker" ]
   script:
     - cd tools/osbuilder
-    - make -j$(nproc) image-ubuntu
+    - USE_DOCKER= true make -j$(nproc) image-ubuntu
   artifacts:
     paths:
       - tools/osbuilder/kata-*
