@@ -69,6 +69,7 @@ build-img-amd64:
   stage: build
   tags: [ "docker-in-docker:amd64" ]
   script:
+    - sed -i 's/20G/50G/' /usr/local/bin/entrypoint.sh
     - entrypoint.sh &
     - cd tools/osbuilder
     - apk add make bash
