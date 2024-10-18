@@ -71,6 +71,7 @@ build-img-amd64:
   variables:
     DOCKER_TLS_CERTDIR: ""
     DOCKER_HOST: "tcp://localhost:2375"
+  services: []
   script:
     - sed -i 's/20G/50G/' /usr/local/bin/entrypoint.sh
     - entrypoint.sh &
