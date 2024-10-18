@@ -63,13 +63,16 @@ build-kernel-arm64:
     expire_in: 1 week
 
 build-img-amd64:
-  image: registry.ddbuild.io/docker:24.0.5
+  image:
+    name: registry.ddbuild.io/docker:27.1.1-dind-kata
+    entrypoint: [""]
   stage: build
   tags: [ "docker-in-docker:amd64" ]
   script:
+    - entrypoint.sh &
     - cd tools/osbuilder
     - apt update && apt install -y make
-    - USE_DOCKER=true make -j$(nproc) image-ubuntu
+    - DOCKER_HOST=tcp://localhost:2375 USE_DOCKER=true make -j$(nproc) image-ubuntu
   artifacts:
     paths:
       - tools/osbuilder/kata-*
