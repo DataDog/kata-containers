@@ -70,8 +70,6 @@ build-img-amd64:
     - cd tools/osbuilder
     - apt update && apt install -y make
     - USE_DOCKER=true make -j$(nproc) image-ubuntu
-  after_script:
-    - sleep 3600
   artifacts:
     paths:
       - tools/osbuilder/kata-*
