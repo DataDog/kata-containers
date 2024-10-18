@@ -63,13 +63,13 @@ build-kernel-arm64:
     expire_in: 1 week
 
 build-img-amd64:
-  image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:img-$CI_IMAGE
+  image: registry.ddbuild.io/docker:24.0.5
   stage: build
   tags: [ "docker-in-docker:amd64" ]
   script:
     - cd tools/osbuilder
-    - whoami && id
-    - make -j$(nproc) image-ubuntu
+    - apt update && apt install -y make
+    - USE_DOCKER=true make -j$(nproc) image-ubuntu
   after_script:
     - sleep 3600
   artifacts:
