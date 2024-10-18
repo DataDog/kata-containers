@@ -68,6 +68,9 @@ build-img-amd64:
     entrypoint: [""]
   stage: build
   tags: [ "docker-in-docker:amd64" ]
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_HOST: "tcp://localhost:2375"
   script:
     - sed -i 's/20G/50G/' /usr/local/bin/entrypoint.sh
     - entrypoint.sh &
