@@ -76,10 +76,11 @@ build-img-amd64:
       alias: docker
   script:
     - sed -i 's/20G/50G/' /usr/local/bin/entrypoint.sh
+    - export DOCKER_HOST=tcp://localhost:2375
     - entrypoint.sh &
     - cd tools/osbuilder
     - apk add make bash
-    - DOCKER_HOST=tcp://localhost:2375 USE_DOCKER=true make -j$(nproc) image-ubuntu
+    - USE_DOCKER=true make -j$(nproc) image-ubuntu
   artifacts:
     paths:
       - tools/osbuilder/kata-*
