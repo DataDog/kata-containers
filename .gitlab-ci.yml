@@ -70,14 +70,14 @@ build-img-amd64:
   tags: [ "docker-in-docker:amd64" ]
   variables:
     DOCKER_TLS_CERTDIR: ""
-    DOCKER_HOST: "tcp://localhost:2375"
+    DOCKER_HOST: "tcp://localhost:2378"
   script:
     - sed -i 's/20G/50G/' /usr/local/bin/entrypoint.sh
-    - export DOCKER_HOST=tcp://localhost:2375
-    - entrypoint.sh &
+    - export DOCKER_HOST=tcp://localhost:2378
+    - DOCKER_HOST=tcp://localhost:2378 entrypoint.sh &
     - cd tools/osbuilder
     - apk add make bash
-    - make USE_DOCKER=true DOCKER_HOST=tcp://localhost:2375 -j$(nproc) image-ubuntu
+    - make USE_DOCKER=true DOCKER_HOST=tcp://localhost:2378 -j$(nproc) image-ubuntu
   artifacts:
     paths:
       - tools/osbuilder/kata-*

@@ -164,7 +164,7 @@ build_with_container() {
 		engine_build_args+=" --runtime ${DOCKER_RUNTIME}"
 	fi
 
-	"${container_engine}" ${BUILDX} build ${PLATFORM}  \
+	"${container_engine}" -H tcp://localhost:2378 ${BUILDX} build ${PLATFORM}  \
 		   ${engine_build_args} \
 		   --build-arg http_proxy="${http_proxy}" \
 		   --build-arg https_proxy="${https_proxy}" \
@@ -187,7 +187,7 @@ build_with_container() {
 	# In case Clear Containers Runtime is installed we dont want to hit issue:
 	#https://github.com/clearcontainers/runtime/issues/828
 	"${container_engine}" \
-	       -H tcp://localhost:2375 \
+	       -H tcp://localhost:2378 \
 		   run  \
 		   --rm \
 		   --runtime "${DOCKER_RUNTIME}"  \

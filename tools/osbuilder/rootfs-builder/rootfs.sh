@@ -499,7 +499,7 @@ build_rootfs_distro()
 		# In case Clear Containers Runtime is installed we dont want to hit issue:
 		#https://github.com/clearcontainers/runtime/issues/828
 		"$container_engine" \
-		    -H tcp://localhost:2375 \
+		    -H tcp://localhost:2378 \
 		    run  \
 			--env https_proxy="${https_proxy}" \
 			--env http_proxy="${http_proxy}" \
