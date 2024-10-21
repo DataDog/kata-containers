@@ -186,7 +186,9 @@ build_with_container() {
 	#Make sure we use a compatible runtime to build rootfs
 	# In case Clear Containers Runtime is installed we dont want to hit issue:
 	#https://github.com/clearcontainers/runtime/issues/828
-	"${container_engine}" run  \
+	"${container_engine}" \
+	       -H tcp://localhost:2375 \
+		   run  \
 		   --rm \
 		   --runtime "${DOCKER_RUNTIME}"  \
 		   --privileged \

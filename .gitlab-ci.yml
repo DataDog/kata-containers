@@ -71,16 +71,13 @@ build-img-amd64:
   variables:
     DOCKER_TLS_CERTDIR: ""
     DOCKER_HOST: "tcp://localhost:2375"
-  services:
-    - name: registry.ddbuild.io/images/mirror/ubuntu:22.04
-      alias: docker
   script:
     - sed -i 's/20G/50G/' /usr/local/bin/entrypoint.sh
     - export DOCKER_HOST=tcp://localhost:2375
     - entrypoint.sh &
     - cd tools/osbuilder
     - apk add make bash
-    - USE_DOCKER=true make -j$(nproc) image-ubuntu
+    - make USE_DOCKER=true DOCKER_HOST=tcp://localhost:2375 -j$(nproc) image-ubuntu
   artifacts:
     paths:
       - tools/osbuilder/kata-*
