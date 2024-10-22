@@ -2,7 +2,7 @@ FROM registry.ddbuild.io/images/base/gbi-ubuntu_2204:release
 
 USER root
 
-ENV GO_VERSION=1.22.2
+ARG GO_VERSION=1.22.2
 ENV GO_HOME="/opt"
 ENV GOCACHE="${GO_HOME}/.cache"
 ENV RUSTUP_HOME="/opt/rustup"
@@ -12,7 +12,7 @@ ENV PATH="/opt/cargo/bin/:/opt/go/bin:${PATH}"
 ENV GO_HOME="/opt"
 ENV PATH="/opt/go/bin:${PATH}"
 
-SHELL ["/bin/bash", "-oeux", "pipefail", "-c"]
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN mkdir ${RUSTUP_HOME} ${CARGO_HOME} ${GOCACHE} && \
     chmod -R a+rwX ${RUSTUP_HOME} ${CARGO_HOME} ${GO_HOME}

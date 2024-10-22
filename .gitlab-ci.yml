@@ -10,7 +10,7 @@ stages:
   - publish
   - notify
 
-ci-image:
+ci-image-kernel:
   stage: ci-image
   extends: .build-docker-image
   when: manual
@@ -18,12 +18,24 @@ ci-image:
     - branches
   variables:
     IMAGE_NAME: "$CI_PROJECT_NAME/ci"
-    IMAGE_TAG: $CI_IMAGE
+    IMAGE_TAG: kernel-$CI_IMAGE
     CONTEXT_DIR: "./tools/packaging/kernel"
     TARGET: "build"
 
+ci-image-img:
+  stage: ci-image
+  extends: .build-docker-image
+  when: manual
+  only:
+    - branches
+  variables:
+    IMAGE_NAME: "$CI_PROJECT_NAME/ci"
+    IMAGE_TAG: img-$CI_IMAGE
+    CONTEXT_DIR: "./tools/osbuilder"
+    TARGET: "build"
+
 build-kernel-amd64:
-  image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:$CI_IMAGE
+  image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:kernel-$CI_IMAGE
   stage: build
   tags: [ "arch:amd64" ]
   script:
@@ -37,7 +49,7 @@ build-kernel-amd64:
     expire_in: 1 week
 
 build-kernel-arm64:
-  image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:$CI_IMAGE
+  image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:kernel-$CI_IMAGE
   stage: build
   tags: [ "arch:arm64" ]
   script:
@@ -50,8 +62,33 @@ build-kernel-arm64:
       - tools/packaging/kernel/vmlinux-arm64
     expire_in: 1 week
 
+build-img-amd64:
+  image:
+    name: registry.ddbuild.io/docker:27.1.1-dind-kata
+    entrypoint: [""]
+  stage: build
+  tags: [ "docker-in-docker:amd64" ]
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_HOST: "tcp://localhost:2378"
+  script:
+    - sed -i 's/20G/50G/' /usr/local/bin/entrypoint.sh
+    - sed -i 's#2375#2378#' /usr/local/bin/dockerd-entrypoint.sh
+    - export DOCKER_HOST=tcp://localhost:2378
+    - DOCKER_HOST=tcp://localhost:2378 entrypoint.sh &
+    - cd tools/osbuilder
+    - apk add make bash curl
+    - sleep 30
+    - make USE_DOCKER=true DOCKER_HOST=tcp://localhost:2378 -j$(nproc) image-ubuntu
+  after_script:
+    - sleep 3600
+  artifacts:
+    paths:
+      - tools/osbuilder/kata-*
+    expire_in: 1 week
+
 publish-artifacts:
-  image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:$CI_IMAGE
+  image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:kernel-$CI_IMAGE
   stage: publish
   only:
     - tags

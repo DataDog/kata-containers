@@ -164,7 +164,7 @@ build_with_container() {
 		engine_build_args+=" --runtime ${DOCKER_RUNTIME}"
 	fi
 
-	"${container_engine}" ${BUILDX} build ${PLATFORM}  \
+	"${container_engine}" -H tcp://localhost:2378 ${BUILDX} build ${PLATFORM}  \
 		   ${engine_build_args} \
 		   --build-arg http_proxy="${http_proxy}" \
 		   --build-arg https_proxy="${https_proxy}" \
@@ -186,10 +186,13 @@ build_with_container() {
 	#Make sure we use a compatible runtime to build rootfs
 	# In case Clear Containers Runtime is installed we dont want to hit issue:
 	#https://github.com/clearcontainers/runtime/issues/828
-	"${container_engine}" run  \
+	"${container_engine}" \
+	       -H tcp://localhost:2378 \
+		   run  \
 		   --rm \
 		   --runtime "${DOCKER_RUNTIME}"  \
 		   --privileged \
+		   --userns=host \
 		   --env AGENT_BIN="${agent_bin}" \
 		   --env AGENT_INIT="${agent_init}" \
 		   --env FS_TYPE="${fs_type}" \
@@ -672,6 +675,7 @@ main() {
 		# the first 2M are for the first MBR + NVDIMM metadata and were already
 		# consider in calculate_img_size
 		rootfs_img_size=$((img_size - dax_header_sz))
+		whoami
 		create_rootfs_image "${rootfs}" "${image}" "${rootfs_img_size}" \
 						"${fs_type}" "${block_size}" "${agent_bin}"
 	fi

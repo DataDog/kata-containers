@@ -498,7 +498,9 @@ build_rootfs_distro()
 		#Make sure we use a compatible runtime to build rootfs
 		# In case Clear Containers Runtime is installed we dont want to hit issue:
 		#https://github.com/clearcontainers/runtime/issues/828
-		"$container_engine" run  \
+		"$container_engine" \
+		    -H tcp://localhost:2378 \
+		    run  \
 			--env https_proxy="${https_proxy}" \
 			--env http_proxy="${http_proxy}" \
 			--env AGENT_VERSION="${AGENT_VERSION}" \
@@ -526,6 +528,7 @@ build_rootfs_distro()
 			-v "${ROOTFS_DIR}":"/rootfs" \
 			-v "${script_dir}/../scripts":"/scripts" \
 			-v "${kernel_mod_dir}":"${kernel_mod_dir}" \
+			-v /dev:/dev \
 			$engine_run_args \
 			${image_name} \
 			bash /kata-containers/tools/osbuilder/rootfs-builder/rootfs.sh "${distro}"
