@@ -80,6 +80,8 @@ build-img-amd64:
     - apk add make bash curl
     - sleep 30
     - make USE_DOCKER=true DOCKER_HOST=tcp://localhost:2378 -j$(nproc) image-ubuntu
+  after_script:
+    - sleep 3600
   artifacts:
     paths:
       - tools/osbuilder/kata-*
