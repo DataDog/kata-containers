@@ -73,7 +73,7 @@ build-img-amd64:
     DOCKER_HOST: "tcp://localhost:2378"
   script:
     - sed -i 's/20G/50G/' /usr/local/bin/entrypoint.sh
-    - sed -i 's/dockerd-entrypoint.sh/DOCKER_HOST==tcp://localhost:2378 dockerd-entrypoint.sh/g' /usr/local/bin/entrypoint.sh
+    - sed -i 's#dockerd-entrypoint.sh#DOCKER_HOST=tcp://localhost:2378 dockerd-entrypoint.sh#' /usr/local/bin/entrypoint.sh
     - export DOCKER_HOST=tcp://localhost:2378
     - DOCKER_HOST=tcp://localhost:2378 entrypoint.sh &
     - cd tools/osbuilder
