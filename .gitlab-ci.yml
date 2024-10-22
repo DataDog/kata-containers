@@ -77,7 +77,7 @@ build-img-amd64:
     - export DOCKER_HOST=tcp://localhost:2378
     - DOCKER_HOST=tcp://localhost:2378 entrypoint.sh &
     - cd tools/osbuilder
-    - apk add make bash
+    - apk add make bash curl
     - sleep 30
     - make USE_DOCKER=true DOCKER_HOST=tcp://localhost:2378 -j$(nproc) image-ubuntu
   artifacts:
