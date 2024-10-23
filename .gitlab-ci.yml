@@ -72,6 +72,8 @@ build-img-amd64:
     DOCKER_TLS_CERTDIR: ""
     DOCKER_HOST: "tcp://localhost:2378"
   script:
+    - git repack -a
+    - rm .git/objects/info/alternates
     - sed -i 's/20G/50G/' /usr/local/bin/entrypoint.sh
     - sed -i 's#2375#2378#' /usr/local/bin/dockerd-entrypoint.sh
     - export DOCKER_HOST=tcp://localhost:2378
