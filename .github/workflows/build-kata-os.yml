@@ -7,5 +7,7 @@ jobs:
     steps:
       - name: Check out repository code
         uses: actions/checkout@v4
+      - name: Go to osbuilder path
+        run: cd tools/osbuilder
       - name: List files in the repository
         run: make image-ubuntu
