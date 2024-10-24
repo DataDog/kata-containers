@@ -1,0 +1,11 @@
+name: Build Kata OS for amd64
+run-name: Build Kata OS for amd64
+on: [push]
+jobs:
+  build-os-amd64:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+      - name: List files in the repository
+        run: make image-ubuntu
