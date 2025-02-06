@@ -28,6 +28,7 @@ jobs:
           sudo ./build-kernel.sh -v ${{ matrix.kernel_version }} build
       - name: Bundle artifacts
         run: |
+          ulimit -a
           cp tools/packaging/kernel/kata-linux-*/vmlinux /tmp/vmlinux
           cp tools/osbuilder/kata-containers-image-ubuntu.img /tmp/kata-containers-image-ubuntu.img
           cp sbom.json /tmp/sbom.json
@@ -57,7 +58,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: artifacts-arm64
-      - name: 'Create New Release'
+      - name: "Create New Release"
         env:
           GH_TOKEN: ${{ secrets.WORKFLOW_TOKEN }}
         run: |
@@ -69,4 +70,3 @@ jobs:
           gh release upload "${RELEASE_VERSION}" checksum-amd64.sha256
           gh release upload "${RELEASE_VERSION}" checksum-arm64.sha256
           gh release edit ${RELEASE_VERSION} --verify-tag	--draft=false
-
