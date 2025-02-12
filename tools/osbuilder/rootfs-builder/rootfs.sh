@@ -811,6 +811,7 @@ detect_host_distro()
 setup_rootfs_dd_specific()
 {
 	cp "${script_dir}/datadog-files/etc/security/limits.conf" "/${ROOTFS_DIR}/etc/security/limits.conf"
+	echo "/etc/pam.d/common-session" >> "${ROOTFS_DIR}/etc/pam.d/common-session"
 }
 
 main()
