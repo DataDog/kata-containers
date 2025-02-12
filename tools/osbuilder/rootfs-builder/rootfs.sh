@@ -807,6 +807,12 @@ detect_host_distro()
 	esac
 }
 
+# [DATADOG]
+setup_rootfs_dd_specific()
+{
+	cp "${script_dir}/datadog-files/etc/security/limits.conf" "/${ROOTFS_DIR}/etc/security/limits.conf"
+}
+
 main()
 {
 	parse_arguments $*
@@ -825,6 +831,7 @@ main()
 
 	init="${ROOTFS_DIR}/sbin/init"
 	setup_rootfs
+	setup_rootfs_dd_specific
 
 	if [ "${VARIANT}" = "nvidia-gpu" ]; then
 		setup_nvidia_gpu_rootfs_stage_one
