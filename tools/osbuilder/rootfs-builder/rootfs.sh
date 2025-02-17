@@ -812,7 +812,7 @@ setup_rootfs_dd_specific()
 {
 	# cp "${script_dir}/datadog-files/etc/security/limits.conf" "/${ROOTFS_DIR}/etc/security/limits.conf"
 	# echo "session required pam_limits.so" >> "${ROOTFS_DIR}/etc/pam.d/common-session"
-	echo "kernel.threads-max = 262144" >> "${ROOTFS_DIR}/etc/sysctl.d/99-kernel-threads-max.conf"
+	sed -i "s/^#DefaultLimitNPROC=/DefaultLimitNPROC=131072/" "${ROOTFS_DIR}/etc/systemd/system.conf"
 }
 
 main()
