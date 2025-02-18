@@ -807,6 +807,19 @@ detect_host_distro()
 	esac
 }
 
+############### [DATADOG] ###############
+setup_rootfs_dd_specific()
+{
+	for file in $(find ${script_dir}/datadog-files -type f -printf "%P\n"); do
+		dir=$(dirname "$file")
+		if [ ! -d "${ROOTFS_DIR}/$dir" ]; then
+			mkdir -p "${ROOTFS_DIR}/$dir"
+		fi
+		cp -r "${script_dir}/datadog-files/$file" "${ROOTFS_DIR}/$file"
+	done
+}
+########################################
+
 main()
 {
 	parse_arguments $*
@@ -825,6 +838,7 @@ main()
 
 	init="${ROOTFS_DIR}/sbin/init"
 	setup_rootfs
+	setup_rootfs_dd_specific
 
 	if [ "${VARIANT}" = "nvidia-gpu" ]; then
 		setup_nvidia_gpu_rootfs_stage_one
