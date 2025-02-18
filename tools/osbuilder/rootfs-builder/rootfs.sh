@@ -807,13 +807,18 @@ detect_host_distro()
 	esac
 }
 
-# [DATADOG]
+############### [DATADOG] ###############
 setup_rootfs_dd_specific()
 {
-	# cp "${script_dir}/datadog-files/etc/security/limits.conf" "/${ROOTFS_DIR}/etc/security/limits.conf"
-	# echo "session required pam_limits.so" >> "${ROOTFS_DIR}/etc/pam.d/common-session"
-	sed -i "s/^#DefaultLimitNPROC=/DefaultLimitNPROC=131072/" "${ROOTFS_DIR}/etc/systemd/system.conf"
+	for file in $(find ${script_dir}/datadog-files -type f -printf "%P\n"); do
+		dir=$(dirname "$file")
+		if [ ! -d "${ROOTFS_DIR}/$dir" ]; then
+			mkdir -p "${ROOTFS_DIR}/$dir"
+		fi
+		cp -r "${script_dir}/datadog-files/$file" "${ROOTFS_DIR}/$file"
+	done
 }
+########################################
 
 main()
 {
