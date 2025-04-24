@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y libelf-dev flex bison
       - name: Build Ubuntu image ${{ matrix.arch }}
-        run: cd tools/osbuilder && sudo make USE_DOCKER=true OS_VERSION=jammy image-ubuntu
+        run: cd tools/osbuilder && sudo make USE_DOCKER=true AGENT_INIT=yes OS_VERSION=jammy image-ubuntu
       - name: Build Kernel ${{ matrix.kernel_version }}
         run: |
           cd tools/packaging/kernel
