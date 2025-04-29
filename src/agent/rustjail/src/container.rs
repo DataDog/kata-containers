@@ -58,7 +58,8 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::os::unix::io::FromRawFd;
 use std::str::FromStr;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, AtomicBool};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use slog::{info, o, Logger};
 
@@ -1095,9 +1096,11 @@ impl BaseContainer for LinuxContainer {
             child_stderr = unsafe { std::process::Stdio::from_raw_fd(stderr) };
 
             if let Some(proc_io) = &mut p.proc_io {
+                // Create a shared atomic flag to track if the process is still running
+                let process_running = Arc::new(AtomicBool::new(true));
+                let process_running_clone = process_running.clone();
+
                 // Here we copy from vsock stdin stream to parent_stdin manually.
-                // This is because we need to close the stdin fifo when the stdin stream
-                // is drained.
                 if let Some(mut stdin_stream) = proc_io.stdin.take() {
                     debug!(logger, "copy from stdin to parent_stdin");
                     let mut parent_stdin = unsafe { File::from_raw_fd(p.parent_stdin.unwrap()) };
@@ -1105,8 +1108,14 @@ impl BaseContainer for LinuxContainer {
                     tokio::spawn(async move {
                         let res = tokio::io::copy(&mut stdin_stream, &mut parent_stdin).await;
                         debug!(logger, "copy from stdin to term_master end: {:?}", res);
+                        // Ensure the stream is properly flushed
+                        let _ = parent_stdin.flush().await;
                     });
                 }
+
+                // Create a shared channel for coordinating I/O operations
+                let (io_tx, mut io_rx) = tokio::sync::mpsc::channel(1);
+                let io_tx_clone = io_tx.clone();
 
                 // copy from parent_stdout to stdout stream
                 if let Some(mut stdout_stream) = proc_io.stdout.take() {
@@ -1114,13 +1123,47 @@ impl BaseContainer for LinuxContainer {
                     let wgw_output = proc_io.wg_output.worker();
                     let mut parent_stdout = unsafe { File::from_raw_fd(p.parent_stdout.unwrap()) };
                     let logger = logger.clone();
+                    let process_running = process_running.clone();
+                    let io_tx = io_tx.clone();
+                    
                     tokio::spawn(async move {
-                        let res = tokio::io::copy(&mut parent_stdout, &mut stdout_stream).await;
-                        debug!(
-                            logger,
-                            "copy from parent_stdout to stdout stream end: {:?}", res
-                        );
+                        let mut buffer = Vec::new();
+                        loop {
+                            match parent_stdout.try_read_buf(&mut buffer) {
+                                Ok(0) => {
+                                    // End of stream
+                                    if !process_running.load(Ordering::Relaxed) {
+                                        break;
+                                    }
+                                    // Wait for more data or process exit
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                                    continue;
+                                }
+                                Ok(_) => {
+                                    // Write the data and ensure it's flushed
+                                    if let Err(e) = stdout_stream.write_all(&buffer).await {
+                                        debug!(logger, "error writing to stdout stream: {:?}", e);
+                                        break;
+                                    }
+                                    if let Err(e) = stdout_stream.flush().await {
+                                        debug!(logger, "error flushing stdout stream: {:?}", e);
+                                        break;
+                                    }
+                                    buffer.clear();
+                                }
+                                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                    // No data available, wait a bit
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                                    continue;
+                                }
+                                Err(e) => {
+                                    debug!(logger, "error reading from parent_stdout: {:?}", e);
+                                    break;
+                                }
+                            }
+                        }
                         wgw_output.done();
+                        let _ = io_tx.send(()).await;
                     });
                 }
 
@@ -1130,395 +1173,170 @@ impl BaseContainer for LinuxContainer {
                     let wgw_output = proc_io.wg_output.worker();
                     let mut parent_stderr = unsafe { File::from_raw_fd(p.parent_stderr.unwrap()) };
                     let logger = logger.clone();
+                    let process_running = process_running.clone();
+                    
                     tokio::spawn(async move {
-                        let res = tokio::io::copy(&mut parent_stderr, &mut stderr_stream).await;
-                        debug!(
-                            logger,
-                            "copy from parent_stderr to stderr stream end: {:?}", res
-                        );
+                        let mut buffer = Vec::new();
+                        loop {
+                            match parent_stderr.try_read_buf(&mut buffer) {
+                                Ok(0) => {
+                                    // End of stream
+                                    if !process_running.load(Ordering::Relaxed) {
+                                        break;
+                                    }
+                                    // Wait for more data or process exit
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                                    continue;
+                                }
+                                Ok(_) => {
+                                    // Write the data and ensure it's flushed
+                                    if let Err(e) = stderr_stream.write_all(&buffer).await {
+                                        debug!(logger, "error writing to stderr stream: {:?}", e);
+                                        break;
+                                    }
+                                    if let Err(e) = stderr_stream.flush().await {
+                                        debug!(logger, "error flushing stderr stream: {:?}", e);
+                                        break;
+                                    }
+                                    buffer.clear();
+                                }
+                                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                    // No data available, wait a bit
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                                    continue;
+                                }
+                                Err(e) => {
+                                    debug!(logger, "error reading from parent_stderr: {:?}", e);
+                                    break;
+                                }
+                            }
+                        }
                         wgw_output.done();
+                        let _ = io_tx_clone.send(()).await;
                     });
                 }
+
+                // Spawn a task to monitor the process and coordinate I/O completion
+                tokio::spawn(async move {
+                    // Wait for both stdout and stderr to complete
+                    let _ = io_rx.recv().await;
+                    let _ = io_rx.recv().await;
+                    process_running_clone.store(false, Ordering::Relaxed);
+                });
             }
         }
-
-        let pidns = get_pid_namespace(&self.logger, linux)?;
-        #[cfg(not(feature = "standard-oci-runtime"))]
-        if !pidns.enabled {
-            return Err(anyhow!("cannot find the pid ns"));
-        }
-
-        defer!(if let Some(fd) = pidns.fd {
-            let _ = unistd::close(fd);
-        });
-
-        let exec_path = std::env::current_exe()?;
-        let mut child = std::process::Command::new(exec_path);
-
-        #[allow(unused_mut)]
-        let mut console_name = PathBuf::from("");
-        #[cfg(feature = "standard-oci-runtime")]
-        if !self.console_socket.as_os_str().is_empty() {
-            console_name = self.console_socket.clone();
-        }
-
-        let mut child = child
-            .arg("init")
-            .stdin(child_stdin)
-            .stdout(child_stdout)
-            .stderr(child_stderr)
-            .env(INIT, format!("{}", p.init))
-            .env(NO_PIVOT, format!("{}", self.config.no_pivot_root))
-            .env(CRFD_FD, format!("{}", crfd))
-            .env(CWFD_FD, format!("{}", cwfd))
-            .env(CLOG_FD, format!("{}", cfd_log))
-            .env(CONSOLE_SOCKET_FD, console_name)
-            .env(PIDNS_ENABLED, format!("{}", pidns.enabled));
-
-        if p.init {
-            child = child.env(FIFO_FD, format!("{}", fifofd));
-        }
-
-        if pidns.fd.is_some() {
-            child = child.env(PIDNS_FD, format!("{}", pidns.fd.unwrap()));
-        }
-
-        child.spawn()?;
-
-        unistd::close(crfd)?;
-        unistd::close(cwfd)?;
-        unistd::close(cfd_log)?;
-
-        // get container process's pid
-        let pid_buf = read_async(&mut pipe_r).await?;
-        let pid_str = std::str::from_utf8(&pid_buf).context("get pid string")?;
-        let pid = match pid_str.parse::<i32>() {
-            Ok(i) => i,
-            Err(e) => {
-                return Err(anyhow!(format!(
-                    "failed to get container process's pid: {:?}",
-                    e
-                )));
-            }
-        };
-
-        p.pid = pid;
-
-        if p.init {
-            self.init_process_pid = p.pid;
-        }
-
-        if p.init {
-            let _ = unistd::close(fifofd).map_err(|e| warn!(logger, "close fifofd {:?}", e));
-        }
-
-        info!(logger, "child pid: {}", p.pid);
-
-        let st = self.oci_state()?;
-
-        join_namespaces(
-            &logger,
-            spec,
-            &p,
-            self.cgroup_manager.as_ref(),
-            self.config.use_systemd_cgroup,
-            &st,
-            &mut pipe_w,
-            &mut pipe_r,
-        )
-        .await
-        .map_err(|e| {
-            error!(logger, "create container process error {:?}", e);
-            // kill the child process.
-            let _ = signal::kill(Pid::from_raw(p.pid), Some(Signal::SIGKILL))
-                .map_err(|e| warn!(logger, "signal::kill joining namespaces {:?}", e));
-
-            e
-        })?;
-
-        info!(logger, "entered namespaces!");
-
-        if p.init {
-            let spec = self.config.spec.as_mut().unwrap();
-            update_namespaces(&self.logger, spec, p.pid)?;
-        }
-        self.processes.insert(p.pid, p);
-
-        info!(logger, "wait on child log handler");
-        let _ = log_handler
-            .await
-            .map_err(|e| warn!(logger, "joining log handler {:?}", e));
-        info!(logger, "create process completed");
-        Ok(())
     }
 
-    async fn run(&mut self, p: Process) -> Result<()> {
-        let init = p.init;
-        self.start(p).await?;
-
-        if init {
-            self.exec().await?;
-            self.status.transition(ContainerState::Running);
-        }
-
-        Ok(())
+    let pidns = get_pid_namespace(&self.logger, linux)?;
+    #[cfg(not(feature = "standard-oci-runtime"))]
+    if !pidns.enabled {
+        return Err(anyhow!("cannot find the pid ns"));
     }
 
-    async fn destroy(&mut self) -> Result<()> {
-        let spec = self.config.spec.as_ref().unwrap();
-        let st = self.oci_state()?;
-
-        for pid in self.processes.keys() {
-            match signal::kill(Pid::from_raw(*pid), Some(Signal::SIGKILL)) {
-                Err(Errno::ESRCH) => {
-                    info!(
-                        self.logger,
-                        "kill encounters ESRCH, pid: {}, container: {}",
-                        pid,
-                        self.id.clone()
-                    );
-                    continue;
-                }
-                Err(err) => return Err(anyhow!(err)),
-                Ok(_) => continue,
-            }
-        }
-
-        // guest Poststop hook
-        // * should be executed after the container is deleted but before the delete operation returns
-        // * the executable file is in agent namespace
-        // * should also be executed in agent namespace.
-        if let Some(hooks) = spec.hooks().as_ref() {
-            info!(self.logger, "guest Poststop hook");
-            let mut hook_states = HookStates::new();
-            hook_states.execute_hooks(
-                hooks.poststop().clone().unwrap_or_default().as_slice(),
-                Some(st),
-            )?;
-        }
-
-        self.status.transition(ContainerState::Stopped);
-        mount::umount2(
-            spec.root()
-                .as_ref()
-                .unwrap()
-                .path()
-                .display()
-                .to_string()
-                .as_str(),
-            MntFlags::MNT_DETACH,
-        )
-        .or_else(|e| {
-            if e.ne(&nix::Error::EINVAL) {
-                return Err(anyhow!(e));
-            }
-            warn!(self.logger, "rootfs not mounted");
-            Ok(())
-        })?;
-        fs::remove_dir_all(&self.root)?;
-
-        let cgm = self.cgroup_manager.as_mut();
-        // Kill all of the processes created in this container to prevent
-        // the leak of some daemon process when this container shared pidns
-        // with the sandbox.
-        let pids = cgm.get_pids().context("get cgroup pids")?;
-        for i in pids {
-            if let Err(e) = signal::kill(Pid::from_raw(i), Signal::SIGKILL) {
-                warn!(self.logger, "kill the process {} error: {:?}", i, e);
-            }
-        }
-
-        cgm.destroy().context("destroy cgroups")?;
-
-        Ok(())
-    }
-
-    async fn exec(&mut self) -> Result<()> {
-        let fifo = format!("{}/{}", &self.root, EXEC_FIFO_FILENAME);
-        let fd = fcntl::open(fifo.as_str(), OFlag::O_WRONLY, Mode::from_bits_truncate(0))?;
-        let data: &[u8] = &[0];
-        unistd::write(fd, data)?;
-        info!(self.logger, "container started");
-        self.init_process_start_time = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        self.status.transition(ContainerState::Running);
-
-        let spec = self
-            .config
-            .spec
-            .as_ref()
-            .ok_or_else(|| anyhow!("OCI spec was not found"))?;
-        let st = self.oci_state()?;
-
-        // guest Poststart hook
-        // * should be executed after the container is started but before the delete operation returns
-        // * the executable file is in agent namespace
-        // * should also be executed in agent namespace.
-        if let Some(hooks) = spec.hooks().as_ref() {
-            info!(self.logger, "guest Poststart hook");
-            let mut hook_states = HookStates::new();
-            hook_states.execute_hooks(
-                hooks.poststart().clone().unwrap_or_default().as_slice(),
-                Some(st),
-            )?;
-        }
-
-        unistd::close(fd)?;
-
-        Ok(())
-    }
-}
-
-use std::env;
-
-fn find_file<P>(exe_name: P) -> Option<PathBuf>
-where
-    P: AsRef<Path>,
-{
-    env::var_os("PATH").and_then(|paths| {
-        env::split_paths(&paths)
-            .filter_map(|dir| {
-                let full_path = dir.join(&exe_name);
-                if full_path.is_file() {
-                    Some(full_path)
-                } else {
-                    None
-                }
-            })
-            .next()
-    })
-}
-
-fn do_exec(args: &[String]) -> ! {
-    let path = &args[0];
-    let p = CString::new(path.to_string()).unwrap();
-    let sa: Vec<CString> = args
-        .iter()
-        .map(|s| CString::new(s.to_string()).unwrap_or_default())
-        .collect();
-
-    let _ = unistd::execvp(p.as_c_str(), &sa).map_err(|e| match e {
-        nix::Error::UnknownErrno => std::process::exit(-2),
-        _ => std::process::exit(e as i32),
+    defer!(if let Some(fd) = pidns.fd {
+        let _ = unistd::close(fd);
     });
 
-    unreachable!()
-}
+    let exec_path = std::env::current_exe()?;
+    let mut child = std::process::Command::new(exec_path);
 
-pub fn update_namespaces(logger: &Logger, spec: &mut Spec, init_pid: RawFd) -> Result<()> {
-    info!(logger, "updating namespaces");
-    let linux = spec
-        .linux_mut()
-        .as_mut()
-        .ok_or_else(|| anyhow!("Spec didn't contain linux field"))?;
-
-    if let Some(namespaces) = linux.namespaces_mut().as_mut() {
-        for namespace in namespaces.iter_mut() {
-            if TYPETONAME.contains_key(&namespace.typ()) {
-                let ns_path = format!(
-                    "/proc/{}/ns/{}",
-                    init_pid,
-                    TYPETONAME.get(&namespace.typ()).unwrap()
-                );
-
-                if namespace
-                    .path()
-                    .as_ref()
-                    .map_or(true, |p| p.as_os_str().is_empty())
-                {
-                    namespace.set_path(Some(PathBuf::from(&ns_path)));
-                }
-            }
-        }
+    #[allow(unused_mut)]
+    let mut console_name = PathBuf::from("");
+    #[cfg(feature = "standard-oci-runtime")]
+    if !self.console_socket.as_os_str().is_empty() {
+        console_name = self.console_socket.clone();
     }
 
+    let mut child = child
+        .arg("init")
+        .stdin(child_stdin)
+        .stdout(child_stdout)
+        .stderr(child_stderr)
+        .env(INIT, format!("{}", p.init))
+        .env(NO_PIVOT, format!("{}", self.config.no_pivot_root))
+        .env(CRFD_FD, format!("{}", crfd))
+        .env(CWFD_FD, format!("{}", cwfd))
+        .env(CLOG_FD, format!("{}", cfd_log))
+        .env(CONSOLE_SOCKET_FD, console_name)
+        .env(PIDNS_ENABLED, format!("{}", pidns.enabled));
+
+    if p.init {
+        child = child.env(FIFO_FD, format!("{}", fifofd));
+    }
+
+    if pidns.fd.is_some() {
+        child = child.env(PIDNS_FD, format!("{}", pidns.fd.unwrap()));
+    }
+
+    child.spawn()?;
+
+    unistd::close(crfd)?;
+    unistd::close(cwfd)?;
+    unistd::close(cfd_log)?;
+
+    // get container process's pid
+    let pid_buf = read_async(&mut pipe_r).await?;
+    let pid_str = std::str::from_utf8(&pid_buf).context("get pid string")?;
+    let pid = match pid_str.parse::<i32>() {
+        Ok(i) => i,
+        Err(e) => {
+            return Err(anyhow!(format!(
+                "failed to get container process's pid: {:?}",
+                e
+            )));
+        }
+    };
+
+    p.pid = pid;
+
+    if p.init {
+        self.init_process_pid = p.pid;
+    }
+
+    if p.init {
+        let _ = unistd::close(fifofd).map_err(|e| warn!(logger, "close fifofd {:?}", e));
+    }
+
+    info!(logger, "child pid: {}", p.pid);
+
+    let st = self.oci_state()?;
+
+    join_namespaces(
+        &logger,
+        spec,
+        &p,
+        self.cgroup_manager.as_ref(),
+        self.config.use_systemd_cgroup,
+        &st,
+        &mut pipe_w,
+        &mut pipe_r,
+    )
+    .await
+    .map_err(|e| {
+        error!(logger, "create container process error {:?}", e);
+        // kill the child process.
+        let _ = signal::kill(Pid::from_raw(p.pid), Some(Signal::SIGKILL))
+            .map_err(|e| warn!(logger, "signal::kill joining namespaces {:?}", e));
+
+        e
+    })?;
+
+    info!(logger, "entered namespaces!");
+
+    if p.init {
+        let spec = self.config.spec.as_mut().unwrap();
+        update_namespaces(&self.logger, spec, p.pid)?;
+    }
+    self.processes.insert(p.pid, p);
+
+    info!(logger, "wait on child log handler");
+    let _ = log_handler
+        .await
+        .map_err(|e| warn!(logger, "joining log handler {:?}", e));
+    info!(logger, "create process completed");
     Ok(())
 }
 
-fn get_pid_namespace(logger: &Logger, linux: &Linux) -> Result<PidNs> {
-    let linux_namespaces = linux.namespaces().clone().unwrap_or_default();
-    for ns in &linux_namespaces {
-        if &ns.typ().to_string() == "pid" {
-            let fd = match ns.path() {
-                None => return Ok(PidNs::new(true, None)),
-                Some(ns_path) => fcntl::open(
-                    ns_path.display().to_string().as_str(),
-                    OFlag::O_RDONLY,
-                    Mode::empty(),
-                )
-                .map_err(|e| {
-                    error!(
-                        logger,
-                        "cannot open type: {} path: {}",
-                        &ns.typ().to_string(),
-                        ns_path.display()
-                    );
-                    error!(logger, "error is : {:?}", e);
-
-                    e
-                })?,
-            };
-
-            return Ok(PidNs::new(true, Some(fd)));
-        }
-    }
-
-    Ok(PidNs::new(false, None))
-}
-
-fn is_userns_enabled(linux: &Linux) -> bool {
-    linux
-        .namespaces()
-        .clone()
-        .unwrap_or_default()
-        .iter()
-        .any(|ns| &ns.typ().to_string() == "user" && ns.path().is_none())
-}
-
-fn get_namespaces(linux: &Linux) -> Vec<LinuxNamespace> {
-    linux
-        .namespaces()
-        .clone()
-        .unwrap_or_default()
-        .iter()
-        .map(|ns| {
-            let mut namespace = LinuxNamespace::default();
-            namespace.set_typ(ns.typ());
-            namespace.set_path(ns.path().clone());
-
-            namespace
-        })
-        .collect()
-}
-
-pub fn setup_child_logger(fd: RawFd, child_logger: Logger) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let log_file_stream = PipeStream::from_fd(fd);
-        let buf_reader_stream = tokio::io::BufReader::new(log_file_stream);
-        let mut lines = buf_reader_stream.lines();
-
-        loop {
-            match lines.next_line().await {
-                Err(e) => {
-                    info!(child_logger, "read child process log error: {:?}", e);
-                    break;
-                }
-                Ok(Some(line)) => {
-                    info!(child_logger, "{}", line);
-                }
-                Ok(None) => {
-                    info!(child_logger, "read child process log end",);
-                    break;
-                }
-            }
-        }
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
 async fn join_namespaces(
     logger: &Logger,
     spec: &Spec,
