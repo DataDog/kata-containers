@@ -2483,7 +2483,7 @@ func (s *Sandbox) calculateSandboxCPUs() (float32, error) {
 
 		if cpu := c.Resources.CPU; cpu != nil {
 			if cpu.Period != nil && cpu.Quota != nil {
-				floatCPU += utils.CalculateCPUsF(*cpu.Quota, *cpu.Period)
+				floatCPU += utils.CalculateCPUsF(*cpu.Quota, *cpu.Period, 0)
 			}
 
 			set, err := cpuset.Parse(cpu.Cpus)
