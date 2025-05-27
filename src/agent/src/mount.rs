@@ -22,7 +22,7 @@ use crate::linux_abi::*;
 
 pub const TYPE_ROOTFS: &str = "rootfs";
 
-const remount = Regex::new(r"remount").unwrap();
+let remount = Regex::new(r"remount").unwrap();
 
 #[derive(Debug, PartialEq)]
 pub struct InitMount<'a> {
