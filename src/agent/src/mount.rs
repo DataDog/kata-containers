@@ -22,6 +22,8 @@ use crate::linux_abi::*;
 
 pub const TYPE_ROOTFS: &str = "rootfs";
 
+const remount = Regex::new(r"remount").unwrap();
+
 #[derive(Debug, PartialEq)]
 pub struct InitMount<'a> {
     fstype: &'a str,
@@ -88,7 +90,7 @@ pub fn baremount(
 
     let destination_str = destination.to_string_lossy();
     if let Ok(m) = get_linux_mount_info(destination_str.deref()) {
-        if m.fs_type == fs_type {
+        if m.fs_type == fs_type && !remount.is_match(options) {
             slog_info!(logger, "{source:?} is already mounted at {destination:?}");
             return Ok(());
         }
