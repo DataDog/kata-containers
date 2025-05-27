@@ -22,8 +22,6 @@ use crate::linux_abi::*;
 
 pub const TYPE_ROOTFS: &str = "rootfs";
 
-let remount = Regex::new(r"remount").unwrap();
-
 #[derive(Debug, PartialEq)]
 pub struct InitMount<'a> {
     fstype: &'a str,
@@ -75,6 +73,7 @@ pub fn baremount(
     logger: &Logger,
 ) -> Result<()> {
     let logger = logger.new(o!("subsystem" => "baremount"));
+    let remount = Regex::new(r"remount").unwrap();
 
     if source.as_os_str().is_empty() {
         return Err(anyhow!("need mount source"));
