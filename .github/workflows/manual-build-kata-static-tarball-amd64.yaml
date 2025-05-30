@@ -1,6 +1,26 @@
-name: Build Kata OS
-run-name: Build Kata OS
-on: [push]
+name: CI | Build kata-static tarball for amd64
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        required: false
+        type: string
+        default: test
+      tarball-suffix:
+        required: false
+        type: string
+      push-to-registry:
+        required: false
+        type: string
+        default: no
+      commit-hash:
+        required: false
+        type: string
+      target-branch:
+        required: false
+        type: string
+        default: ""
+
 jobs:
   build-asset:
     runs-on: ubuntu-22.04
@@ -43,10 +63,27 @@ jobs:
         exclude:
           - asset: cloud-hypervisor-glibc
             stage: release
+    env:
+      PERFORM_ATTESTATION: ${{ matrix.asset == 'agent' && inputs.push-to-registry == 'yes' && 'yes' || 'no' }}
     steps:
+      - name: Login to Kata Containers quay.io
+        if: ${{ inputs.push-to-registry == 'yes' }}
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_DEPLOYER_USERNAME }}
+          password: ${{ secrets.QUAY_DEPLOYER_PASSWORD }}
+
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.commit-hash }}
           fetch-depth: 0 # This is needed in order to keep the commit ids history
+
+      - name: Rebase atop of the latest target branch
+        run: |
+          ./tests/git-helper.sh "rebase-atop-of-the-latest-target-branch"
+        env:
+          TARGET_BRANCH: ${{ inputs.target-branch }}
 
       - name: Build ${{ matrix.asset }}
         id: build
@@ -58,17 +95,45 @@ jobs:
         env:
           KATA_ASSET: ${{ matrix.asset }}
           TAR_OUTPUT: ${{ matrix.asset }}.tar.gz
-          PUSH_TO_REGISTRY: 'no'
+          PUSH_TO_REGISTRY: ${{ inputs.push-to-registry }}
           ARTEFACT_REGISTRY: ghcr.io
           ARTEFACT_REGISTRY_USERNAME: ${{ github.actor }}
           ARTEFACT_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
           TARGET_BRANCH: ${{ inputs.target-branch }}
           RELEASE: ${{ inputs.stage == 'release' && 'yes' || 'no' }}
 
+      - name: Parse OCI image name and digest
+        id: parse-oci-segments
+        if: ${{ env.PERFORM_ATTESTATION == 'yes' }}
+        run: |
+          oci_image="$(<"build/${{ matrix.asset }}-oci-image")"
+          echo "oci-name=${oci_image%@*}" >> "$GITHUB_OUTPUT"
+          echo "oci-digest=${oci_image#*@}" >> "$GITHUB_OUTPUT"
+
+      - uses: oras-project/setup-oras@5c0b487ce3fe0ce3ab0d034e63669e426e294e4d # v1.2.2
+        if: ${{ env.PERFORM_ATTESTATION == 'yes' }}
+        with:
+          version: "1.2.0"
+
+      # for pushing attestations to the registry
+      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        if: ${{ env.PERFORM_ATTESTATION == 'yes' }}
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/attest-build-provenance@v1
+        if: ${{ env.PERFORM_ATTESTATION == 'yes' }}
+        with:
+          subject-name: ${{ steps.parse-oci-segments.outputs.oci-name }}
+          subject-digest: ${{ steps.parse-oci-segments.outputs.oci-digest }}
+          push-to-registry: true
+
       - name: store-artifact ${{ matrix.asset }}
         uses: actions/upload-artifact@v4
         with:
-          name: kata-artifacts-amd64-${{ matrix.asset }}
+          name: kata-artifacts-amd64-${{ matrix.asset }}${{ inputs.tarball-suffix }}
           path: kata-build/kata-static-${{ matrix.asset }}.tar.xz
           retention-days: 15
           if-no-files-found: error
@@ -96,9 +161,24 @@ jobs:
           - rootfs-nvidia-gpu-initrd
           - rootfs-nvidia-gpu-confidential-initrd
     steps:
+      - name: Login to Kata Containers quay.io
+        if: ${{ inputs.push-to-registry == 'yes' }}
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_DEPLOYER_USERNAME }}
+          password: ${{ secrets.QUAY_DEPLOYER_PASSWORD }}
+
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.commit-hash }}
           fetch-depth: 0 # This is needed in order to keep the commit ids history
+
+      - name: Rebase atop of the latest target branch
+        run: |
+          ./tests/git-helper.sh "rebase-atop-of-the-latest-target-branch"
+        env:
+          TARGET_BRANCH: ${{ inputs.target-branch }}
 
       - name: get-artifacts
         uses: actions/download-artifact@v4
@@ -118,6 +198,7 @@ jobs:
         env:
           KATA_ASSET: ${{ matrix.asset }}
           TAR_OUTPUT: ${{ matrix.asset }}.tar.gz
+          PUSH_TO_REGISTRY: ${{ inputs.push-to-registry }}
           ARTEFACT_REGISTRY: ghcr.io
           ARTEFACT_REGISTRY_USERNAME: ${{ github.actor }}
           ARTEFACT_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
@@ -127,23 +208,69 @@ jobs:
       - name: store-artifact ${{ matrix.asset }}
         uses: actions/upload-artifact@v4
         with:
-          name: kata-artifacts-amd64-${{ matrix.asset }}
+          name: kata-artifacts-amd64-${{ matrix.asset }}${{ inputs.tarball-suffix }}
           path: kata-build/kata-static-${{ matrix.asset }}.tar.xz
           retention-days: 15
           if-no-files-found: error
+
+  # We don't need the binaries installed in the rootfs as part of the release tarball, so can delete them now we've built the rootfs
+  remove-rootfs-binary-artifacts:
+    runs-on: ubuntu-22.04
+    needs: build-asset-rootfs
+    strategy:
+      matrix:
+        asset:
+          - busybox
+          - coco-guest-components
+          - kernel-nvidia-gpu-headers
+          - kernel-nvidia-gpu-confidential-headers
+          - pause-image
+    steps:
+      - uses: geekyeggo/delete-artifact@f275313e70c08f6120db482d7a6b98377786765b # v5.1.0
+        with:
+          name: kata-artifacts-amd64-${{ matrix.asset}}${{ inputs.tarball-suffix }}
+
+  # We don't need the binaries installed in the rootfs as part of the release tarball, so can delete them now we've built the rootfs
+  remove-rootfs-binary-artifacts-for-release:
+    runs-on: ubuntu-22.04
+    needs: build-asset-rootfs
+    strategy:
+      matrix:
+        asset:
+          - agent
+    steps:
+      - uses: geekyeggo/delete-artifact@f275313e70c08f6120db482d7a6b98377786765b # v5.1.0
+        if: ${{ inputs.stage == 'release' }}
+        with:
+          name: kata-artifacts-amd64-${{ matrix.asset}}${{ inputs.tarball-suffix }}
 
   build-asset-shim-v2:
     runs-on: ubuntu-22.04
     needs: [build-asset, build-asset-rootfs, remove-rootfs-binary-artifacts, remove-rootfs-binary-artifacts-for-release]
     steps:
+      - name: Login to Kata Containers quay.io
+        if: ${{ inputs.push-to-registry == 'yes' }}
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_DEPLOYER_USERNAME }}
+          password: ${{ secrets.QUAY_DEPLOYER_PASSWORD }}
+
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.commit-hash }}
           fetch-depth: 0 # This is needed in order to keep the commit ids history
+
+      - name: Rebase atop of the latest target branch
+        run: |
+          ./tests/git-helper.sh "rebase-atop-of-the-latest-target-branch"
+        env:
+          TARGET_BRANCH: ${{ inputs.target-branch }}
 
       - name: get-artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: kata-artifacts-amd64-*
+          pattern: kata-artifacts-amd64-*${{ inputs.tarball-suffix }}
           path: kata-artifacts
           merge-multiple: true
 
@@ -158,6 +285,7 @@ jobs:
         env:
           KATA_ASSET: shim-v2
           TAR_OUTPUT: shim-v2.tar.gz
+          PUSH_TO_REGISTRY: ${{ inputs.push-to-registry }}
           ARTEFACT_REGISTRY: ghcr.io
           ARTEFACT_REGISTRY_USERNAME: ${{ github.actor }}
           ARTEFACT_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
@@ -179,99 +307,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.commit-hash }}
           fetch-depth: 0
-
+      - name: Rebase atop of the latest target branch
+        run: |
+          ./tests/git-helper.sh "rebase-atop-of-the-latest-target-branch"
+        env:
+          TARGET_BRANCH: ${{ inputs.target-branch }}
       - name: get-artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: kata-artifacts-amd64-*${{ inputs.tarball-suffix }}
           path: kata-artifacts
           merge-multiple: true
-
       - name: merge-artifacts
         run: |
           ./tools/packaging/kata-deploy/local-build/kata-deploy-merge-builds.sh kata-artifacts versions.yaml
-
       - name: store-artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: kata-static-tarball-amd64.tar.xz
+          name: kata-static-tarball-amd64${{ inputs.tarball-suffix }}
           path: kata-static.tar.xz
           retention-days: 15
           if-no-files-found: error
-
-  build:
-    strategy:
-      matrix:
-        runner: [ubuntu-22.04, arm-8core-linux]
-        include:
-          - runner: ubuntu-22.04
-            arch: amd64
-            kernel_version: 6.8
-          - runner: arm-8core-linux
-            arch: arm64
-            kernel_version: 6.8
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - name: Check out repository code
-        uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ">=1.24.0"
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y libelf-dev flex bison
-      - name: Build Ubuntu image ${{ matrix.arch }}
-        run: cd tools/osbuilder && sudo make USE_DOCKER=true OS_VERSION=jammy image-ubuntu
-      - name: Build Kernel ${{ matrix.kernel_version }}
-        run: |
-          cd tools/packaging/kernel
-          sudo ./build-kernel.sh -v ${{ matrix.kernel_version }} setup
-          sudo ./build-kernel.sh -v ${{ matrix.kernel_version }} build
-      - name: Build containerd-shim-kata-v2
-        run: |
-          cd src/runtime
-          make -j$(nproc) containerd-shim-v2
-      - name: Bundle artifacts
-        run: |
-          cp tools/packaging/kernel/kata-linux-*/vmlinux /tmp/vmlinux
-          cp tools/osbuilder/kata-containers-image-ubuntu.img /tmp/kata-containers-image-ubuntu.img
-          cp sbom.cdx.gz /tmp/sbom.cdx.gz
-          cp src/runtime/containerd-shim-kata-v2 /tmp/containerd-shim-kata-v2
-          mkdir -p /tmp/artifacts
-          zip -j /tmp/artifacts/artifacts-${{ matrix.arch }}.zip /tmp/vmlinux /tmp/kata-containers-image-ubuntu.img /tmp/sbom.cdx.gz /tmp/containerd-shim-kata-v2
-          cd /tmp/artifacts
-          sha256sum artifacts-${{ matrix.arch }}.zip > checksum-${{ matrix.arch }}.sha256
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: artifacts-${{ matrix.arch }}
-          path: /tmp/artifacts
-          retention-days: 1
-  release:
-    runs-on: ubuntu-22.04
-    needs: build
-    # Only create a release when a new tag is created
-    if: ${{ startsWith(github.ref, 'refs/tags/') }}
-    steps:
-      - name: Check out repository code
-        uses: actions/checkout@v4
-      - name: Download artifacts amd64
-        uses: actions/download-artifact@v4
-        with:
-          name: artifacts-amd64
-      - name: Download artifacts arm64
-        uses: actions/download-artifact@v4
-        with:
-          name: artifacts-arm64
-      - name: "Create New Release"
-        env:
-          GH_TOKEN: ${{ secrets.WORKFLOW_TOKEN }}
-        run: |
-          RELEASE_VERSION=$(echo ${{ github.ref }} | sed 's/refs\/tags\///')
-          echo "Creating release $RELEASE_VERSION"
-          gh release create ${RELEASE_VERSION} -t ${RELEASE_VERSION} --draft
-          gh release upload "${RELEASE_VERSION}" artifacts-amd64.zip
-          gh release upload "${RELEASE_VERSION}" artifacts-arm64.zip
-          gh release upload "${RELEASE_VERSION}" checksum-amd64.sha256
-          gh release upload "${RELEASE_VERSION}" checksum-arm64.sha256
-          gh release edit ${RELEASE_VERSION} --verify-tag	--draft=false
