@@ -123,6 +123,7 @@ jobs:
           ARTEFACT_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
           TARGET_BRANCH: ${{ inputs.target-branch }}
           RELEASE: ${{ inputs.stage == 'release' && 'yes' || 'no' }}
+          DISTRO: ubuntu
 
       - name: store-artifact ${{ matrix.asset }}
         uses: actions/upload-artifact@v4
