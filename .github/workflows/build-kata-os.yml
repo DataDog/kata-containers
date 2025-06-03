@@ -264,6 +264,10 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: artifacts-arm64
+      - name: Download kata-static-tarball-amd64.tar.xz artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: kata-static-tarball-amd64.tar.xz
       - name: "Create New Release"
         env:
           GH_TOKEN: ${{ secrets.WORKFLOW_TOKEN }}
