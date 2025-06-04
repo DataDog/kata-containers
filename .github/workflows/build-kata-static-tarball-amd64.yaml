@@ -29,7 +29,7 @@ jobs:
     strategy:
       matrix:
         asset:
-          #- agent
+          - agent
           - agent-ctl
           #- busybox
           - cloud-hypervisor
@@ -48,7 +48,7 @@ jobs:
           - nydus
           - ovmf
           - ovmf-sev
-          #- pause-image
+          - pause-image
           - qemu
           - qemu-snp-experimental
           - qemu-tdx-experimental
