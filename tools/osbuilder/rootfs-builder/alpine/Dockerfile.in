@@ -15,6 +15,7 @@ RUN apk update && apk add --no-cache \
     cmake \
     coreutils \
     curl \
+    findutils \
     g++ \
     gcc \
     git \
