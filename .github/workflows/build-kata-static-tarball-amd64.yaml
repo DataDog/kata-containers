@@ -26,9 +26,6 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: read
-      packages: write
-      id-token: write
-      attestations: write
     strategy:
       matrix:
         asset:
@@ -66,14 +63,6 @@ jobs:
     env:
       PERFORM_ATTESTATION: ${{ matrix.asset == 'agent' && inputs.push-to-registry == 'yes' && 'yes' || 'no' }}
     steps:
-      - name: Login to Kata Containers quay.io
-        if: ${{ inputs.push-to-registry == 'yes' }}
-        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
-        with:
-          registry: quay.io
-          username: ${{ secrets.QUAY_DEPLOYER_USERNAME }}
-          password: ${{ secrets.QUAY_DEPLOYER_PASSWORD }}
-
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.commit-hash }}
@@ -109,19 +98,6 @@ jobs:
           oci_image="$(<"build/${{ matrix.asset }}-oci-image")"
           echo "oci-name=${oci_image%@*}" >> "$GITHUB_OUTPUT"
           echo "oci-digest=${oci_image#*@}" >> "$GITHUB_OUTPUT"
-
-      - uses: oras-project/setup-oras@5c0b487ce3fe0ce3ab0d034e63669e426e294e4d # v1.2.2
-        if: ${{ env.PERFORM_ATTESTATION == 'yes' }}
-        with:
-          version: "1.2.0"
-
-      # for pushing attestations to the registry
-      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
-        if: ${{ env.PERFORM_ATTESTATION == 'yes' }}
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/attest-build-provenance@v1
         if: ${{ env.PERFORM_ATTESTATION == 'yes' }}
@@ -161,14 +137,6 @@ jobs:
           - rootfs-nvidia-gpu-initrd
           - rootfs-nvidia-gpu-confidential-initrd
     steps:
-      - name: Login to Kata Containers quay.io
-        if: ${{ inputs.push-to-registry == 'yes' }}
-        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
-        with:
-          registry: quay.io
-          username: ${{ secrets.QUAY_DEPLOYER_USERNAME }}
-          password: ${{ secrets.QUAY_DEPLOYER_PASSWORD }}
-
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.commit-hash }}
@@ -213,48 +181,11 @@ jobs:
           retention-days: 15
           if-no-files-found: error
 
-  # We don't need the binaries installed in the rootfs as part of the release tarball, so can delete them now we've built the rootfs
-  remove-rootfs-binary-artifacts:
-    runs-on: ubuntu-22.04
-    needs: build-asset-rootfs
-    strategy:
-      matrix:
-        asset:
-          - busybox
-          - coco-guest-components
-          - kernel-nvidia-gpu-headers
-          - kernel-nvidia-gpu-confidential-headers
-          - pause-image
-    steps:
-      - uses: geekyeggo/delete-artifact@f275313e70c08f6120db482d7a6b98377786765b # v5.1.0
-        with:
-          name: kata-artifacts-amd64-${{ matrix.asset}}${{ inputs.tarball-suffix }}
-
-  # We don't need the binaries installed in the rootfs as part of the release tarball, so can delete them now we've built the rootfs
-  remove-rootfs-binary-artifacts-for-release:
-    runs-on: ubuntu-22.04
-    needs: build-asset-rootfs
-    strategy:
-      matrix:
-        asset:
-          - agent
-    steps:
-      - uses: geekyeggo/delete-artifact@f275313e70c08f6120db482d7a6b98377786765b # v5.1.0
-        if: ${{ inputs.stage == 'release' }}
-        with:
-          name: kata-artifacts-amd64-${{ matrix.asset}}${{ inputs.tarball-suffix }}
 
   build-asset-shim-v2:
     runs-on: ubuntu-22.04
-    needs: [build-asset, build-asset-rootfs, remove-rootfs-binary-artifacts, remove-rootfs-binary-artifacts-for-release]
+    needs: [build-asset, build-asset-rootfs]
     steps:
-      - name: Login to Kata Containers quay.io
-        if: ${{ inputs.push-to-registry == 'yes' }}
-        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
-        with:
-          registry: quay.io
-          username: ${{ secrets.QUAY_DEPLOYER_USERNAME }}
-          password: ${{ secrets.QUAY_DEPLOYER_PASSWORD }}
 
       - uses: actions/checkout@v4
         with:

@@ -2,6 +2,12 @@ name: Build Kata OS
 run-name: Build Kata OS
 on: [push]
 jobs:
+
+  build-kata-static-tarball-amd64:
+    uses: ./.github/workflows/build-kata-static-tarball-amd64.yaml
+    with:
+      stage: release
+
   build:
     strategy:
       matrix:
