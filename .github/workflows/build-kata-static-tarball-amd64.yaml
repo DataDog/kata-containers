@@ -29,12 +29,12 @@ jobs:
     strategy:
       matrix:
         asset:
-          - agent
+          #- agent
           - agent-ctl
-          - busybox
+          #- busybox
           - cloud-hypervisor
           - cloud-hypervisor-glibc
-          - coco-guest-components
+          #- coco-guest-components
           - csi-kata-directvolume
           - firecracker
           - genpolicy
@@ -48,7 +48,7 @@ jobs:
           - nydus
           - ovmf
           - ovmf-sev
-          - pause-image
+          #- pause-image
           - qemu
           - qemu-snp-experimental
           - qemu-tdx-experimental
@@ -111,15 +111,6 @@ jobs:
         with:
           name: kata-artifacts-amd64-${{ matrix.asset }}${{ inputs.tarball-suffix }}
           path: kata-build/kata-static-${{ matrix.asset }}.tar.xz
-          retention-days: 15
-          if-no-files-found: error
-
-      - name: store-extratarballs-artifact ${{ matrix.asset }}
-        if: ${{ startsWith(matrix.asset, 'kernel-nvidia-gpu') }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: kata-artifacts-amd64-${{ matrix.asset }}-headers${{ inputs.tarball-suffix }}
-          path: kata-build/kata-static-${{ matrix.asset }}-headers.tar.xz
           retention-days: 15
           if-no-files-found: error
 
