@@ -279,5 +279,5 @@ jobs:
           gh release upload "${RELEASE_VERSION}" artifacts-arm64.zip
           gh release upload "${RELEASE_VERSION}" checksum-amd64.sha256
           gh release upload "${RELEASE_VERSION}" checksum-arm64.sha256
-          gh release upload "${RELEASE_VERSION}" kata-static-tarball-amd64.tar.xz
+          gh release upload "${RELEASE_VERSION}" kata-static.tar.xz
           gh release edit ${RELEASE_VERSION} --verify-tag	--draft=false
