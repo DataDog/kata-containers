@@ -34,7 +34,7 @@ jobs:
           #- busybox
           - cloud-hypervisor
           - cloud-hypervisor-glibc
-          #- coco-guest-components
+          - coco-guest-components
           - csi-kata-directvolume
           - firecracker
           - genpolicy
