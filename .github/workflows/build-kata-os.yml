@@ -139,10 +139,46 @@ jobs:
           path: kata-build/kata-static-${{ matrix.asset }}.tar.xz
           retention-days: 15
           if-no-files-found: error
+  build-asset-shim-v2:
+    runs-on: ubuntu-22.04
+    needs: [build-asset, build-asset-rootfs]
+    steps:
+      - uses: actions/checkout@v4
+      - name: get-artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: kata-artifacts-amd64-*
+          path: kata-artifacts
+          merge-multiple: true
+
+      - name: Build shim-v2
+        id: build
+        run: |
+          ./tests/gha-adjust-to-use-prebuilt-components.sh kata-artifacts "${KATA_ASSET}"
+          make "${KATA_ASSET}-tarball"
+          build_dir=$(readlink -f build)
+          # store-artifact does not work with symlink
+          mkdir -p kata-build && cp "${build_dir}"/kata-static-"${KATA_ASSET}"*.tar.* kata-build/.
+        env:
+          KATA_ASSET: shim-v2
+          TAR_OUTPUT: shim-v2.tar.gz
+          ARTEFACT_REGISTRY: ghcr.io
+          ARTEFACT_REGISTRY_USERNAME: ${{ github.actor }}
+          ARTEFACT_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE: yes
+          MEASURED_ROOTFS: yes
+
+      - name: store-artifact shim-v2
+        uses: actions/upload-artifact@v4
+        with:
+          name: kata-artifacts-amd64-shim-v2
+          path: kata-build/kata-static-shim-v2.tar.xz
+          retention-days: 15
+          if-no-files-found: error
 
   create-kata-tarball:
     runs-on: ubuntu-latest-dd
-    needs: [build-asset, build-asset-rootfs]
+    needs: [build-asset, build-asset-rootfs, build-asset-shim-v2]
     steps:
       - uses: actions/checkout@v4
       - name: get-artifacts
