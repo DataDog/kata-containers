@@ -49,9 +49,122 @@ jobs:
           name: artifacts-${{ matrix.arch }}
           path: /tmp/artifacts
           retention-days: 1
+  build-asset:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        asset:
+          - agent
+          - agent-ctl
+          - cloud-hypervisor
+          - csi-kata-directvolume
+          - firecracker
+          - genpolicy
+          - kata-ctl
+          - kata-manager
+          - kernel
+          - kernel-confidential
+          - kernel-dragonball-experimental
+          - nydus
+          - ovmf
+          - ovmf-sev
+          - qemu
+          - qemu-snp-experimental
+          - qemu-tdx-experimental
+          - stratovirt
+          - trace-forwarder
+          - virtiofsd
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ${{ matrix.asset }}
+        id: build
+        run: |
+          make "${KATA_ASSET}-tarball"
+          build_dir=$(readlink -f build)
+          # store-artifact does not work with symlink
+          mkdir -p kata-build && cp "${build_dir}"/kata-static-"${KATA_ASSET}"*.tar.* kata-build/.
+        env:
+          KATA_ASSET: ${{ matrix.asset }}
+          TAR_OUTPUT: ${{ matrix.asset }}.tar.gz
+          ARTEFACT_REGISTRY: ghcr.io
+          ARTEFACT_REGISTRY_USERNAME: ${{ github.actor }}
+          ARTEFACT_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE: yes
+
+      - name: store-artifact ${{ matrix.asset }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: kata-artifacts-amd64-${{ matrix.asset }}
+          path: kata-build/kata-static-${{ matrix.asset }}.tar.xz
+          retention-days: 15
+          if-no-files-found: error
+
+  build-asset-rootfs:
+    runs-on: ubuntu-22.04
+    needs: build-asset
+    strategy:
+      matrix:
+        asset:
+          - rootfs-image
+          - rootfs-initrd
+    steps:
+      - uses: actions/checkout@v4
+      - name: get-artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: kata-artifacts-amd64-*
+          path: kata-artifacts
+          merge-multiple: true
+
+      - name: Build ${{ matrix.asset }}
+        id: build
+        run: |
+          ./tests/gha-adjust-to-use-prebuilt-components.sh kata-artifacts "${KATA_ASSET}"
+          make "${KATA_ASSET}-tarball"
+          build_dir=$(readlink -f build)
+          # store-artifact does not work with symlink
+          mkdir -p kata-build && cp "${build_dir}"/kata-static-"${KATA_ASSET}"*.tar.* kata-build/.
+        env:
+          KATA_ASSET: ${{ matrix.asset }}
+          TAR_OUTPUT: ${{ matrix.asset }}.tar.gz
+          ARTEFACT_REGISTRY: ghcr.io
+          ARTEFACT_REGISTRY_USERNAME: ${{ github.actor }}
+          ARTEFACT_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE: yes
+
+      - name: store-artifact ${{ matrix.asset }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: kata-artifacts-amd64-${{ matrix.asset }}
+          path: kata-build/kata-static-${{ matrix.asset }}.tar.xz
+          retention-days: 15
+          if-no-files-found: error
+
+  create-kata-tarball:
+    runs-on: ubuntu-22.04
+    needs: [build-asset, build-asset-rootfs]
+    steps:
+      - uses: actions/checkout@v4
+      - name: get-artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: kata-artifacts-amd64-*
+          path: kata-artifacts
+          merge-multiple: true
+      - name: merge-artifacts
+        run: |
+          ./tools/packaging/kata-deploy/local-build/kata-deploy-merge-builds.sh kata-artifacts versions.yaml
+      - name: store-artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kata-static-tarball-amd64
+          path: kata-static.tar.xz
+          retention-days: 15
+          if-no-files-found: error  
+
   release:
     runs-on: ubuntu-22.04
-    needs: build
+    needs: [build, create-kata-tarball]
     # Only create a release when a new tag is created
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
     steps:
@@ -65,6 +178,10 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: artifacts-arm64
+      - name: Download kata-static-tarball-amd64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: kata-static-tarball-amd64
       - name: "Create New Release"
         env:
           GH_TOKEN: ${{ secrets.WORKFLOW_TOKEN }}
@@ -76,4 +193,5 @@ jobs:
           gh release upload "${RELEASE_VERSION}" artifacts-arm64.zip
           gh release upload "${RELEASE_VERSION}" checksum-amd64.sha256
           gh release upload "${RELEASE_VERSION}" checksum-arm64.sha256
+          gh release upload "${RELEASE_VERSION}" kata-static.tar.xz
           gh release edit ${RELEASE_VERSION} --verify-tag	--draft=false
