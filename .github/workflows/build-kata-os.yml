@@ -50,7 +50,7 @@ jobs:
           path: /tmp/artifacts
           retention-days: 1
   build-asset:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest-dd
     strategy:
       matrix:
         asset:
@@ -100,7 +100,7 @@ jobs:
           if-no-files-found: error
 
   build-asset-rootfs:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest-dd
     needs: build-asset
     strategy:
       matrix:
@@ -141,7 +141,7 @@ jobs:
           if-no-files-found: error
 
   create-kata-tarball:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest-dd
     needs: [build-asset, build-asset-rootfs]
     steps:
       - uses: actions/checkout@v4
@@ -160,7 +160,7 @@ jobs:
           name: kata-static-tarball-amd64
           path: kata-static.tar.xz
           retention-days: 15
-          if-no-files-found: error  
+          if-no-files-found: error
 
   release:
     runs-on: ubuntu-22.04
