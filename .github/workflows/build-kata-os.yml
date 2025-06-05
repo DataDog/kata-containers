@@ -5,9 +5,9 @@ jobs:
   build:
     strategy:
       matrix:
-        runner: [ubuntu-22.04, arm-8core-linux]
+        runner: [ubuntu-latest-dd, arm-8core-linux]
         include:
-          - runner: ubuntu-22.04
+          - runner: ubuntu-latest-dd
             arch: amd64
             kernel_version: 6.8
           - runner: arm-8core-linux
@@ -163,7 +163,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest-dd
     needs: [build, create-kata-tarball]
     # Only create a release when a new tag is created
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
