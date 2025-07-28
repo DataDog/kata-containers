@@ -74,7 +74,7 @@ publish-oci-image:
     - "build-kernel-arm64"
   variables:
     EXTRA_ARGS: "-f Dockerfile"
-    IMAGE_TAG: "${CI_COMMIT_REF_NAME:-latest}"
+    IMAGE_TAG: "$CI_COMMIT_REF_SLUG"
   only:
     - branches
     - tags
