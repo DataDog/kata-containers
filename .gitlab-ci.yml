@@ -65,3 +65,17 @@ publish-artifacts:
     - aws s3 cp tools/packaging/kernel/vmlinux-amd64 s3://kata-containers-ci-artifacts/$CI_COMMIT_REF_NAME/amd64/vmlinux
     - aws s3 cp tools/packaging/kernel/vmlinux-arm64 s3://kata-containers-ci-artifacts/$CI_COMMIT_REF_NAME/arm64/vmlinux
     - echo $CI_COMMIT_REF_NAME > LATEST && aws s3 cp LATEST s3://kata-containers-ci-artifacts/LATEST
+
+publish-oci-image:
+  stage: publish
+  extends: .build-docker-image
+  dependencies:
+    - "build-kernel-amd64"
+    - "build-kernel-arm64"
+  variables:
+    EXTRA_ARGS: "-f Dockerfile"
+    IMAGE_TAG: "${CI_COMMIT_REF_NAME:-latest}"
+  only:
+    - branches
+    - tags
+    
