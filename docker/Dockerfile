@@ -4,7 +4,7 @@ FROM ubuntu:22.04 AS builder
 # Set environment variables for versions
 ARG KATA_VERSION=3.18.0
 ARG KATA_URL="https://github.com/kata-containers/kata-containers/releases/download/3.18.0/kata-static-3.18.0-amd64.tar.xz"
-ARG KATA_CHECKSUM="sha256:ee3dfd665e458a129afb58927143b6bd9acafc4caf4c892312a2bf0124c57a21"
+ARG KATA_CHECKSUM="ee3dfd665e458a129afb58927143b6bd9acafc4caf4c892312a2bf0124c57a21"
 
 # Install packages and download kata package
 RUN apt-get update && \
@@ -51,10 +51,9 @@ RUN wget -q "${KATA_URL}" -O /tmp/kata.tar.xz && \
         './opt/kata/share/kata-qemu/qemu/qemu-nsis.bmp' \
         './opt/kata/share/defaults/kata-containers/configuration-qemu.toml'
 
-# Copy CI-built artifacts
+# Copy CI-built artifacts (kernels will override the upstream ones)
 COPY tools/packaging/kernel/vmlinux-amd64 /kata-build/opt/kata/share/kata-containers/vmlinux-amd64
 COPY tools/packaging/kernel/vmlinux-arm64 /kata-build/opt/kata/share/kata-containers/vmlinux-arm64
-COPY tools/osbuilder/kata-containers-image-ubuntu.img /kata-build/opt/kata/share/kata-containers/kata-containers.img
 
 # Link configuration
 RUN ln /kata-build/opt/kata/share/defaults/kata-containers/configuration-qemu.toml /kata-build/opt/kata/conf/qemu/configuration-qemu.toml
@@ -64,4 +63,4 @@ COPY docker/10-override.toml /kata-build/opt/kata/conf/qemu/config.d/10-override
 
 # Final scratch-based data volume
 FROM scratch
-COPY --from=builder /kata-build /
+COPY --from=builder /kata-build/opt/kata /opt/kata
