@@ -73,7 +73,7 @@ publish-oci-image:
     - "build-kernel-amd64"
     - "build-kernel-arm64"
   variables:
-    EXTRA_ARGS: "-f Dockerfile"
+    EXTRA_ARGS: "-f docker/Dockerfile"
     IMAGE_TAG: "$CI_COMMIT_REF_SLUG"
   only:
     - branches
