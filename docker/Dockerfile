@@ -55,6 +55,11 @@ RUN wget -q "${KATA_URL}" -O /tmp/kata.tar.xz && \
 COPY tools/packaging/kernel/vmlinux-amd64 /kata-build/opt/kata/share/kata-containers/vmlinux-amd64
 COPY tools/packaging/kernel/vmlinux-arm64 /kata-build/opt/kata/share/kata-containers/vmlinux-arm64
 
+# Copy CI-built shim binary
+# This should be built by the CI pipeline and placed in the expected location
+COPY src/runtime/containerd-shim-kata-v2 /kata-build/opt/kata/bin/containerd-shim-kata-v2
+RUN chmod +x /kata-build/opt/kata/bin/containerd-shim-kata-v2
+
 # Link configuration
 RUN ln /kata-build/opt/kata/share/defaults/kata-containers/configuration-qemu.toml /kata-build/opt/kata/conf/qemu/configuration-qemu.toml
 
