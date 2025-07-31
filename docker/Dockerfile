@@ -49,11 +49,23 @@ RUN wget -q "${KATA_URL}" -O /tmp/kata.tar.xz && \
         './opt/kata/share/kata-qemu/qemu/pvh.bin' \
         './opt/kata/share/kata-qemu/qemu/qboot.rom' \
         './opt/kata/share/kata-qemu/qemu/qemu-nsis.bmp' \
-        './opt/kata/share/defaults/kata-containers/configuration-qemu.toml'
+        './opt/kata/share/defaults/kata-containers/configuration-qemu.toml' \
+        './opt/kata/share/kata-containers/kata-containers.img' && \
+    mv /kata-build/opt/kata/share/kata-containers/kata-containers.img /kata-build/opt/kata/share/kata-containers/kata-containers-datadog.img && \
+    rm -f /tmp/kata.tar.xz
 
-# Copy CI-built artifacts (kernels will override the upstream ones)
-COPY tools/packaging/kernel/vmlinux-amd64 /kata-build/opt/kata/share/kata-containers/vmlinux-amd64
-COPY tools/packaging/kernel/vmlinux-arm64 /kata-build/opt/kata/share/kata-containers/vmlinux-arm64
+# Copy CI-built kernel for the target architecture and rename to datadog convention
+ARG TARGETARCH
+COPY tools/packaging/kernel/vmlinux-${TARGETARCH} /kata-build/opt/kata/share/kata-containers/vmlinux-datadog
+
+# Copy CI-built shim binary
+# This should be built by the CI pipeline and placed in the expected location
+COPY src/runtime/containerd-shim-kata-v2 /kata-build/opt/kata/bin/containerd-shim-kata-v2
+RUN chmod +x /kata-build/opt/kata/bin/containerd-shim-kata-v2
+
+# Create symlinks for kata-containers.img and vmlinux
+RUN ln -s /opt/kata/share/kata-containers/kata-containers-datadog.img /kata-build/opt/kata/share/kata-containers/kata-containers.img && \
+    ln -s /opt/kata/share/kata-containers/vmlinux-datadog /kata-build/opt/kata/share/kata-containers/vmlinux.container
 
 # Link configuration
 RUN ln /kata-build/opt/kata/share/defaults/kata-containers/configuration-qemu.toml /kata-build/opt/kata/conf/qemu/configuration-qemu.toml

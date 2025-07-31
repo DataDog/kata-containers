@@ -50,6 +50,18 @@ build-kernel-arm64:
       - tools/packaging/kernel/vmlinux-arm64
     expire_in: 1 week
 
+build-shim-amd64:
+  image: registry.ddbuild.io/images/mirror/library/golang:1.23.10
+  stage: build
+  tags: [ "arch:amd64" ]
+  script:
+    - cd src/runtime
+    - make containerd-shim-v2
+  artifacts:
+    paths:
+      - src/runtime/containerd-shim-kata-v2
+    expire_in: 1 week
+
 publish-artifacts:
   image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:$CI_IMAGE
   stage: publish
@@ -72,6 +84,7 @@ publish-oci-image:
   dependencies:
     - "build-kernel-amd64"
     - "build-kernel-arm64"
+    - "build-shim-amd64"
   variables:
     EXTRA_ARGS: "-f docker/Dockerfile"
     IMAGE_TAG: "$CI_COMMIT_REF_SLUG"
