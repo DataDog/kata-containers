@@ -1,12 +1,10 @@
 # Builder stage
 FROM ubuntu:22.04 AS builder
 
-# Set environment variables for versions
-ARG KATA_VERSION=3.18.0
-ARG KATA_URL="https://github.com/kata-containers/kata-containers/releases/download/3.18.0/kata-static-3.18.0-amd64.tar.xz"
-ARG KATA_CHECKSUM="ee3dfd665e458a129afb58927143b6bd9acafc4caf4c892312a2bf0124c57a21"
+# CI_COMMIT_TAG will be passed as build arg (e.g., 3.18.0-dd.202526)
+ARG CI_COMMIT_TAG
 
-# Install packages and download kata package
+# Install packages
 RUN apt-get update && \
     apt-get install -y curl wget unzip xz-utils ca-certificates && \
     rm -rf /var/lib/apt/lists/*
@@ -18,8 +16,10 @@ RUN mkdir -p /kata-build/opt/kata/bin \
              /kata-build/opt/kata/share/kata-containers
 
 # Download and extract kata package
-RUN wget -q "${KATA_URL}" -O /tmp/kata.tar.xz && \
-    echo "${KATA_CHECKSUM}  /tmp/kata.tar.xz" | sha256sum -c - && \
+# Extract version from tag and construct URL
+RUN KATA_VERSION=${CI_COMMIT_TAG%-dd.*} && \
+    echo "Downloading kata ${KATA_VERSION} from tag ${CI_COMMIT_TAG}" && \
+    wget -q "https://github.com/kata-containers/kata-containers/releases/download/${KATA_VERSION}/kata-static-${KATA_VERSION}-amd64.tar.xz" -O /tmp/kata.tar.xz && \
     tar -xJf /tmp/kata.tar.xz -C /kata-build \
         './opt/kata/bin/qemu-system-x86_64' \
         './opt/kata/libexec/virtiofsd' \
