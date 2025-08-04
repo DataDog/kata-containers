@@ -13,7 +13,8 @@ RUN apt-get update && \
 RUN mkdir -p /kata-build/opt/kata/bin \
              /kata-build/opt/kata/conf/qemu/config.d \
              /kata-build/opt/kata/libexec \
-             /kata-build/opt/kata/share/kata-containers
+             /kata-build/opt/kata/share/kata-containers \
+             /kata-build/etc/containerd/config.d
 
 # Download and extract kata package
 # Extract version from tag and construct URL
@@ -73,6 +74,10 @@ RUN ln /kata-build/opt/kata/share/defaults/kata-containers/configuration-qemu.to
 # Copy override configuration
 COPY docker/10-override.toml /kata-build/opt/kata/conf/qemu/config.d/10-override.toml
 
+# Copy containerd runtime dropin
+COPY docker/20-kata-runtime.toml /kata-build/etc/containerd/config.d/20-kata-runtime.toml
+
 # Final scratch-based data volume
 FROM scratch
 COPY --from=builder /kata-build/opt/kata /opt/kata
+COPY --from=builder /kata-build/etc/containerd /etc/containerd
