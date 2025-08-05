@@ -128,6 +128,18 @@ build-shim-rust-arm64:
       - src/runtime-rs/containerd-shim-kata-v2-rust-arm64
     expire_in: 1 week
 
+build-shim-amd64:
+  image: registry.ddbuild.io/images/mirror/library/golang:1.23.10
+  stage: build
+  tags: [ "arch:amd64" ]
+  script:
+    - cd src/runtime
+    - make containerd-shim-v2
+  artifacts:
+    paths:
+      - src/runtime/containerd-shim-kata-v2
+    expire_in: 1 week
+
 publish-artifacts:
   image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:$CI_IMAGE
   stage: publish
@@ -149,3 +161,17 @@ publish-artifacts:
     - aws s3 cp src/runtime-rs/containerd-shim-kata-v2-rust-amd64 s3://kata-containers-ci-artifacts/$CI_COMMIT_REF_NAME/amd64/containerd-shim-kata-v2
     - aws s3 cp src/runtime-rs/containerd-shim-kata-v2-rust-arm64 s3://kata-containers-ci-artifacts/$CI_COMMIT_REF_NAME/arm64/containerd-shim-kata-v2
     - echo $CI_COMMIT_REF_NAME > LATEST && aws s3 cp LATEST s3://kata-containers-ci-artifacts/LATEST
+
+publish-oci-image:
+  stage: publish
+  extends: .build-docker-image
+  dependencies:
+    - "build-kernel-amd64"
+    - "build-kernel-arm64"
+    - "build-shim-amd64"
+  variables:
+    EXTRA_ARGS: "-f docker/Dockerfile --build-arg CI_COMMIT_TAG=$CI_COMMIT_TAG"
+    IMAGE_TAG: "$CI_COMMIT_REF_SLUG"
+  only:
+    - tags
+    
