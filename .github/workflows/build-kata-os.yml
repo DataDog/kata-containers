@@ -1,6 +1,8 @@
 name: Build Kata OS
 run-name: Build Kata OS
 on: [push]
+permissions:
+  contents: write
 jobs:
   build:
     strategy:
