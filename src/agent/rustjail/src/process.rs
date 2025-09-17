@@ -10,8 +10,8 @@ use tokio::sync::mpsc::Sender;
 use tokio_vsock::VsockStream;
 
 use nix::errno::Errno;
-use nix::fcntl::{fcntl, open, FcntlArg, OFlag};
-use nix::sys::{stat, wait, wait::WaitStatus};
+use nix::fcntl::{fcntl, FcntlArg, OFlag};
+use nix::sys::wait::{self, WaitStatus};
 use nix::unistd::{self, Pid};
 use nix::Result;
 
@@ -175,27 +175,9 @@ impl Process {
             } else {
                 info!(logger, "created console socket!");
 
-                // Optimisation: if no stdin is provided for this process, use /dev/null directly
-                // instead of creating a pipe that will never be used.
-                let has_stdin = p.proc_io.as_ref().is_none_or(|io| io.stdin.is_some());
-                if !has_stdin {
-                    let null_fd = open(
-                        "/dev/null",
-                        OFlag::O_RDONLY | OFlag::O_CLOEXEC,
-                        stat::Mode::empty(),
-                    )?;
-                    p.stdin = Some(null_fd);
-                    p.parent_stdin = None;
-                } else {
-                    let (stdin, pstdin) = unistd::pipe2(OFlag::O_CLOEXEC)?;
-                    p.parent_stdin = Some(pstdin);
-                    p.stdin = Some(stdin);
-
-                    // Make sure the parent stdin writer be inserted into
-                    // p.writes hashmap, thus the cleanup_process_stream can
-                    // cleanup and close the parent stdin fd.
-                    let _ = p.get_writer(StreamType::ParentStdin);
-                }
+                let (stdin, pstdin) = unistd::pipe2(OFlag::O_CLOEXEC)?;
+                p.parent_stdin = Some(pstdin);
+                p.stdin = Some(stdin);
 
                 // These pipes are necessary as the stdout/stderr of the child process
                 // cannot be a socket. Otherwise, some images relying on the /dev/stdout(stderr)
