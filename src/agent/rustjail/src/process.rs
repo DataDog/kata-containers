@@ -141,7 +141,16 @@ impl Process {
         let (exit_tx, exit_rx) = tokio::sync::watch::channel(false);
 
         // Check if stdin is actually needed before creating a pipe
-        let stdin_needed = proc_io.as_ref().is_some_and(|io| io.stdin.is_some());
+        // Only set stdin to /dev/null if there's no proc_io at all (kubectl exec --stdin=false)
+        // If there's proc_io, we need a pipe regardless of stdin stream (kubectl cp uses IOStream)
+        // Also check if this is a tar process (kubectl cp uses tar internally)
+        let is_tar_process = ocip.args()
+            .as_ref()
+            .and_then(|args| args.first())
+            .map(|arg| arg.contains("tar"))
+            .unwrap_or(false);
+        
+        let stdin_needed = proc_io.is_some() || is_tar_process;
 
         let mut p = Process {
             exec_id: String::from(id),
