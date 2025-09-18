@@ -140,6 +140,9 @@ impl Process {
         let logger = logger.new(o!("subsystem" => "process"));
         let (exit_tx, exit_rx) = tokio::sync::watch::channel(false);
 
+        // Check if stdin is actually needed before creating a pipe
+        let stdin_needed = proc_io.as_ref().is_some_and(|io| io.stdin.is_some());
+
         let mut p = Process {
             exec_id: String::from(id),
             stdin: None,
@@ -175,9 +178,18 @@ impl Process {
             } else {
                 info!(logger, "created console socket!");
 
-                let (stdin, pstdin) = unistd::pipe2(OFlag::O_CLOEXEC)?;
-                p.parent_stdin = Some(pstdin);
-                p.stdin = Some(stdin);
+                if stdin_needed {
+                    let (stdin, pstdin) = unistd::pipe2(OFlag::O_CLOEXEC)?;
+                    p.parent_stdin = Some(pstdin);
+                    p.stdin = Some(stdin);
+                } else {
+                    // No stdin needed, set to /dev/null
+                    let dev_null = std::fs::File::open("/dev/null")
+                        .map_err(|e| Errno::from_i32(e.raw_os_error().unwrap_or(-1)))?;
+                    p.stdin = Some(dev_null.as_raw_fd());
+                    // Keep the file handle alive to prevent the fd from being closed
+                    p.extra_files.push(dev_null);
+                }
 
                 // These pipes are necessary as the stdout/stderr of the child process
                 // cannot be a socket. Otherwise, some images relying on the /dev/stdout(stderr)

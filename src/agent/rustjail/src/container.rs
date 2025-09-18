@@ -1092,13 +1092,18 @@ impl BaseContainer for LinuxContainer {
                 // This is because we need to close the stdin fifo when the stdin stream
                 // is drained.
                 if let Some(mut stdin_stream) = proc_io.stdin.take() {
-                    debug!(logger, "copy from stdin to parent_stdin");
-                    let mut parent_stdin = unsafe { File::from_raw_fd(p.parent_stdin.unwrap()) };
-                    let logger = logger.clone();
-                    tokio::spawn(async move {
-                        let res = tokio::io::copy(&mut stdin_stream, &mut parent_stdin).await;
-                        debug!(logger, "copy from stdin to term_master end: {:?}", res);
-                    });
+                    if let Some(parent_stdin_fd) = p.parent_stdin {
+                        debug!(logger, "copy from stdin to parent_stdin");
+                        let mut parent_stdin = unsafe { File::from_raw_fd(parent_stdin_fd) };
+                        let logger = logger.clone();
+                        tokio::spawn(async move {
+                            let res = tokio::io::copy(&mut stdin_stream, &mut parent_stdin).await;
+                            debug!(logger, "copy from stdin to parent_stdin end: {:?}", res);
+                        });
+                    } else {
+                        // No parent_stdin available (stdin is /dev/null), just drop the stream
+                        debug!(logger, "no parent_stdin available, dropping stdin stream");
+                    }
                 }
 
                 // copy from parent_stdout to stdout stream
