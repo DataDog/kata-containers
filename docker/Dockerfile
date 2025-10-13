@@ -21,8 +21,8 @@ RUN mkdir -p /kata-build/opt/kata/bin \
 ARG TARGETARCH
 RUN KATA_VERSION=${CI_COMMIT_TAG%-dd.*} && \
     echo "Downloading kata ${KATA_VERSION} from tag ${CI_COMMIT_TAG}" && \
-    wget -q "https://github.com/kata-containers/kata-containers/releases/download/${KATA_VERSION}/kata-static-${KATA_VERSION}-${TARGETARCH}.tar.xz" -O /tmp/kata.tar.xz && \
-    tar -xJf /tmp/kata.tar.xz -C /kata-build --wildcards \
+    wget -q "https://github.com/kata-containers/kata-containers/releases/download/${KATA_VERSION}/kata-static-${KATA_VERSION}-${TARGETARCH}.tar.zst" -O /tmp/kata.tar.zst && \
+    tar --zstd -xf /tmp/kata.tar.zst -C /kata-build --wildcards \
         './opt/kata/bin/qemu-system-*' \
         './opt/kata/libexec/virtiofsd' \
         './opt/kata/lib/kata-qemu/libfdt.a' \
