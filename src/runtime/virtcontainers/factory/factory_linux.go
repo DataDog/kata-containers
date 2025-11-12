@@ -81,6 +81,8 @@ func resetHypervisorConfig(config *vc.VMConfig) {
 	config.HypervisorConfig.VMStorePath = ""
 	config.HypervisorConfig.RunStorePath = ""
 	config.HypervisorConfig.QgsPort = 0
+	config.HypervisorConfig.DefaultMaxVCPUs = 0
+	config.HypervisorConfig.DefaultMaxMemorySize = 0
 }
 
 // It's important that baseConfig and newConfig are passed by value!
