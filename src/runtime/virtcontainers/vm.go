@@ -116,6 +116,14 @@ func NewVM(ctx context.Context, config VMConfig) (*VM, error) {
 		}
 	}()
 
+	// Set storage paths if not already configured (needed for VMCache factory)
+	if config.HypervisorConfig.VMStorePath == "" {
+		config.HypervisorConfig.VMStorePath = store.RunVMStoragePath()
+	}
+	if config.HypervisorConfig.RunStorePath == "" {
+		config.HypervisorConfig.RunStorePath = store.RunStoragePath()
+	}
+
 	if err = hypervisor.CreateVM(ctx, id, network, &config.HypervisorConfig); err != nil {
 		return nil, err
 	}
