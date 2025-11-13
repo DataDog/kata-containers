@@ -925,7 +925,7 @@ main()
 
 	init="${ROOTFS_DIR}/sbin/init"
 	setup_rootfs
-	setup_rootfs_dd_specific
+	# setup_rootfs_dd_specific
 
 	if [ "${VARIANT}" = "nvidia-gpu" ]; then
 		setup_nvidia_gpu_rootfs_stage_one
