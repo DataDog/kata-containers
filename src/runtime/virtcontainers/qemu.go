@@ -896,6 +896,13 @@ func (q *qemu) nydusdAPISocketPath(id string) (string, error) {
 }
 
 func (q *qemu) setupVirtiofsDaemon(ctx context.Context) (err error) {
+	// Ensure the shared directory exists before starting virtiofsd
+	if q.config.SharedPath != "" {
+		if err := os.MkdirAll(q.config.SharedPath, DirMode); err != nil {
+			return fmt.Errorf("failed to create shared directory %s: %v", q.config.SharedPath, err)
+		}
+	}
+
 	pid, err := q.virtiofsDaemon.Start(ctx, func() {
 		q.StopVM(ctx, false)
 	})
