@@ -903,9 +903,15 @@ func (q *qemu) setupVirtiofsDaemon(ctx context.Context) (err error) {
 		}
 	}
 
-	pid, err := q.virtiofsDaemon.Start(ctx, func() {
-		q.StopVM(ctx, false)
-	})
+	// Don't register StopVM callback for virtiofsd quit events.
+	// Virtiofsd may legitimately quit during VM pause/resume cycles (VMCache),
+	// and we don't want that to trigger VM destruction.
+	// The daemon will be explicitly stopped when the VM is stopped.
+	onQuitCallback := func() {
+		q.Logger().Info("virtiofsd daemon quit - VM continues running")
+	}
+
+	pid, err := q.virtiofsDaemon.Start(ctx, onQuitCallback)
 	if err != nil {
 		return err
 	}
@@ -2266,6 +2272,21 @@ func (q *qemu) PauseVM(ctx context.Context) error {
 func (q *qemu) ResumeVM(ctx context.Context) error {
 	span, ctx := katatrace.Trace(ctx, q.Logger(), "ResumeVM", qemuTracingTags, map[string]string{"sandbox_id": q.id})
 	defer span.End()
+
+	// If virtiofsd quit during pause, restart it before resuming VM
+	if (q.config.SharedFS == config.VirtioFS || q.config.SharedFS == config.VirtioFSNydus) && q.virtiofsDaemon != nil {
+		// Check if virtiofsd is still running by checking if the PID exists
+		if q.state.VirtiofsDaemonPid > 0 {
+			// Try to signal the process to see if it's alive
+			if err := syscall.Kill(q.state.VirtiofsDaemonPid, syscall.Signal(0)); err != nil {
+				// Process doesn't exist, restart virtiofsd
+				q.Logger().Info("Restarting virtiofsd daemon after VM pause")
+				if err := q.setupVirtiofsDaemon(ctx); err != nil {
+					return fmt.Errorf("failed to restart virtiofsd: %v", err)
+				}
+			}
+		}
+	}
 
 	return q.togglePauseSandbox(ctx, false)
 }
