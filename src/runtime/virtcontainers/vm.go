@@ -392,6 +392,11 @@ func (v *VM) assignSandbox(s *Sandbox) error {
 		sandboxSharedPath := GetSharePath(s.id)
 		s.config.HypervisorConfig.SharedPath = sandboxSharedPath
 
+		// Create the sandbox shared directory before starting virtiofsd
+		if err := os.MkdirAll(sandboxSharedPath, DirMode); err != nil {
+			return fmt.Errorf("failed to create sandbox shared directory %s: %w", sandboxSharedPath, err)
+		}
+
 		// Start virtiofsd with the new sandbox's directory
 		if err := v.hypervisor.StartVirtiofsDaemon(context.Background(), sandboxSharedPath); err != nil {
 			return fmt.Errorf("failed to restart virtiofsd for sandbox: %w", err)
