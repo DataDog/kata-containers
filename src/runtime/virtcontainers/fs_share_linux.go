@@ -222,17 +222,33 @@ func (f *FilesystemShare) Prepare(ctx context.Context) error {
 	// create shared path structure
 	sharePath := GetSharePath(f.sandbox.ID())
 	mountPath := getMountPath(f.sandbox.ID())
+	f.Logger().WithFields(logrus.Fields{
+		"sharePath": sharePath,
+		"mountPath": mountPath,
+	}).Info("Creating filesystem share directories for VirtioFS")
+	
 	if err = os.MkdirAll(sharePath, sharedDirMode); err != nil {
+		f.Logger().WithError(err).Error("Failed to create sharePath directory")
 		return err
 	}
+	f.Logger().Info("Created sharePath directory successfully")
+	
 	if err = os.MkdirAll(mountPath, DirMode); err != nil {
+		f.Logger().WithError(err).Error("Failed to create mountPath directory")
 		return err
 	}
+	f.Logger().Info("Created mountPath directory successfully")
 
 	// slave mount so that future mountpoints under mountPath are shown in sharePath as well
+	f.Logger().WithFields(logrus.Fields{
+		"source": mountPath,
+		"target": sharePath,
+	}).Info("Creating bind mount for VirtioFS")
 	if err = bindMount(ctx, mountPath, sharePath, true, "slave"); err != nil {
+		f.Logger().WithError(err).Error("Failed to create bind mount")
 		return err
 	}
+	f.Logger().Info("Bind mount created successfully")
 	defer func() {
 		if err != nil {
 			if umountErr := unmountNoFollow(sharePath); umountErr != nil {
@@ -258,9 +274,14 @@ func (f *FilesystemShare) Cleanup(ctx context.Context) error {
 	// Cleanup is idempotent, i.e. can be called multiple times in a row, without failing
 	// and without modifying the filesystem state after the first call.
 	if !f.prepared {
-		f.Logger().Warn("Calling Cleanup() on an already cleaned up filesystem")
+		f.Logger().Warn("Calling Cleanup() on an already cleaned up filesystem (prepared=false)")
 		return nil
 	}
+	
+	f.Logger().WithFields(logrus.Fields{
+		"sharePath": GetSharePath(f.sandbox.ID()),
+		"mountPath": getMountPath(f.sandbox.ID()),
+	}).Info("Cleanup() is running - filesystem was prepared")
 
 	// Toggle prepared to false if everything went fine.
 	defer func() {

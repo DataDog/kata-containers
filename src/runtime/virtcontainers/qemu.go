@@ -944,6 +944,14 @@ func (q *qemu) StartVirtiofsDaemon(ctx context.Context, sharedPath string) error
 	// Update the config's SharedPath
 	q.config.SharedPath = sharedPath
 
+	// Verify the shared directory exists before starting virtiofsd
+	q.Logger().WithField("sharedPath", sharedPath).Info("Verifying shared directory exists before starting virtiofsd")
+	if _, err := os.Stat(sharedPath); err != nil {
+		q.Logger().WithError(err).WithField("sharedPath", sharedPath).Error("Shared directory does not exist!")
+		return fmt.Errorf("shared directory %s does not exist: %w", sharedPath, err)
+	}
+	q.Logger().Info("Shared directory exists, starting virtiofsd")
+
 	// Recreate the virtiofsd daemon object with the new path
 	var err error
 	q.virtiofsDaemon, err = q.createVirtiofsDaemon(sharedPath)
