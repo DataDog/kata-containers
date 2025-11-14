@@ -387,8 +387,12 @@ func (v *VM) assignSandbox(s *Sandbox) error {
 			v.logger().WithError(err).Warn("failed to stop old virtiofsd daemon")
 		}
 
-		// Prepare the sandbox's filesystem share structure (creates mounts/ and shared/ directories + bind mount)
+		// Cleanup any old filesystem share state from the cached VM, then prepare the new sandbox's filesystem share structure
 		// This is required for virtiofsd to work properly - the shared/ directory must be a bind mount of mounts/
+		// We cleanup first to reset the 'prepared' flag and unmount any old bind mounts
+		if err := s.fsShare.Cleanup(context.Background()); err != nil {
+			v.logger().WithError(err).Warn("failed to cleanup old filesystem share (continuing anyway)")
+		}
 		if err := s.fsShare.Prepare(context.Background()); err != nil {
 			return fmt.Errorf("failed to prepare sandbox filesystem share: %w", err)
 		}
