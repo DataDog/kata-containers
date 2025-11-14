@@ -2843,13 +2843,19 @@ func (q *qemu) fromGrpc(ctx context.Context, hypervisorConfig *HypervisorConfig,
 	// Set the PidFile path for the restored VM
 	q.qemuConfig.PidFile = filepath.Join(q.config.VMStorePath, q.id, "pid")
 
-	// Recreate virtiofsd daemon object if it was running
-	// Note: we don't start it here as it's already running (PID is preserved in q.state)
-	if q.config.SharedFS == config.VirtioFS || q.config.SharedFS == config.VirtioFSNydus {
-		sharedPath := buildVMSharePath(q.id, q.config.VMStorePath)
-		q.virtiofsDaemon, err = q.createVirtiofsDaemon(sharedPath)
-		if err != nil {
-			return err
+	// Recreate virtiofsd daemon object if it was actually running (PID > 0)
+	// The daemon itself continues running; we just recreate the management object
+	if q.state.VirtiofsDaemonPid > 0 {
+		if q.config.SharedFS == config.VirtioFS || q.config.SharedFS == config.VirtioFSNydus {
+			// Use SharedPath if set, otherwise construct it from VM storage path
+			sharedPath := q.config.SharedPath
+			if sharedPath == "" {
+				sharedPath = buildVMSharePath(q.id, q.config.VMStorePath)
+			}
+			q.virtiofsDaemon, err = q.createVirtiofsDaemon(sharedPath)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
