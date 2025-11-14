@@ -390,12 +390,15 @@ func (v *VM) assignSandbox(s *Sandbox) error {
 		// Cleanup any old filesystem share state from the cached VM, then prepare the new sandbox's filesystem share structure
 		// This is required for virtiofsd to work properly - the shared/ directory must be a bind mount of mounts/
 		// We cleanup first to reset the 'prepared' flag and unmount any old bind mounts
+		v.logger().Info("Calling fsShare.Cleanup() for VirtioFS VMCache")
 		if err := s.fsShare.Cleanup(context.Background()); err != nil {
 			v.logger().WithError(err).Warn("failed to cleanup old filesystem share (continuing anyway)")
 		}
+		v.logger().Info("Calling fsShare.Prepare() for VirtioFS VMCache")
 		if err := s.fsShare.Prepare(context.Background()); err != nil {
 			return fmt.Errorf("failed to prepare sandbox filesystem share: %w", err)
 		}
+		v.logger().WithField("sandboxSharedPath", GetSharePath(s.id)).Info("fsShare.Prepare() completed successfully")
 
 		// Update the hypervisor's SharedPath to point to the sandbox's shared directory
 		// We'll serve GetSharePath (the actual sandbox shared dir) which is now a bind mount of the mounts dir
