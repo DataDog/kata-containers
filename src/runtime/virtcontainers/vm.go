@@ -385,6 +385,12 @@ func (v *VM) assignSandbox(s *Sandbox) error {
 	if s.config.HypervisorConfig.SharedFS == "virtio-fs" || s.config.HypervisorConfig.SharedFS == "virtio-fs-nydus" {
 		v.logger().Info("Hot-plugging VirtioFS device for VMCache sandbox")
 
+		// Stop the old virtiofsd daemon from the cached VM (it's serving the wrong directory)
+		v.logger().Info("Stopping old virtiofsd daemon from cached VM")
+		if err := v.hypervisor.StopVirtiofsDaemon(context.Background()); err != nil {
+			v.logger().WithError(err).Warn("failed to stop old virtiofsd daemon (continuing anyway)")
+		}
+
 		// Prepare the filesystem share structure (mounts/ and shared/ with bind mount)
 		v.logger().Info("Preparing filesystem share for VirtioFS VMCache")
 		if err := s.fsShare.Prepare(context.Background()); err != nil {

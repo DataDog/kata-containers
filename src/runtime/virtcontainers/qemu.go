@@ -1173,18 +1173,23 @@ func (q *qemu) StartVM(ctx context.Context, timeout int) error {
 		defer selinux.SetExecLabel("")
 	}
 	if q.config.SharedFS == config.VirtioFS || q.config.SharedFS == config.VirtioFSNydus {
-		err = q.setupVirtiofsDaemon(ctx)
-		if err != nil {
-			return err
-		}
-		defer func() {
+		// Skip starting virtiofsd if we're deferring the shared FS mount for VMCache
+		// The daemon will be started when the VM is assigned to a sandbox
+		if !q.config.DeferSharedFSMount {
+			err = q.setupVirtiofsDaemon(ctx)
 			if err != nil {
-				if shutdownErr := q.stopVirtiofsDaemon(ctx); shutdownErr != nil {
-					q.Logger().WithError(shutdownErr).Warn("failed to stop virtiofsDaemon")
-				}
+				return err
 			}
-		}()
-
+			defer func() {
+				if err != nil {
+					if shutdownErr := q.stopVirtiofsDaemon(ctx); shutdownErr != nil {
+						q.Logger().WithError(shutdownErr).Warn("failed to stop virtiofsDaemon")
+					}
+				}
+			}()
+		} else {
+			q.Logger().Info("Skipping virtiofsd daemon startup - deferred for VMCache hot-plug")
+		}
 	}
 
 	qemuCmd, reader, err := govmmQemu.LaunchQemu(q.qemuConfig, newQMPLogger())
