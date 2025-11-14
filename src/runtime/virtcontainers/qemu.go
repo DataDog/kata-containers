@@ -118,6 +118,9 @@ type qemu struct {
 	stopped int32
 
 	mu sync.Mutex
+
+	// Cached vsock context ID when VM is restored from cache
+	cachedVsockCID uint64
 }
 
 const (
@@ -2807,6 +2810,9 @@ type qemuGrpc struct {
 	// q.qemuConfig.SMP.
 	// So just transport q.qemuConfig.SMP from VM Cache server to runtime.
 	QemuSMP govmmQemu.SMP
+
+	// Store the vsock context ID to reuse when restoring from cache
+	VsockContextID uint64
 }
 
 func (q *qemu) fromGrpc(ctx context.Context, hypervisorConfig *HypervisorConfig, j []byte) error {
@@ -2831,6 +2837,9 @@ func (q *qemu) fromGrpc(ctx context.Context, hypervisorConfig *HypervisorConfig,
 
 	q.qemuConfig.SMP = qp.QemuSMP
 
+	// Store the cached vsock CID for reuse
+	q.cachedVsockCID = qp.VsockContextID
+
 	q.arch.setBridges(q.state.Bridges)
 	return nil
 }
@@ -2839,13 +2848,24 @@ func (q *qemu) toGrpc(ctx context.Context) ([]byte, error) {
 	q.qmpShutdown()
 
 	q.Cleanup(ctx)
+
+	// Extract vsock context ID from devices to preserve it for cache
+	var vsockCID uint64
+	for _, dev := range q.qemuConfig.Devices {
+		if vsockDev, ok := dev.(govmmQemu.VSOCKDevice); ok {
+			vsockCID = vsockDev.ContextID
+			break
+		}
+	}
+
 	qp := qemuGrpc{
 		ID:             q.id,
 		QmpChannelpath: q.qmpMonitorCh.path,
 		State:          q.state,
 		NvdimmCount:    q.nvdimmCount,
 
-		QemuSMP: q.qemuConfig.SMP,
+		QemuSMP:        q.qemuConfig.SMP,
+		VsockContextID: vsockCID,
 	}
 
 	return json.Marshal(&qp)
@@ -2925,6 +2945,16 @@ func (q *qemu) Check() error {
 }
 
 func (q *qemu) GenerateSocket(id string) (interface{}, error) {
+	// If we have a cached vsock CID from a VM restore, reuse it
+	// The QEMU process already has the vsock device open, so we don't need a new FD
+	if q.cachedVsockCID != 0 {
+		return types.VSock{
+			VhostFd:   nil, // QEMU already has the device open
+			ContextID: q.cachedVsockCID,
+			Port:      uint32(vSockPort),
+		}, nil
+	}
+
 	return generateVMSocket(id, q.config.VMStorePath)
 }
 
