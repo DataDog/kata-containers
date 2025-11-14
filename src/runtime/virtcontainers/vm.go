@@ -123,6 +123,10 @@ func NewVM(ctx context.Context, config VMConfig) (*VM, error) {
 	if config.HypervisorConfig.RunStorePath == "" {
 		config.HypervisorConfig.RunStorePath = store.RunStoragePath()
 	}
+	// Set SharedPath for VirtioFS before CreateVM (needed for virtiofsd daemon creation)
+	if config.HypervisorConfig.SharedPath == "" {
+		config.HypervisorConfig.SharedPath = buildVMSharePath(id, store.RunVMStoragePath())
+	}
 
 	if err = hypervisor.CreateVM(ctx, id, network, &config.HypervisorConfig); err != nil {
 		return nil, err
@@ -202,6 +206,10 @@ func NewVMFromGrpc(ctx context.Context, v *pb.GrpcVM, config VMConfig) (*VM, err
 	}
 	if config.HypervisorConfig.RunStorePath == "" {
 		config.HypervisorConfig.RunStorePath = store.RunStoragePath()
+	}
+	// Set SharedPath for VirtioFS if not already set
+	if config.HypervisorConfig.SharedPath == "" {
+		config.HypervisorConfig.SharedPath = buildVMSharePath(v.Id, store.RunVMStoragePath())
 	}
 
 	err = hypervisor.fromGrpc(ctx, &config.HypervisorConfig, v.Hypervisor)
