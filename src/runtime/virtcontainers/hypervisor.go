@@ -663,6 +663,11 @@ type HypervisorConfig struct {
 	// BootFromTemplate used to indicate if the VM should be created from a template VM
 	BootFromTemplate bool
 
+	// DeferSharedFSMount is used for VMCache - indicates the shared FS device should be hot-plugged later
+	// instead of being added during VM creation. This allows cached VMs to be generic and have the
+	// correct sandbox-specific shared directory hot-plugged when assigned.
+	DeferSharedFSMount bool
+
 	// DisableVhostNet is used to indicate if host supports vhost_net
 	DisableVhostNet bool
 

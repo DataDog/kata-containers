@@ -1822,6 +1822,84 @@ func (q *qemu) hotplugBlockDevice(ctx context.Context, drive *config.BlockDrive,
 	return q.qmpMonitorCh.qmp.ExecuteBlockdevDel(q.qmpMonitorCh.ctx, drive.ID)
 }
 
+func (q *qemu) hotplugAddVhostUserFSDevice(ctx context.Context, vAttr *config.VhostUserDeviceAttrs, op Operation, devID string) (err error) {
+	// Add the chardev for vhost-user-fs socket communication
+	err = q.qmpMonitorCh.qmp.ExecuteCharDevUnixSocketAdd(q.qmpMonitorCh.ctx, vAttr.DevID, vAttr.SocketPath, false, false, vAttr.ReconnectTime)
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if err != nil {
+			q.qmpMonitorCh.qmp.ExecuteChardevDel(q.qmpMonitorCh.ctx, vAttr.DevID)
+		}
+	}()
+
+	machineType := q.HypervisorConfig().HypervisorMachineType
+
+	switch machineType {
+	case QemuVirt:
+		// For ARM64 virt machine, use root port
+		addr := "00"
+		bridgeID := fmt.Sprintf("%s%d", config.PCIeRootPortPrefix, len(config.PCIeDevicesPerPort[config.RootPort]))
+		dev := config.VFIODev{ID: devID}
+		config.PCIeDevicesPerPort[config.RootPort] = append(config.PCIeDevicesPerPort[config.RootPort], dev)
+
+		bridgeQomPath := fmt.Sprintf("%s%s", qomPathPrefix, bridgeID)
+		bridgeSlot, err := q.arch.qomGetSlot(bridgeQomPath, &q.qmpMonitorCh)
+		if err != nil {
+			return err
+		}
+
+		devSlot, err := types.PciSlotFromString(addr)
+		if err != nil {
+			return err
+		}
+
+		vAttr.PCIPath, err = types.PciPathFromSlots(bridgeSlot, devSlot)
+		if err != nil {
+			return err
+		}
+
+		// Use ExecutePCIVhostUserFsDevAdd for FS devices with tag and queue size
+		if err = q.qmpMonitorCh.qmp.ExecutePCIVhostUserFsDevAdd(q.qmpMonitorCh.ctx, devID, vAttr.DevID, vAttr.Tag, addr, bridgeID, int(vAttr.QueueSize)); err != nil {
+			return err
+		}
+
+	default:
+		// For x86_64, add to bridge
+		addr, bridge, err := q.arch.addDeviceToBridge(ctx, vAttr.DevID, types.PCI)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if err != nil {
+				q.arch.removeDeviceFromBridge(vAttr.DevID)
+			}
+		}()
+
+		bridgeSlot, err := types.PciSlotFromInt(bridge.Addr)
+		if err != nil {
+			return err
+		}
+
+		devSlot, err := types.PciSlotFromString(addr)
+		if err != nil {
+			return err
+		}
+		vAttr.PCIPath, err = types.PciPathFromSlots(bridgeSlot, devSlot)
+		if err != nil {
+			return err
+		}
+
+		// Use ExecutePCIVhostUserFsDevAdd for FS devices with tag and queue size
+		if err = q.qmpMonitorCh.qmp.ExecutePCIVhostUserFsDevAdd(q.qmpMonitorCh.ctx, devID, vAttr.DevID, vAttr.Tag, addr, bridge.ID, int(vAttr.QueueSize)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (q *qemu) hotplugVhostUserDevice(ctx context.Context, vAttr *config.VhostUserDeviceAttrs, op Operation) error {
 	if err := q.qmpSetup(); err != nil {
 		return err
@@ -1833,8 +1911,10 @@ func (q *qemu) hotplugVhostUserDevice(ctx context.Context, vAttr *config.VhostUs
 		switch vAttr.Type {
 		case config.VhostUserBlk:
 			return q.hotplugAddVhostUserBlkDevice(ctx, vAttr, op, devID)
+		case config.VhostUserFS:
+			return q.hotplugAddVhostUserFSDevice(ctx, vAttr, op, devID)
 		default:
-			return fmt.Errorf("Incorrect vhost-user device type found")
+			return fmt.Errorf("Incorrect vhost-user device type found: %v", vAttr.Type)
 		}
 	} else {
 

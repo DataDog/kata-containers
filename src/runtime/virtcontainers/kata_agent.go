@@ -463,6 +463,14 @@ func (k *kataAgent) configure(ctx context.Context, h Hypervisor, id, sharePath s
 		return nil
 	}
 
+	// For VMCache with VirtioFS, defer mounting the shared FS device until VM assignment
+	// This allows the VM to be generic and have the correct sandbox-specific directory hot-plugged later
+	hConfig := h.HypervisorConfig()
+	if hConfig.DeferSharedFSMount {
+		k.Logger().Info("Deferring shared FS mount for VMCache - will be hot-plugged on assignment")
+		return nil
+	}
+
 	// Create shared directory and add the shared volume if filesystem sharing is supported.
 	// This volume contains all bind mounted container bundles.
 	sharedVolume := types.Volume{

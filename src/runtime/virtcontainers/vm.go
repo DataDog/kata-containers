@@ -7,16 +7,19 @@ package virtcontainers
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/kata-containers/kata-containers/src/runtime/pkg/device/config"
 	"github.com/kata-containers/kata-containers/src/runtime/pkg/uuid"
 	pb "github.com/kata-containers/kata-containers/src/runtime/protocols/cache"
 	"github.com/kata-containers/kata-containers/src/runtime/virtcontainers/persist"
 	persistapi "github.com/kata-containers/kata-containers/src/runtime/virtcontainers/persist/api"
+	"github.com/kata-containers/kata-containers/src/runtime/virtcontainers/utils"
 	"github.com/sirupsen/logrus"
 )
 
@@ -377,40 +380,61 @@ func (v *VM) assignSandbox(s *Sandbox) error {
 		return err
 	}
 
-	// For VirtioFS, restart virtiofsd to serve the sandbox's directory
-	// VirtioFS doesn't follow symlinks, so we need the daemon to serve the actual sandbox path
+	// For VirtioFS with VMCache, hot-plug the vhost-user-fs device with the sandbox's specific shared directory
+	// Cached base VMs don't have any shared FS device - we add it here with the correct sandbox path
 	if s.config.HypervisorConfig.SharedFS == "virtio-fs" || s.config.HypervisorConfig.SharedFS == "virtio-fs-nydus" {
-		v.logger().Info("Restarting virtiofsd for VirtioFS VMCache")
+		v.logger().Info("Hot-plugging VirtioFS device for VMCache sandbox")
 
-		// Stop the old virtiofsd daemon (serving the cached VM's directory)
-		if err := v.hypervisor.StopVirtiofsDaemon(context.Background()); err != nil {
-			v.logger().WithError(err).Warn("failed to stop old virtiofsd daemon")
-		}
-
-		// Cleanup any old filesystem share state from the cached VM, then prepare the new sandbox's filesystem share structure
-		// This is required for virtiofsd to work properly - the shared/ directory must be a bind mount of mounts/
-		// We cleanup first to reset the 'prepared' flag and unmount any old bind mounts
-		v.logger().Info("Calling fsShare.Cleanup() for VirtioFS VMCache")
-		if err := s.fsShare.Cleanup(context.Background()); err != nil {
-			v.logger().WithError(err).Warn("failed to cleanup old filesystem share (continuing anyway)")
-		}
-		v.logger().Info("Calling fsShare.Prepare() for VirtioFS VMCache")
+		// Prepare the filesystem share structure (mounts/ and shared/ with bind mount)
+		v.logger().Info("Preparing filesystem share for VirtioFS VMCache")
 		if err := s.fsShare.Prepare(context.Background()); err != nil {
 			return fmt.Errorf("failed to prepare sandbox filesystem share: %w", err)
 		}
-		v.logger().WithField("sandboxSharedPath", GetSharePath(s.id)).Info("fsShare.Prepare() completed successfully")
 
-		// Update the hypervisor's SharedPath to point to the sandbox's shared directory
-		// We'll serve GetSharePath (the actual sandbox shared dir) which is now a bind mount of the mounts dir
+		// Get the sandbox's shared directory path
 		sandboxSharedPath := GetSharePath(s.id)
 		s.config.HypervisorConfig.SharedPath = sandboxSharedPath
 
-		// Start virtiofsd with the new sandbox's directory
+		v.logger().WithField("sandboxSharedPath", sandboxSharedPath).Info("Starting virtiofsd for sandbox")
+
+		// Start virtiofsd daemon with the sandbox's shared directory
 		if err := v.hypervisor.StartVirtiofsDaemon(context.Background(), sandboxSharedPath); err != nil {
-			return fmt.Errorf("failed to restart virtiofsd for sandbox: %w", err)
+			return fmt.Errorf("failed to start virtiofsd for sandbox: %w", err)
 		}
 
-		v.logger().WithField("sandboxSharedPath", sandboxSharedPath).Info("virtiofsd restarted for sandbox")
+		// Now hot-plug the vhost-user-fs device into the running VM
+		// This creates the vhost-user connection between QEMU and virtiofsd
+		v.logger().Info("Hot-plugging vhost-user-fs device into VM")
+
+		// Build the vhost-fs socket path (same pattern as in qemu.go)
+		virtiofsdSocketPath, err := utils.BuildSocketPath(s.config.HypervisorConfig.VMStorePath, v.id, "vhost-fs.sock")
+		if err != nil {
+			return fmt.Errorf("failed to build virtiofsd socket path: %w", err)
+		}
+
+		// Generate a unique ID for the device
+		randBytes, err := utils.GenerateRandomBytes(8)
+		if err != nil {
+			return fmt.Errorf("failed to generate device ID: %w", err)
+		}
+		devID := hex.EncodeToString(randBytes)
+
+		vhostFsAttrs := &config.VhostUserDeviceAttrs{
+			DevID:      devID,
+			SocketPath: virtiofsdSocketPath,
+			Type:       config.VhostUserFS,
+			Tag:        mountGuestTag, // "kataShared"
+			CacheSize:  s.config.HypervisorConfig.VirtioFSCacheSize,
+			Cache:      s.config.HypervisorConfig.VirtioFSCache,
+			QueueSize:  s.config.HypervisorConfig.VirtioFSQueueSize,
+		}
+
+		// Hot-plug the vhost-user-fs device
+		if _, err := v.hypervisor.HotplugAddDevice(context.Background(), vhostFsAttrs, VhostuserDev); err != nil {
+			return fmt.Errorf("failed to hot-plug VirtioFS device: %w", err)
+		}
+
+		v.logger().WithField("sandboxSharedPath", sandboxSharedPath).Info("VirtioFS device hot-plugged successfully")
 	}
 
 	// First make sure the symlinks do not exist

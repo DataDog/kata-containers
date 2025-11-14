@@ -30,15 +30,21 @@ func (d *direct) Config() vc.VMConfig {
 
 // GetBaseVM create a new VM directly.
 func (d *direct) GetBaseVM(ctx context.Context, config vc.VMConfig) (*vc.VM, error) {
+	// For VirtioFS, defer the shared FS mount - it will be hot-plugged when VM is assigned
+	// This allows the base VM to be generic without a sandbox-specific shared directory
+	if config.HypervisorConfig.SharedFS == "virtio-fs" || config.HypervisorConfig.SharedFS == "virtio-fs-nydus" {
+		config.HypervisorConfig.DeferSharedFSMount = true
+	}
+
 	vm, err := vc.NewVM(ctx, config)
 	if err != nil {
 		return nil, err
 	}
 
-	// Don't pause VMs using VirtioFS - the vhost-user connection would be disrupted
-	// For VirtioFS, we keep the VM running to maintain the virtiofsd daemon connection
+	// Don't pause VMs using VirtioFS - they're kept running for hot-plug
+	// For VirtioFS, the vhost-user-fs device will be hot-plugged on assignment
 	if config.HypervisorConfig.SharedFS == "virtio-fs" || config.HypervisorConfig.SharedFS == "virtio-fs-nydus" {
-		// VM stays running - no pause needed for VirtioFS
+		// VM stays running - ready for hot-plug on assignment
 		return vm, nil
 	}
 

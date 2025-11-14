@@ -1152,6 +1152,32 @@ func (q *QMP) ExecutePCIVhostUserDevAdd(ctx context.Context, driver, devID, char
 	return q.executeCommand(ctx, "device_add", args, nil)
 }
 
+// ExecutePCIVhostUserFsDevAdd adds a vhost-user-fs device to a QEMU instance using the device_add command.
+// This function is specifically for vhost-user-fs devices which require a tag (mount tag) and queue-size.
+// devID is the id of the device to add. Must be valid QMP identifier.
+// chardevID is the QMP identifier of character device using a unix socket as backend.
+// tag is the mount tag visible to the guest (e.g., "kataShared").
+// queueSize is the queue size for the virtio-fs device.
+func (q *QMP) ExecutePCIVhostUserFsDevAdd(ctx context.Context, devID, chardevID, tag, addr, bus string, queueSize int) error {
+	args := map[string]interface{}{
+		"driver":  "vhost-user-fs-pci",
+		"id":      devID,
+		"chardev": chardevID,
+		"tag":     tag,
+		"addr":    addr,
+	}
+
+	if bus != "" {
+		args["bus"] = bus
+	}
+
+	if queueSize > 0 {
+		args["queue-size"] = queueSize
+	}
+
+	return q.executeCommand(ctx, "device_add", args, nil)
+}
+
 // ExecuteVFIODeviceAdd adds a VFIO device to a QEMU instance using the device_add command.
 // devID is the id of the device to add. Must be valid QMP identifier.
 // bdf is the PCI bus-device-function of the pci device.
