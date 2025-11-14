@@ -1283,3 +1283,13 @@ func (fc *firecracker) GenerateSocket(id string) (interface{}, error) {
 func (fc *firecracker) IsRateLimiterBuiltin() bool {
 	return true
 }
+
+// StopVirtiofsDaemon - Firecracker doesn't use virtiofsd (stub for interface)
+func (fc *firecracker) StopVirtiofsDaemon(ctx context.Context) error {
+	return nil
+}
+
+// StartVirtiofsDaemon - Firecracker doesn't use virtiofsd (stub for interface)
+func (fc *firecracker) StartVirtiofsDaemon(ctx context.Context, sharedPath string) error {
+	return nil
+}

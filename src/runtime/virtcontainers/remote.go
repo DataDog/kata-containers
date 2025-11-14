@@ -296,3 +296,13 @@ func (rh *remoteHypervisor) Load(persistapi.HypervisorState) {
 func (rh *remoteHypervisor) IsRateLimiterBuiltin() bool {
 	return false
 }
+
+// StopVirtiofsDaemon - Remote hypervisor stub
+func (rh *remoteHypervisor) StopVirtiofsDaemon(ctx context.Context) error {
+	return nil
+}
+
+// StartVirtiofsDaemon - Remote hypervisor stub
+func (rh *remoteHypervisor) StartVirtiofsDaemon(ctx context.Context, sharedPath string) error {
+	return nil
+}

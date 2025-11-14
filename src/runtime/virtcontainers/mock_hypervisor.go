@@ -155,3 +155,13 @@ func (m *mockHypervisor) GenerateSocket(id string) (interface{}, error) {
 func (m *mockHypervisor) IsRateLimiterBuiltin() bool {
 	return false
 }
+
+// StopVirtiofsDaemon - Mock hypervisor stub
+func (m *mockHypervisor) StopVirtiofsDaemon(ctx context.Context) error {
+	return nil
+}
+
+// StartVirtiofsDaemon - Mock hypervisor stub
+func (m *mockHypervisor) StartVirtiofsDaemon(ctx context.Context, sharedPath string) error {
+	return nil
+}
