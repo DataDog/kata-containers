@@ -387,15 +387,16 @@ func (v *VM) assignSandbox(s *Sandbox) error {
 			v.logger().WithError(err).Warn("failed to stop old virtiofsd daemon")
 		}
 
+		// Prepare the sandbox's filesystem share structure (creates mounts/ and shared/ directories + bind mount)
+		// This is required for virtiofsd to work properly - the shared/ directory must be a bind mount of mounts/
+		if err := s.fsShare.Prepare(context.Background()); err != nil {
+			return fmt.Errorf("failed to prepare sandbox filesystem share: %w", err)
+		}
+
 		// Update the hypervisor's SharedPath to point to the sandbox's shared directory
-		// We'll serve GetSharePath (the actual sandbox shared dir) instead of sbSharePath (mounts dir)
+		// We'll serve GetSharePath (the actual sandbox shared dir) which is now a bind mount of the mounts dir
 		sandboxSharedPath := GetSharePath(s.id)
 		s.config.HypervisorConfig.SharedPath = sandboxSharedPath
-
-		// Create the sandbox shared directory before starting virtiofsd
-		if err := os.MkdirAll(sandboxSharedPath, DirMode); err != nil {
-			return fmt.Errorf("failed to create sandbox shared directory %s: %w", sandboxSharedPath, err)
-		}
 
 		// Start virtiofsd with the new sandbox's directory
 		if err := v.hypervisor.StartVirtiofsDaemon(context.Background(), sandboxSharedPath); err != nil {
