@@ -746,6 +746,9 @@ func (k *kataAgent) reuseAgent(agent agent) error {
 
 	k.installReqFunc(a.client)
 	k.client = a.client
+	k.vmSocket = a.vmSocket
+	k.state.URL = a.state.URL
+	k.keepConn = a.keepConn
 	return nil
 }
 
