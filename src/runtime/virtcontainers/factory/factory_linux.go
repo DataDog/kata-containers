@@ -140,9 +140,13 @@ func (f *factory) GetVM(ctx context.Context, config vc.VMConfig) (*vc.VM, error)
 		}
 	}()
 
-	err = vm.Resume(ctx)
-	if err != nil {
-		return nil, err
+	// VirtioFS VMs are kept running (not paused) to maintain virtiofsd connection
+	// Only resume if the VM was actually paused
+	if config.HypervisorConfig.SharedFS != "virtio-fs" && config.HypervisorConfig.SharedFS != "virtio-fs-nydus" {
+		err = vm.Resume(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// reseed RNG so that shared memory VMs do not generate same random numbers.

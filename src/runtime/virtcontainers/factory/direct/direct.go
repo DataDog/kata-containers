@@ -35,6 +35,14 @@ func (d *direct) GetBaseVM(ctx context.Context, config vc.VMConfig) (*vc.VM, err
 		return nil, err
 	}
 
+	// Don't pause VMs using VirtioFS - the vhost-user connection would be disrupted
+	// For VirtioFS, we keep the VM running to maintain the virtiofsd daemon connection
+	if config.HypervisorConfig.SharedFS == "virtio-fs" || config.HypervisorConfig.SharedFS == "virtio-fs-nydus" {
+		// VM stays running - no pause needed for VirtioFS
+		return vm, nil
+	}
+
+	// For other shared filesystem types (9p, etc), pause as usual
 	err = vm.Pause(ctx)
 	if err != nil {
 		vm.Stop(ctx)
