@@ -1304,3 +1304,24 @@ func (s *stratovirt) GenerateSocket(id string) (interface{}, error) {
 func (s *stratovirt) IsRateLimiterBuiltin() bool {
 	return false
 }
+
+// StopVirtiofsDaemon stops the virtiofsd daemon (public interface for VMCache)
+func (s *stratovirt) StopVirtiofsDaemon(ctx context.Context) error {
+	return s.stopVirtiofsDaemon(ctx)
+}
+
+// StartVirtiofsDaemon starts virtiofsd with a new shared directory (for VMCache sandbox reassignment)
+func (s *stratovirt) StartVirtiofsDaemon(ctx context.Context, sharedPath string) error {
+	// Update the config's SharedPath
+	s.config.SharedPath = sharedPath
+
+	// Recreate the virtiofsd daemon object with the new path
+	var err error
+	s.virtiofsDaemon, err = s.createVirtiofsDaemon(sharedPath)
+	if err != nil {
+		return err
+	}
+
+	// Start the daemon
+	return s.setupVirtiofsDaemon(ctx)
+}

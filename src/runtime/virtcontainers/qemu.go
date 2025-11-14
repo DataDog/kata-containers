@@ -934,6 +934,27 @@ func (q *qemu) stopVirtiofsDaemon(ctx context.Context) (err error) {
 	return nil
 }
 
+// StopVirtiofsDaemon stops the virtiofsd daemon (public interface for VMCache)
+func (q *qemu) StopVirtiofsDaemon(ctx context.Context) error {
+	return q.stopVirtiofsDaemon(ctx)
+}
+
+// StartVirtiofsDaemon starts virtiofsd with a new shared directory (for VMCache sandbox reassignment)
+func (q *qemu) StartVirtiofsDaemon(ctx context.Context, sharedPath string) error {
+	// Update the config's SharedPath
+	q.config.SharedPath = sharedPath
+
+	// Recreate the virtiofsd daemon object with the new path
+	var err error
+	q.virtiofsDaemon, err = q.createVirtiofsDaemon(sharedPath)
+	if err != nil {
+		return err
+	}
+
+	// Start the daemon
+	return q.setupVirtiofsDaemon(ctx)
+}
+
 func (q *qemu) getMemArgs() (bool, string, string, error) {
 	share := false
 	target := ""

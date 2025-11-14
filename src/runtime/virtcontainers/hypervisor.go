@@ -1164,6 +1164,10 @@ type Hypervisor interface {
 
 	// check if hypervisor supports built-in rate limiter.
 	IsRateLimiterBuiltin() bool
+
+	// virtiofsd daemon management for VMCache
+	StopVirtiofsDaemon(ctx context.Context) error
+	StartVirtiofsDaemon(ctx context.Context, sharedPath string) error
 }
 
 // KernelParamFields is similar to strings.Fields(), but doesn't split

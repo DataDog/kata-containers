@@ -8,6 +8,7 @@ package virtcontainers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -374,6 +375,29 @@ func (v *VM) assignSandbox(s *Sandbox) error {
 
 	if err := s.agent.reuseAgent(v.agent); err != nil {
 		return err
+	}
+
+	// For VirtioFS, restart virtiofsd to serve the sandbox's directory
+	// VirtioFS doesn't follow symlinks, so we need the daemon to serve the actual sandbox path
+	if s.config.HypervisorConfig.SharedFS == "virtio-fs" || s.config.HypervisorConfig.SharedFS == "virtio-fs-nydus" {
+		v.logger().Info("Restarting virtiofsd for VirtioFS VMCache")
+
+		// Stop the old virtiofsd daemon (serving the cached VM's directory)
+		if err := v.hypervisor.StopVirtiofsDaemon(context.Background()); err != nil {
+			v.logger().WithError(err).Warn("failed to stop old virtiofsd daemon")
+		}
+
+		// Update the hypervisor's SharedPath to point to the sandbox's shared directory
+		// We'll serve GetSharePath (the actual sandbox shared dir) instead of sbSharePath (mounts dir)
+		sandboxSharedPath := GetSharePath(s.id)
+		s.config.HypervisorConfig.SharedPath = sandboxSharedPath
+
+		// Start virtiofsd with the new sandbox's directory
+		if err := v.hypervisor.StartVirtiofsDaemon(context.Background(), sandboxSharedPath); err != nil {
+			return fmt.Errorf("failed to restart virtiofsd for sandbox: %w", err)
+		}
+
+		v.logger().WithField("sandboxSharedPath", sandboxSharedPath).Info("virtiofsd restarted for sandbox")
 	}
 
 	// First make sure the symlinks do not exist

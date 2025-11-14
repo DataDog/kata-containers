@@ -413,6 +413,27 @@ func (clh *cloudHypervisor) stopVirtiofsDaemon(ctx context.Context) (err error) 
 	return nil
 }
 
+// StopVirtiofsDaemon stops the virtiofsd daemon (public interface for VMCache)
+func (clh *cloudHypervisor) StopVirtiofsDaemon(ctx context.Context) error {
+	return clh.stopVirtiofsDaemon(ctx)
+}
+
+// StartVirtiofsDaemon starts virtiofsd with a new shared directory (for VMCache sandbox reassignment)
+func (clh *cloudHypervisor) StartVirtiofsDaemon(ctx context.Context, sharedPath string) error {
+	// Update the config's SharedPath
+	clh.config.SharedPath = sharedPath
+
+	// Recreate the virtiofsd daemon object with the new path
+	var err error
+	clh.virtiofsDaemon, err = clh.createVirtiofsDaemon(sharedPath)
+	if err != nil {
+		return err
+	}
+
+	// Start the daemon
+	return clh.setupVirtiofsDaemon(ctx)
+}
+
 func (clh *cloudHypervisor) loadVirtiofsDaemon(sharedPath string) (VirtiofsDaemon, error) {
 	virtiofsdSocketPath, err := clh.virtioFsSocketPath(clh.id)
 	if err != nil {
