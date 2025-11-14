@@ -2840,6 +2840,9 @@ func (q *qemu) fromGrpc(ctx context.Context, hypervisorConfig *HypervisorConfig,
 	// Store the cached vsock CID for reuse
 	q.cachedVsockCID = qp.VsockContextID
 
+	// Set the PidFile path for the restored VM
+	q.qemuConfig.PidFile = filepath.Join(q.config.VMStorePath, q.id, "pid")
+
 	q.arch.setBridges(q.state.Bridges)
 	return nil
 }
