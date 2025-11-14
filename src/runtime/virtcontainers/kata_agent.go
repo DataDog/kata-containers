@@ -744,8 +744,8 @@ func (k *kataAgent) reuseAgent(agent agent) error {
 		return fmt.Errorf("Bug: get a wrong type of agent")
 	}
 
-	k.installReqFunc(a.client)
-	k.client = a.client
+	// Copy the connection info but not the client itself
+	// The client will be lazily created when needed with the correct vsock
 	k.vmSocket = a.vmSocket
 	k.state.URL = a.state.URL
 	k.keepConn = a.keepConn
