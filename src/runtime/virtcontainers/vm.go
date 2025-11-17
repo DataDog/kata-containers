@@ -475,6 +475,15 @@ func (v *VM) assignSandbox(s *Sandbox) error {
 		v.logger().WithField("vmSharedDir", vmSharedDir).Info("VirtioFS device hot-plugged successfully")
 	}
 
+	// For VMCache with VirtioFS, we removed the sandbox directory earlier
+	// Recreate it now so the symlinks can be created
+	if s.config.HypervisorConfig.SharedFS == "virtio-fs" || s.config.HypervisorConfig.SharedFS == "virtio-fs-nydus" {
+		sandboxBaseDir := getSandboxPath(s.id)
+		if err := os.MkdirAll(sandboxBaseDir, DirMode); err != nil {
+			return fmt.Errorf("failed to create sandbox directory for symlinks: %w", err)
+		}
+	}
+
 	// First make sure the symlinks do not exist
 	os.RemoveAll(sbSharePath)
 	os.RemoveAll(sbSockDir)
