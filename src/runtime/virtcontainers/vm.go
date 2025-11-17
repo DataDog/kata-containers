@@ -391,6 +391,13 @@ func (v *VM) assignSandbox(s *Sandbox) error {
 			v.logger().WithError(err).Warn("failed to stop old virtiofsd daemon (continuing anyway)")
 		}
 
+		// Clean up any existing filesystem share structure from sandbox creation
+		// This resets the bind mount so we can set it up fresh for the hot-plug flow
+		v.logger().Info("Cleaning up existing filesystem share for VirtioFS VMCache")
+		if err := s.fsShare.Cleanup(context.Background()); err != nil {
+			v.logger().WithError(err).Warn("failed to cleanup existing filesystem share (continuing anyway)")
+		}
+
 		// Prepare the filesystem share structure (mounts/ and shared/ with bind mount)
 		v.logger().Info("Preparing filesystem share for VirtioFS VMCache")
 		if err := s.fsShare.Prepare(context.Background()); err != nil {
