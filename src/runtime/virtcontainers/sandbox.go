@@ -549,8 +549,18 @@ func createSandbox(ctx context.Context, sandboxConfig SandboxConfig, factory Fac
 	// The code below only gets called when initially creating a sandbox, not when restoring or
 	// re-creating it. The above check for the sandbox state enforces that.
 
-	if err := s.fsShare.Prepare(ctx); err != nil {
-		return nil, err
+	// For VMCache with VirtioFS, skip the initial fsShare.Prepare() call here.
+	// The assignSandbox() function will handle the complete setup when the VM is assigned.
+	// This prevents creating stale directory structures that conflict with hot-plug flow.
+	skipInitialFSPrepare := factory != nil &&
+		(s.config.HypervisorConfig.SharedFS == "virtio-fs" || s.config.HypervisorConfig.SharedFS == "virtio-fs-nydus")
+
+	if !skipInitialFSPrepare {
+		if err := s.fsShare.Prepare(ctx); err != nil {
+			return nil, err
+		}
+	} else {
+		s.Logger().Info("Skipping initial fsShare.Prepare() for VMCache + VirtioFS - will be handled in assignSandbox()")
 	}
 
 	if err := s.agent.createSandbox(ctx, s); err != nil {
