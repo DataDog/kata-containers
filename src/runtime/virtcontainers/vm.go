@@ -398,6 +398,14 @@ func (v *VM) assignSandbox(s *Sandbox) error {
 			v.logger().WithError(err).Warn("failed to cleanup existing filesystem share (continuing anyway)")
 		}
 
+		// Forcefully remove the entire sandbox shared directory to ensure no stale state
+		// This is critical for VMCache - prevents the guest from seeing old directory structures
+		sandboxBaseDir := getSandboxPath(s.id)
+		v.logger().WithField("sandboxBaseDir", sandboxBaseDir).Info("Removing sandbox directory for fresh hot-plug")
+		if err := os.RemoveAll(sandboxBaseDir); err != nil && !os.IsNotExist(err) {
+			v.logger().WithError(err).Warn("failed to remove sandbox directory (continuing anyway)")
+		}
+
 		// Prepare the filesystem share structure (mounts/ and shared/ with bind mount)
 		v.logger().Info("Preparing filesystem share for VirtioFS VMCache")
 		if err := s.fsShare.Prepare(context.Background()); err != nil {
