@@ -3019,6 +3019,10 @@ func (q *qemu) toGrpc(ctx context.Context) ([]byte, error) {
 		}
 	}
 
+	// Populate state.Bridges from arch bridges before serialization
+	// This ensures bridge state is preserved when VM is cached
+	q.state.Bridges = q.arch.getBridges()
+
 	qp := qemuGrpc{
 		ID:             q.id,
 		QmpChannelpath: q.qmpMonitorCh.path,
