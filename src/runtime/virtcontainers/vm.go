@@ -365,15 +365,24 @@ func (v *VM) assignSandbox(s *Sandbox) error {
 	// - link 9pfs share path from sandbox dir (/run/kata-containers/shared/sandboxes/sbid/) to vm dir (/run/vc/vm/vmid/shared/)
 
 	vmSharePath := buildVMSharePath(v.id, v.store.RunVMStoragePath())
+	vmBaseDir := filepath.Dir(vmSharePath)
+	vmMountsDir := filepath.Join(vmBaseDir, "mounts")
+	vmSharedDir := vmSharePath
+	vmPrivateDir := filepath.Join(vmBaseDir, "private")
 	vmSockDir := filepath.Join(v.store.RunVMStoragePath(), v.id)
-	sbSharePath := getMountPath(s.id)
+	sbMountPath := getMountPath(s.id)
+	sbSharedPath := GetSharePath(s.id)
+	sbPrivatePath := getPrivatePath(s.id)
 	sbSockDir := filepath.Join(v.store.RunVMStoragePath(), s.id)
 
 	v.logger().WithFields(logrus.Fields{
-		"vmSharePath": vmSharePath,
-		"vmSockDir":   vmSockDir,
-		"sbSharePath": sbSharePath,
-		"sbSockDir":   sbSockDir,
+		"vmSharePath":   vmSharePath,
+		"vmMountsDir":   vmMountsDir,
+		"vmSockDir":     vmSockDir,
+		"sbMountPath":   sbMountPath,
+		"sbSharedPath":  sbSharedPath,
+		"sbPrivatePath": sbPrivatePath,
+		"sbSockDir":     sbSockDir,
 	}).Infof("assign vm to sandbox %s", s.id)
 
 	if err := s.agent.reuseAgent(v.agent); err != nil {
@@ -409,24 +418,36 @@ func (v *VM) assignSandbox(s *Sandbox) error {
 		// Prepare the VM's shared directory structure (mounts/ and shared/ with bind mount)
 		// We use the VM's path (not sandbox path) because VirtioFS serves the VM directory
 		// and the symlink (created below) connects the sandbox path to the VM path
-		vmSharedDir := filepath.Join(vmSharePath, "shared")
-		vmMountsDir := filepath.Join(vmSharePath, "mounts")
-
 		v.logger().WithFields(logrus.Fields{
-			"vmSharedDir": vmSharedDir,
-			"vmMountsDir": vmMountsDir,
+			"vmSharedDir":  vmSharedDir,
+			"vmMountsDir":  vmMountsDir,
+			"vmPrivateDir": vmPrivateDir,
 		}).Info("Preparing VM filesystem share for VirtioFS VMCache")
 
-		// Create the mounts and shared directories for the VM
+		// Ensure clean state for VM directories
+		if err := os.RemoveAll(vmMountsDir); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to clean VM mounts directory: %w", err)
+		}
+		if err := os.RemoveAll(vmSharedDir); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to clean VM shared directory: %w", err)
+		}
+		if err := os.RemoveAll(vmPrivateDir); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to clean VM private directory: %w", err)
+		}
+
+		// Create the mounts/shared/private directories for the VM
 		if err := os.MkdirAll(vmMountsDir, DirMode); err != nil {
 			return fmt.Errorf("failed to create VM mounts directory: %w", err)
 		}
-		if err := os.MkdirAll(vmSharedDir, DirMode); err != nil {
+		if err := os.MkdirAll(vmSharedDir, sharedDirMode); err != nil {
 			return fmt.Errorf("failed to create VM shared directory: %w", err)
+		}
+		if err := os.MkdirAll(vmPrivateDir, DirMode); err != nil {
+			return fmt.Errorf("failed to create VM private directory: %w", err)
 		}
 
 		// Create bind mount: mounts -> shared (so contents of mounts appear in shared)
-		if err := bindMount(context.Background(), vmMountsDir, vmSharedDir, false, "shared"); err != nil {
+		if err := bindMount(context.Background(), vmMountsDir, vmSharedDir, true, "slave"); err != nil {
 			return fmt.Errorf("failed to create bind mount for VM: %w", err)
 		}
 
@@ -485,15 +506,30 @@ func (v *VM) assignSandbox(s *Sandbox) error {
 	}
 
 	// First make sure the symlinks do not exist
-	os.RemoveAll(sbSharePath)
+	os.RemoveAll(sbMountPath)
+	os.RemoveAll(sbSharedPath)
+	os.RemoveAll(sbPrivatePath)
 	os.RemoveAll(sbSockDir)
 
-	if err := os.Symlink(vmSharePath, sbSharePath); err != nil {
+	if err := os.Symlink(vmMountsDir, sbMountPath); err != nil {
+		return err
+	}
+
+	if err := os.Symlink(vmSharedDir, sbSharedPath); err != nil {
+		os.Remove(sbMountPath)
+		return err
+	}
+
+	if err := os.Symlink(vmPrivateDir, sbPrivatePath); err != nil {
+		os.Remove(sbMountPath)
+		os.Remove(sbSharedPath)
 		return err
 	}
 
 	if err := os.Symlink(vmSockDir, sbSockDir); err != nil {
-		os.Remove(sbSharePath)
+		os.Remove(sbMountPath)
+		os.Remove(sbSharedPath)
+		os.Remove(sbPrivatePath)
 		return err
 	}
 
