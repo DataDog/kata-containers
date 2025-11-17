@@ -406,21 +406,38 @@ func (v *VM) assignSandbox(s *Sandbox) error {
 			v.logger().WithError(err).Warn("failed to remove sandbox directory (continuing anyway)")
 		}
 
-		// Prepare the filesystem share structure (mounts/ and shared/ with bind mount)
-		v.logger().Info("Preparing filesystem share for VirtioFS VMCache")
-		if err := s.fsShare.Prepare(context.Background()); err != nil {
-			return fmt.Errorf("failed to prepare sandbox filesystem share: %w", err)
+		// Prepare the VM's shared directory structure (mounts/ and shared/ with bind mount)
+		// We use the VM's path (not sandbox path) because VirtioFS serves the VM directory
+		// and the symlink (created below) connects the sandbox path to the VM path
+		vmSharedDir := filepath.Join(vmSharePath, "shared")
+		vmMountsDir := filepath.Join(vmSharePath, "mounts")
+
+		v.logger().WithFields(logrus.Fields{
+			"vmSharedDir": vmSharedDir,
+			"vmMountsDir": vmMountsDir,
+		}).Info("Preparing VM filesystem share for VirtioFS VMCache")
+
+		// Create the mounts and shared directories for the VM
+		if err := os.MkdirAll(vmMountsDir, DirMode); err != nil {
+			return fmt.Errorf("failed to create VM mounts directory: %w", err)
+		}
+		if err := os.MkdirAll(vmSharedDir, DirMode); err != nil {
+			return fmt.Errorf("failed to create VM shared directory: %w", err)
 		}
 
-		// Get the sandbox's shared directory path
-		sandboxSharedPath := GetSharePath(s.id)
-		s.config.HypervisorConfig.SharedPath = sandboxSharedPath
+		// Create bind mount: mounts -> shared (so contents of mounts appear in shared)
+		if err := bindMount(context.Background(), vmMountsDir, vmSharedDir, false, "shared"); err != nil {
+			return fmt.Errorf("failed to create bind mount for VM: %w", err)
+		}
 
-		v.logger().WithField("sandboxSharedPath", sandboxSharedPath).Info("Starting virtiofsd for sandbox")
+		// Set the hypervisor's SharedPath to the VM's shared directory
+		s.config.HypervisorConfig.SharedPath = vmSharedDir
 
-		// Start virtiofsd daemon with the sandbox's shared directory
-		if err := v.hypervisor.StartVirtiofsDaemon(context.Background(), sandboxSharedPath); err != nil {
-			return fmt.Errorf("failed to start virtiofsd for sandbox: %w", err)
+		v.logger().WithField("vmSharedDir", vmSharedDir).Info("Starting virtiofsd for VM")
+
+		// Start virtiofsd daemon with the VM's shared directory
+		if err := v.hypervisor.StartVirtiofsDaemon(context.Background(), vmSharedDir); err != nil {
+			return fmt.Errorf("failed to start virtiofsd for VM: %w", err)
 		}
 
 		// Now hot-plug the vhost-user-fs device into the running VM
@@ -455,7 +472,7 @@ func (v *VM) assignSandbox(s *Sandbox) error {
 			return fmt.Errorf("failed to hot-plug VirtioFS device: %w", err)
 		}
 
-		v.logger().WithField("sandboxSharedPath", sandboxSharedPath).Info("VirtioFS device hot-plugged successfully")
+		v.logger().WithField("vmSharedDir", vmSharedDir).Info("VirtioFS device hot-plugged successfully")
 	}
 
 	// First make sure the symlinks do not exist
