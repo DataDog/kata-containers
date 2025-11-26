@@ -73,6 +73,7 @@ case "${RUNTIME_CHOICE}" in
 			--env CROSS_BUILD=${CROSS_BUILD} \
 			--env ARCH=${ARCH} \
 			--env CC="${CC}" \
+			--env DESTDIR="" \
 			-w "${repo_root_dir}/src/runtime-rs" \
 			--user "$(id -u)":"$(id -g)" \
 			"${container_image}" \
