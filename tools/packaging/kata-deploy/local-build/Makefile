@@ -229,3 +229,11 @@ merge-builds:
 
 install-tarball:
 	tar --zstd -xf ./kata-static.tar.zst -C /
+
+clean:
+	rm -rf build/
+
+clean-%:
+	rm -rf build/$*/
+
+.PHONY: clean clean-%
