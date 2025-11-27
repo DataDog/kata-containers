@@ -1591,6 +1591,7 @@ main() {
 		destdir="${workdir}/${t}/destdir"
 		builddir="${workdir}/${t}/builddir"
 		echo "Build kata version ${kata_version}: ${t}"
+		rm -rf "${destdir}"/*
 		mkdir -p "${destdir}"
 		mkdir -p "${builddir}"
 		if [ "${silent}" == true ]; then
