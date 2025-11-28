@@ -1,0 +1,4 @@
+# Exclude build artifacts from Docker build context
+# These directories contain rootfs builds with special device files
+# that Docker cannot read (e.g., /dev/kmem)
+kata-deploy/local-build/build/
