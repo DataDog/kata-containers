@@ -27,6 +27,7 @@ kata_static_build_scripts="${kata_static_build_dir}/scripts"
 
 ARCH=${ARCH:-$(uname -m)}
 
+[ -d "qemu" ] && rm -rf qemu
 git clone --depth=1 "${QEMU_REPO}" qemu
 pushd qemu
 git fetch --depth=1 origin "${QEMU_VERSION_NUM}"
