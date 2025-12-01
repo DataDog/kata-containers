@@ -49,7 +49,13 @@ func startContainer(ctx context.Context, s *service, c *container) (retErr error
 		// We use s.ctx(`ctx` derived from `s.ctx`) to check for cancellation of the
 		// shim context and the context passed to startContainer for tracing.
 		go watchOOMEvents(ctx, s)
-	} else {
+	}
+
+	if c.restore != nil {
+		if err := s.restoreContainer(ctx, c); err != nil {
+			return err
+		}
+	} else if !c.cType.IsSandbox() {
 		_, err := s.sandbox.StartContainer(ctx, c.id)
 		if err != nil {
 			return err

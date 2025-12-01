@@ -99,6 +99,23 @@ func create(ctx context.Context, s *service, r *taskAPI.CreateTaskRequest) (*con
 		return nil, err
 	}
 
+	var (
+		stagedCheckpointDir string
+		stagedCheckpointID  string
+	)
+	if cpPath := strings.TrimSpace(r.Checkpoint); cpPath != "" {
+		checkpointPath := cpPath
+		if !filepath.IsAbs(checkpointPath) {
+			checkpointPath = filepath.Join(r.Bundle, checkpointPath)
+		}
+		dest, checkpointID, err := s.stageCheckpointBundle(r.ID, checkpointPath)
+		if err != nil {
+			return nil, err
+		}
+		stagedCheckpointDir = dest
+		stagedCheckpointID = checkpointID
+	}
+
 	disableOutput := noNeedForOutput(detach, ociSpec.Process.Terminal)
 	rootfs := filepath.Join(r.Bundle, "rootfs")
 
@@ -238,6 +255,14 @@ func create(ctx context.Context, s *service, r *taskAPI.CreateTaskRequest) (*con
 	container, err := newContainer(s, r, containerType, ociSpec, rootFs.Mounted)
 	if err != nil {
 		return nil, err
+	}
+
+	if stagedCheckpointDir != "" {
+		container.restore = &restoreInfo{
+			hostDir:      stagedCheckpointDir,
+			checkpointID: stagedCheckpointID,
+			parentID:     strings.TrimSpace(r.ParentCheckpoint),
+		}
 	}
 
 	return container, nil

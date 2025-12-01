@@ -37,6 +37,14 @@ type container struct {
 	status      task.Status
 	terminal    bool
 	mounted     bool
+
+	restore *restoreInfo
+}
+
+type restoreInfo struct {
+	hostDir      string
+	checkpointID string
+	parentID     string
 }
 
 func newContainer(s *service, r *taskAPI.CreateTaskRequest, containerType vc.ContainerType, spec *specs.Spec, mounted bool) (*container, error) {

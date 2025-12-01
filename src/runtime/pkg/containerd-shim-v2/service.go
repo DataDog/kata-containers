@@ -11,18 +11,22 @@ import (
 	"io"
 	"os"
 	sysexec "os/exec"
+	"path/filepath"
 	goruntime "runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	eventstypes "github.com/containerd/containerd/api/events"
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v2"
+	"github.com/containerd/containerd/api/types/runc/options"
 	"github.com/containerd/containerd/api/types/task"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/namespaces"
 	cdruntime "github.com/containerd/containerd/runtime"
 	cdshim "github.com/containerd/containerd/runtime/v2/shim"
+	"github.com/containerd/continuity/fs"
 	"github.com/containerd/typeurl/v2"
 	"github.com/kata-containers/kata-containers/src/runtime/pkg/katautils"
 	"github.com/kata-containers/kata-containers/src/runtime/pkg/katautils/katatrace"
@@ -54,6 +58,8 @@ const (
 
 	chSize      = 128
 	exitCode255 = 255
+
+	shimCheckpointDir = "checkpoints"
 )
 
 var (
@@ -931,7 +937,55 @@ func (s *service) Checkpoint(ctx context.Context, r *taskAPI.CheckpointTaskReque
 		rpcDurationsHistogram.WithLabelValues("checkpoint").Observe(float64(time.Since(start).Nanoseconds() / int64(time.Millisecond)))
 	}()
 
-	return nil, errdefs.ToGRPCf(errdefs.ErrNotImplemented, "service Checkpoint")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.sandbox == nil {
+		return nil, errdefs.ToGRPCf(errdefs.ErrFailedPrecondition, "sandbox not started")
+	}
+
+	c, err := s.getContainer(r.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	var runtimeOpts []byte
+	leaveRunning := true
+	if r.Options != nil {
+		runtimeOpts = r.Options.Value
+		if opts, err := typeurl.UnmarshalAny(r.Options); err == nil {
+			if checkpointOpts, ok := opts.(*options.CheckpointOptions); ok {
+				if checkpointOpts.Exit {
+					return nil, errdefs.ToGRPCf(errdefs.ErrInvalidArgument, "checkpoint with exit is not supported")
+				}
+				leaveRunning = !checkpointOpts.Exit
+			}
+		}
+	}
+
+	checkpointID := checkpointIDFromPath(r.Path)
+	req := vc.CheckpointRequest{
+		ContainerID:    r.ID,
+		CheckpointID:   checkpointID,
+		LeaveRunning:   leaveRunning,
+		RuntimeOptions: runtimeOpts,
+	}
+
+	result, err := s.sandbox.CheckpointContainer(ctx, req)
+	if err != nil {
+		return nil, errdefs.ToGRPC(err)
+	}
+
+	if err := exportCheckpointDir(result.HostDir, r.Path); err != nil {
+		return nil, errdefs.ToGRPC(err)
+	}
+
+	s.sendL(&eventstypes.TaskCheckpointed{
+		ContainerID: r.ID,
+		Checkpoint:  checkpointID,
+	})
+
+	return empty, nil
 }
 
 // Connect returns shim information such as the shim's pid
@@ -1115,6 +1169,58 @@ func (s *service) Wait(ctx context.Context, r *taskAPI.WaitRequest) (_ *taskAPI.
 	}, nil
 }
 
+func checkpointIDFromPath(p string) string {
+	base := strings.TrimSpace(filepath.Base(p))
+	if base != "" {
+		base = strings.TrimSuffix(base, filepath.Ext(base))
+	}
+
+	if base == "" || base == "." || base == string(os.PathSeparator) {
+		base = fmt.Sprintf("checkpoint-%d", time.Now().UnixNano())
+	}
+
+	sanitized := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r
+		case r >= '0' && r <= '9':
+			return r
+		case r == '-', r == '_':
+			return r
+		default:
+			return '-'
+		}
+	}, base)
+
+	sanitized = strings.Trim(sanitized, "-_")
+	if sanitized == "" {
+		sanitized = fmt.Sprintf("checkpoint-%d", time.Now().UnixNano())
+	}
+	return sanitized
+}
+
+func exportCheckpointDir(src, dst string) error {
+	if dst == "" {
+		return nil
+	}
+
+	if err := os.RemoveAll(dst); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove checkpoint target %s: %w", dst, err)
+	}
+
+	if err := os.MkdirAll(dst, 0o750); err != nil {
+		return fmt.Errorf("create checkpoint target %s: %w", dst, err)
+	}
+
+	if err := fs.CopyDir(dst, src, fs.WithAllowXAttrErrors()); err != nil {
+		return fmt.Errorf("copy checkpoint data: %w", err)
+	}
+
+	return nil
+}
+
 func (s *service) processExits() {
 	for e := range s.ec {
 		s.checkProcesses(e)
@@ -1168,4 +1274,56 @@ func (s *service) getContainerStatus(containerID string) (task.Status, error) {
 	}
 
 	return status, nil
+}
+
+func (s *service) restoreContainer(ctx context.Context, c *container) error {
+	if c.restore == nil {
+		return nil
+	}
+
+	req := vc.RestoreRequest{
+		ContainerID:        c.id,
+		CheckpointID:       c.restore.checkpointID,
+		ParentCheckpointID: c.restore.parentID,
+		SourceHostDir:      c.restore.hostDir,
+	}
+
+	if err := s.sandbox.RestoreContainer(ctx, req); err != nil {
+		return err
+	}
+
+	c.restore = nil
+	return nil
+}
+
+func (s *service) stageCheckpointBundle(containerID, checkpointPath string) (string, string, error) {
+	info, err := os.Stat(checkpointPath)
+	if err != nil {
+		return "", "", fmt.Errorf("stat checkpoint path %s: %w", checkpointPath, err)
+	}
+	if !info.IsDir() {
+		return "", "", fmt.Errorf("checkpoint path %s must be a directory", checkpointPath)
+	}
+
+	checkpointID := checkpointIDFromPath(checkpointPath)
+
+	sandboxID := s.id
+	if s.sandbox != nil && s.sandbox.ID() != "" {
+		sandboxID = s.sandbox.ID()
+	}
+
+	dest := filepath.Join(vc.GetSharePath(sandboxID), shimCheckpointDir, containerID, checkpointID)
+	if err := os.RemoveAll(dest); err != nil && !os.IsNotExist(err) {
+		return "", "", fmt.Errorf("cleanup checkpoint staging directory %s: %w", dest, err)
+	}
+
+	if err := os.MkdirAll(dest, 0o750); err != nil {
+		return "", "", fmt.Errorf("create checkpoint staging directory %s: %w", dest, err)
+	}
+
+	if err := fs.CopyDir(dest, checkpointPath, fs.WithAllowXAttrErrors()); err != nil {
+		return "", "", fmt.Errorf("copy checkpoint data: %w", err)
+	}
+
+	return dest, checkpointID, nil
 }
