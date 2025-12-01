@@ -69,6 +69,7 @@ use crate::sync_with_async::{read_async, write_async};
 use async_trait::async_trait;
 use rlimit::{setrlimit, Resource, Rlim};
 use tokio::io::AsyncBufReadExt;
+use tokio::process::Command;
 use tokio::sync::Mutex;
 
 use kata_sys_util::hooks::HookStates;
@@ -268,6 +269,33 @@ pub struct LinuxContainer {
     pub logger: Logger,
     #[cfg(feature = "standard-oci-runtime")]
     pub console_socket: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct CheckpointConfig {
+    pub images_dir: PathBuf,
+    pub work_dir: PathBuf,
+    pub criu_path: PathBuf,
+    pub leave_running: bool,
+}
+
+impl CheckpointConfig {
+    pub fn log_file(&self) -> PathBuf {
+        self.work_dir.join("criu-dump.log")
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RestoreConfig {
+    pub images_dir: PathBuf,
+    pub work_dir: PathBuf,
+    pub criu_path: PathBuf,
+}
+
+impl RestoreConfig {
+    pub fn log_file(&self) -> PathBuf {
+        self.work_dir.join("criu-restore.log")
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -1752,6 +1780,141 @@ impl LinuxContainer {
     #[cfg(feature = "standard-oci-runtime")]
     pub fn set_console_socket(&mut self, console_socket: &Path) -> Result<()> {
         self.console_socket = console_socket.to_path_buf();
+        Ok(())
+    }
+
+    pub async fn checkpoint(&mut self, cfg: &CheckpointConfig) -> Result<()> {
+        if self.init_process_pid <= 0 {
+            return Err(anyhow!(
+                "cannot checkpoint container {}: init pid invalid",
+                self.id
+            ));
+        }
+
+        if self.status.status() != ContainerState::Running {
+            return Err(anyhow!(
+                "cannot checkpoint container {}: not running",
+                self.id
+            ));
+        }
+
+        tokio::fs::create_dir_all(&cfg.images_dir)
+            .await
+            .context("create checkpoint images directory")?;
+        tokio::fs::create_dir_all(&cfg.work_dir)
+            .await
+            .context("create checkpoint work directory")?;
+
+        let log_file = cfg.log_file();
+        let mut cmd = Command::new(&cfg.criu_path);
+        cmd.arg("dump")
+            .arg("--tree")
+            .arg(self.init_process_pid.to_string())
+            .arg("--images-dir")
+            .arg(&cfg.images_dir)
+            .arg("--work-dir")
+            .arg(&cfg.work_dir)
+            .arg("--log-file")
+            .arg(&log_file)
+            .arg("--log-level")
+            .arg("4")
+            .arg("--tcp-established")
+            .arg("--ext-unix-sk")
+            .arg("--shell-job")
+            .arg("--file-locks");
+
+        if cfg.leave_running {
+            cmd.arg("--leave-running");
+        }
+
+        info!(
+            self.logger,
+            "running criu dump for container {} (dir: {:?})", self.id, cfg.images_dir
+        );
+
+        let status = cmd
+            .status()
+            .await
+            .context("failed to execute criu dump command")?;
+        if !status.success() {
+            return Err(anyhow!(
+                "criu dump for container {} failed with status {:?}",
+                self.id,
+                status.code()
+            ));
+        }
+
+        if !cfg.leave_running {
+            self.status.transition(ContainerState::Stopped);
+            self.init_process_pid = -1;
+            if let Some(proc) = self.processes.values_mut().find(|p| p.init) {
+                proc.pid = -1;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn restore(&mut self, cfg: &RestoreConfig) -> Result<()> {
+        tokio::fs::create_dir_all(&cfg.work_dir)
+            .await
+            .context("create checkpoint work directory")?;
+
+        let log_file = cfg.log_file();
+        let mut cmd = Command::new(&cfg.criu_path);
+        cmd.arg("restore")
+            .arg("--images-dir")
+            .arg(&cfg.images_dir)
+            .arg("--work-dir")
+            .arg(&cfg.work_dir)
+            .arg("--log-file")
+            .arg(&log_file)
+            .arg("--log-level")
+            .arg("4")
+            .arg("--tcp-established")
+            .arg("--ext-unix-sk")
+            .arg("--shell-job")
+            .arg("--file-locks");
+
+        info!(
+            self.logger,
+            "running criu restore for container {} (dir: {:?})", self.id, cfg.images_dir
+        );
+
+        let status = cmd
+            .status()
+            .await
+            .context("failed to execute criu restore command")?;
+        if !status.success() {
+            return Err(anyhow!(
+                "criu restore for container {} failed with status {:?}",
+                self.id,
+                status.code()
+            ));
+        }
+
+        let new_pid =
+            self.cgroup_manager
+                .as_ref()
+                .get_pids()
+                .context("get cgroup pids after restore")?
+                .into_iter()
+                .min()
+                .ok_or_else(|| anyhow!("unable to determine restored pid"))? as pid_t;
+
+        self.init_process_pid = new_pid;
+        self.init_process_start_time = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        if let Some(proc) = self.processes.values_mut().find(|p| p.init) {
+            proc.pid = new_pid;
+            proc.exit_code = 0;
+        }
+
+        self.status.transition(ContainerState::Running);
+
         Ok(())
     }
 }
