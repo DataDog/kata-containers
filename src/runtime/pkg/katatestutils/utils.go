@@ -243,6 +243,10 @@ type RuntimeConfigOptions struct {
 	AgentDebug            bool
 	AgentTrace            bool
 	EnablePprof           bool
+	EnableCheckpoint      bool
+	GuestCriuPath         string
+	GuestCheckpointDir    string
+	HostCheckpointDir     string
 }
 
 // ContainerIDTestDataType is a type used to test Container and Sandbox ID's.
@@ -341,7 +345,11 @@ func MakeRuntimeConfigFileData(config RuntimeConfigOptions) string {
 	enable_pprof= ` + strconv.FormatBool(config.EnablePprof) + `
 	jaeger_endpoint= "` + config.JaegerEndpoint + `"
 	jaeger_user= "` + config.JaegerUser + `"
-	jaeger_password= "` + config.JaegerPassword + `"`
+	jaeger_password= "` + config.JaegerPassword + `"
+	enable_checkpoint = ` + strconv.FormatBool(config.EnableCheckpoint) + `
+	guest_criu_path = "` + config.GuestCriuPath + `"
+	guest_checkpoint_dir = "` + config.GuestCheckpointDir + `"
+	host_checkpoint_dir = "` + config.HostCheckpointDir + `"`
 }
 
 func IsInGitHubActions() bool {

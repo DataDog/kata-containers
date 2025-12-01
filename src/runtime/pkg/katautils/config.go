@@ -198,6 +198,10 @@ type runtime struct {
 	DanConf                   string   `toml:"dan_conf"`
 	ForceGuestPull            bool     `toml:"experimental_force_guest_pull"`
 	PodResourceAPISock        string   `toml:"pod_resource_api_sock"`
+	EnableCheckpoint          bool     `toml:"enable_checkpoint"`
+	GuestCriuPath             string   `toml:"guest_criu_path"`
+	GuestCheckpointDir        string   `toml:"guest_checkpoint_dir"`
+	HostCheckpointDir         string   `toml:"host_checkpoint_dir"`
 }
 
 type agent struct {
@@ -1517,6 +1521,12 @@ func initConfig() (config oci.RuntimeConfig, err error) {
 		HypervisorType:   defaultHypervisor,
 		HypervisorConfig: GetDefaultHypervisorConfig(),
 		AgentConfig:      vc.KataAgentConfig{},
+		Checkpoint: oci.CheckpointConfig{
+			Enable:             defaultEnableCheckpoint,
+			GuestCriuPath:      defaultGuestCriuPath,
+			GuestCheckpointDir: defaultGuestCheckpointDir,
+			HostCheckpointDir:  defaultHostCheckpointDir,
+		},
 	}
 
 	return config, nil
@@ -1617,6 +1627,32 @@ func LoadConfiguration(configPath string, ignoreLogging bool) (resolvedConfigPat
 
 	config.ForceGuestPull = tomlConf.Runtime.ForceGuestPull
 	config.PodResourceAPISock = tomlConf.Runtime.PodResourceAPISock
+
+	config.Checkpoint.Enable = tomlConf.Runtime.EnableCheckpoint
+
+	guestCriuPath := defaultGuestCriuPath
+	if tomlConf.Runtime.GuestCriuPath != "" {
+		guestCriuPath = tomlConf.Runtime.GuestCriuPath
+	}
+	config.Checkpoint.GuestCriuPath = guestCriuPath
+
+	guestCheckpointDir := defaultGuestCheckpointDir
+	if tomlConf.Runtime.GuestCheckpointDir != "" {
+		guestCheckpointDir = tomlConf.Runtime.GuestCheckpointDir
+	}
+	config.Checkpoint.GuestCheckpointDir = guestCheckpointDir
+
+	hostCheckpointDir := defaultHostCheckpointDir
+	if tomlConf.Runtime.HostCheckpointDir != "" {
+		hostCheckpointDir = tomlConf.Runtime.HostCheckpointDir
+	}
+	if hostCheckpointDir != "" {
+		hostCheckpointDir, err = filepath.Abs(hostCheckpointDir)
+		if err != nil {
+			return "", config, err
+		}
+		config.Checkpoint.HostCheckpointDir = hostCheckpointDir
+	}
 
 	return resolved, config, nil
 }

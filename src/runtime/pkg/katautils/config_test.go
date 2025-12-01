@@ -95,6 +95,12 @@ func createAllRuntimeConfigFiles(dir, hypervisor string) (testConfig testRuntime
 	epcSize := int64(0)
 	maxMemory := uint64(memory.TotalMemory() / 1024 / 1024)
 
+	hostCheckpointDirRel := path.Join(dir, "checkpoints")
+	hostCheckpointDirAbs, err := filepath.Abs(hostCheckpointDirRel)
+	if err != nil {
+		return testConfig, err
+	}
+
 	configFileOptions := ktu.RuntimeConfigOptions{
 		Hypervisor:           "qemu",
 		HypervisorPath:       hypervisorPath,
@@ -130,6 +136,10 @@ func createAllRuntimeConfigFiles(dir, hypervisor string) (testConfig testRuntime
 		JaegerEndpoint:       jaegerEndpoint,
 		JaegerUser:           jaegerUser,
 		JaegerPassword:       jaegerPassword,
+		EnableCheckpoint:     true,
+		GuestCriuPath:        defaultGuestCriuPath,
+		GuestCheckpointDir:   defaultGuestCheckpointDir,
+		HostCheckpointDir:    hostCheckpointDirRel,
 	}
 
 	runtimeConfigFileData := ktu.MakeRuntimeConfigFileData(configFileOptions)
@@ -218,6 +228,12 @@ func createAllRuntimeConfigFiles(dir, hypervisor string) (testConfig testRuntime
 		JaegerPassword:  jaegerPassword,
 
 		FactoryConfig: factoryConfig,
+		Checkpoint: oci.CheckpointConfig{
+			Enable:             true,
+			GuestCriuPath:      defaultGuestCriuPath,
+			GuestCheckpointDir: defaultGuestCheckpointDir,
+			HostCheckpointDir:  hostCheckpointDirAbs,
+		},
 	}
 
 	err = SetKernelParams(&runtimeConfig)

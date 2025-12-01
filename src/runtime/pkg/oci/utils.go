@@ -106,6 +106,21 @@ type FactoryConfig struct {
 	Template bool
 }
 
+// CheckpointConfig stores checkpoint/restore related settings.
+type CheckpointConfig struct {
+	// Enable toggles checkpoint/restore support.
+	Enable bool
+
+	// GuestCriuPath points to the CRIU binary inside the guest.
+	GuestCriuPath string
+
+	// GuestCheckpointDir is the directory inside the guest where checkpoint images are staged.
+	GuestCheckpointDir string
+
+	// HostCheckpointDir is the host directory used to store exported checkpoint archives.
+	HostCheckpointDir string
+}
+
 // RuntimeConfig aggregates all runtime specific settings
 // nolint: govet
 type RuntimeConfig struct {
@@ -193,6 +208,9 @@ type RuntimeConfig struct {
 	//	ColdPlugVFIO != NoPort AND PodResourceAPISock != "" => kubelet
 	//		based cold plug.
 	PodResourceAPISock string
+
+	// Checkpoint contains configuration related to container checkpoint/restore.
+	Checkpoint CheckpointConfig
 }
 
 // AddKernelParam allows the addition of new kernel parameters to an existing
@@ -1199,6 +1217,13 @@ func SandboxConfig(ocispec specs.Spec, runtime RuntimeConfig, bundlePath, cid st
 		CreateContainerTimeout: runtime.CreateContainerTimeout,
 
 		ForceGuestPull: runtime.ForceGuestPull,
+
+		Checkpoint: vc.CheckpointConfig{
+			Enable:        runtime.Checkpoint.Enable,
+			GuestDir:      runtime.Checkpoint.GuestCheckpointDir,
+			GuestCriuPath: runtime.Checkpoint.GuestCriuPath,
+			HostDir:       runtime.Checkpoint.HostCheckpointDir,
+		},
 	}
 
 	if err := addAnnotations(ocispec, &sandboxConfig, runtime); err != nil {

@@ -119,3 +119,8 @@ const defaultPCIeSwitchPort = 0
 
 const defaultRemoteHypervisorSocket = "/run/peerpod/hypervisor.sock"
 const defaultRemoteHypervisorTimeout = 600
+
+const defaultEnableCheckpoint = false
+const defaultGuestCriuPath = "/usr/sbin/criu"
+const defaultGuestCheckpointDir = "/run/kata-containers/checkpoints"
+const defaultHostCheckpointDir = "/var/lib/kata-containers/checkpoints"
