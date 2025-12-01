@@ -422,6 +422,18 @@ func (c *Container) setContainerState(state types.StateString) error {
 	return nil
 }
 
+func (c *Container) upsertCheckpoint(status types.CheckpointStatus) {
+	if status.ID == "" {
+		return
+	}
+
+	if c.state.Checkpoints == nil {
+		c.state.Checkpoints = make(map[string]types.CheckpointStatus)
+	}
+
+	c.state.Checkpoints[status.ID] = status
+}
+
 // mountSharedDirMounts handles bind-mounts by bindmounting to the host shared
 // directory which is mounted through virtiofs/9pfs in the VM.
 // It also updates the container mount list with the HostPath info, and store

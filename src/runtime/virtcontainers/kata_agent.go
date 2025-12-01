@@ -2066,6 +2066,22 @@ func (k *kataAgent) resumeContainer(ctx context.Context, sandbox *Sandbox, c Con
 	return err
 }
 
+func (k *kataAgent) checkpointContainer(ctx context.Context, req *grpc.CheckpointContainerRequest) error {
+	_, err := k.sendReq(ctx, req)
+	if err != nil && err.Error() == context.DeadlineExceeded.Error() {
+		return status.Errorf(codes.DeadlineExceeded, "CheckpointContainerRequest timed out")
+	}
+	return err
+}
+
+func (k *kataAgent) restoreContainer(ctx context.Context, req *grpc.RestoreContainerRequest) error {
+	_, err := k.sendReq(ctx, req)
+	if err != nil && err.Error() == context.DeadlineExceeded.Error() {
+		return status.Errorf(codes.DeadlineExceeded, "RestoreContainerRequest timed out")
+	}
+	return err
+}
+
 func (k *kataAgent) memHotplugByProbe(ctx context.Context, addr uint64, sizeMB uint32, memorySectionSizeMB uint32) error {
 	if memorySectionSizeMB == uint32(0) {
 		return fmt.Errorf("memorySectionSizeMB couldn't be zero")

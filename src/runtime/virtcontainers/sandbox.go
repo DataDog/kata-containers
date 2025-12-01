@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	v1 "github.com/containerd/cgroups/stats/v1"
 	v2 "github.com/containerd/cgroups/v2/stats"
@@ -189,6 +190,9 @@ type SandboxConfig struct {
 
 	// ForceGuestPull enforces guest pull independent of snapshotter annotations.
 	ForceGuestPull bool
+
+	// Checkpoint contains configuration for checkpoint/restore support.
+	Checkpoint CheckpointConfig
 }
 
 // valid checks that the sandbox configuration is valid.
@@ -206,6 +210,11 @@ func (sandboxConfig *SandboxConfig) valid() bool {
 		if exp.Get(f.Name) == nil {
 			return false
 		}
+	}
+
+	if err := sandboxConfig.Checkpoint.validate(); err != nil {
+		virtLog.WithError(err).Warn("invalid checkpoint configuration, disabling checkpoint support")
+		sandboxConfig.Checkpoint.Enable = false
 	}
 	return true
 }
@@ -1844,6 +1853,126 @@ func (s *Sandbox) ResumeContainer(ctx context.Context, containerID string) error
 		return err
 	}
 	return nil
+}
+
+// CheckpointContainer creates a CRIU checkpoint for the requested container.
+func (s *Sandbox) CheckpointContainer(ctx context.Context, req CheckpointRequest) (*CheckpointResult, error) {
+	if !s.config.Checkpoint.Enable {
+		return nil, fmt.Errorf("checkpoint support disabled for sandbox %s", s.id)
+	}
+
+	if req.ContainerID == "" || req.CheckpointID == "" {
+		return nil, fmt.Errorf("container id and checkpoint id must be provided")
+	}
+
+	if req.ParentCheckpointID != "" {
+		return nil, fmt.Errorf("incremental checkpoints are not supported yet")
+	}
+
+	c, err := s.findContainer(req.ContainerID)
+	if err != nil {
+		return nil, err
+	}
+
+	if c.state.State != types.StateRunning {
+		return nil, fmt.Errorf("container %s must be running to checkpoint (state=%s)", c.id, c.state.State)
+	}
+
+	hostDir, guestDir := s.resolveCheckpointDirs(req.ContainerID, req.CheckpointID)
+	if err := os.RemoveAll(hostDir); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to clean checkpoint directory %s: %w", hostDir, err)
+	}
+	if err := os.MkdirAll(hostDir, DirMode); err != nil {
+		return nil, fmt.Errorf("failed to create checkpoint directory %s: %w", hostDir, err)
+	}
+
+	grpcReq := &grpc.CheckpointContainerRequest{
+		ContainerId:        req.ContainerID,
+		GuestCheckpointDir: guestDir,
+		ParentCheckpointId: req.ParentCheckpointID,
+		LeaveRunning:       req.LeaveRunning,
+		RuntimeOptions:     req.RuntimeOptions,
+		CriuPath:           s.config.Checkpoint.GuestCriuPath,
+	}
+
+	if err := s.agent.checkpointContainer(ctx, grpcReq); err != nil {
+		return nil, err
+	}
+
+	status := types.CheckpointStatus{
+		ID:        req.CheckpointID,
+		HostPath:  hostDir,
+		GuestPath: guestDir,
+		ParentID:  req.ParentCheckpointID,
+		CreatedAt: time.Now().UTC(),
+	}
+	c.upsertCheckpoint(status)
+
+	if req.LeaveRunning {
+		if err := s.storeSandbox(ctx); err != nil {
+			return nil, err
+		}
+	} else if err := c.setContainerState(types.StateStopped); err != nil {
+		return nil, err
+	}
+
+	return &CheckpointResult{
+		HostDir:  hostDir,
+		GuestDir: guestDir,
+	}, nil
+}
+
+// RestoreContainer restores the container state from a previously created checkpoint.
+func (s *Sandbox) RestoreContainer(ctx context.Context, req RestoreRequest) error {
+	if !s.config.Checkpoint.Enable {
+		return fmt.Errorf("checkpoint support disabled for sandbox %s", s.id)
+	}
+
+	if req.ContainerID == "" || req.CheckpointID == "" {
+		return fmt.Errorf("container id and checkpoint id must be provided")
+	}
+
+	c, err := s.findContainer(req.ContainerID)
+	if err != nil {
+		return err
+	}
+
+	var hostDir, guestDir string
+	if req.SourceHostDir != "" {
+		guestDir, err = s.guestPathForHost(req.SourceHostDir)
+		if err != nil {
+			return err
+		}
+		hostDir = req.SourceHostDir
+	} else {
+		hostDir, guestDir = s.resolveCheckpointDirs(req.ContainerID, req.CheckpointID)
+	}
+
+	if _, err := os.Stat(hostDir); err != nil {
+		return fmt.Errorf("checkpoint data not found at %s: %w", hostDir, err)
+	}
+
+	grpcReq := &grpc.RestoreContainerRequest{
+		ContainerId:        req.ContainerID,
+		GuestCheckpointDir: guestDir,
+		RuntimeOptions:     req.RuntimeOptions,
+		CriuPath:           s.config.Checkpoint.GuestCriuPath,
+	}
+
+	if err := s.agent.restoreContainer(ctx, grpcReq); err != nil {
+		return err
+	}
+
+	status := types.CheckpointStatus{
+		ID:        req.CheckpointID,
+		HostPath:  hostDir,
+		GuestPath: guestDir,
+		ParentID:  req.ParentCheckpointID,
+		CreatedAt: time.Now().UTC(),
+	}
+	c.upsertCheckpoint(status)
+
+	return c.setContainerState(types.StateRunning)
 }
 
 // createContainers registers all containers, create the

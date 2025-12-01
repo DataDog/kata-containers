@@ -49,6 +49,26 @@ func (s *Sandbox) dumpState(ss *persistapi.SandboxState, cs map[string]persistap
 			FsType:        cont.state.Fstype,
 		}
 		state.CgroupPath = cont.state.CgroupPath
+		if len(cont.state.Checkpoints) == 0 {
+			state.Checkpoints = nil
+		} else {
+			if state.Checkpoints == nil {
+				state.Checkpoints = make(map[string]persistapi.CheckpointStatus, len(cont.state.Checkpoints))
+			} else {
+				for k := range state.Checkpoints {
+					delete(state.Checkpoints, k)
+				}
+			}
+			for cpID, cp := range cont.state.Checkpoints {
+				state.Checkpoints[cpID] = persistapi.CheckpointStatus{
+					ID:        cp.ID,
+					HostPath:  cp.HostPath,
+					GuestPath: cp.GuestPath,
+					ParentID:  cp.ParentID,
+					CreatedAt: cp.CreatedAt,
+				}
+			}
+		}
 		cs[id] = state
 	}
 
@@ -262,6 +282,13 @@ func (s *Sandbox) dumpConfig(ss *persistapi.SandboxState) {
 		LongLiveConn: sconfig.AgentConfig.LongLiveConn,
 	}
 
+	ss.Config.Checkpoint = persistapi.CheckpointConfig{
+		Enable:        sconfig.Checkpoint.Enable,
+		GuestDir:      sconfig.Checkpoint.GuestDir,
+		GuestCriuPath: sconfig.Checkpoint.GuestCriuPath,
+		HostDir:       sconfig.Checkpoint.HostDir,
+	}
+
 	for _, contConf := range sconfig.Containers {
 		ss.Config.ContainerConfigs = append(ss.Config.ContainerConfigs, persistapi.ContainerConfig{
 			ID:          contConf.ID,
@@ -311,6 +338,20 @@ func (c *Container) loadContState(cs persistapi.ContainerState) {
 		BlockDeviceID: cs.Rootfs.BlockDeviceID,
 		Fstype:        cs.Rootfs.FsType,
 		CgroupPath:    cs.CgroupPath,
+	}
+	if len(cs.Checkpoints) > 0 {
+		c.state.Checkpoints = make(map[string]types.CheckpointStatus, len(cs.Checkpoints))
+		for id, cp := range cs.Checkpoints {
+			c.state.Checkpoints[id] = types.CheckpointStatus{
+				ID:        cp.ID,
+				HostPath:  cp.HostPath,
+				GuestPath: cp.GuestPath,
+				ParentID:  cp.ParentID,
+				CreatedAt: cp.CreatedAt,
+			}
+		}
+	} else {
+		c.state.Checkpoints = nil
 	}
 }
 
@@ -502,6 +543,13 @@ func loadSandboxConfig(id string) (*SandboxConfig, error) {
 
 	sconfig.AgentConfig = KataAgentConfig{
 		LongLiveConn: savedConf.KataAgentConfig.LongLiveConn,
+	}
+
+	sconfig.Checkpoint = CheckpointConfig{
+		Enable:        savedConf.Checkpoint.Enable,
+		GuestDir:      savedConf.Checkpoint.GuestDir,
+		GuestCriuPath: savedConf.Checkpoint.GuestCriuPath,
+		HostDir:       savedConf.Checkpoint.HostDir,
 	}
 
 	for _, contConf := range savedConf.ContainerConfigs {
