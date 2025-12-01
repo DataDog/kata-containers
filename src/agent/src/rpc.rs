@@ -44,7 +44,10 @@ use protocols::health::{
 use protocols::types::Interface;
 use protocols::{agent_ttrpc_async as agent_ttrpc, health_ttrpc_async as health_ttrpc};
 use rustjail::cgroups::notifier;
-use rustjail::container::{BaseContainer, Container, LinuxContainer, SYSTEMD_CGROUP_PATH_FORMAT};
+use rustjail::container::{
+    BaseContainer, CheckpointConfig, Container, LinuxContainer, RestoreConfig,
+    SYSTEMD_CGROUP_PATH_FORMAT,
+};
 use rustjail::mount::parse_mount_table;
 use rustjail::process::Process;
 use rustjail::specconv::CreateOpts;
@@ -107,6 +110,7 @@ use kata_types::k8s;
 
 pub const CONTAINER_BASE: &str = "/run/kata-containers";
 const MODPROBE_PATH: &str = "/sbin/modprobe";
+const DEFAULT_CRIU_PATH: &str = "/usr/sbin/criu";
 const TRUSTED_IMAGE_STORAGE_DEVICE: &str = "/dev/trusted_store";
 /// the iptables seriers binaries could appear either in /sbin
 /// or /usr/sbin, we need to check both of them
@@ -704,6 +708,100 @@ impl AgentService {
             }
         }
     }
+
+    #[instrument]
+    async fn do_checkpoint_container(
+        &self,
+        req: protocols::agent::CheckpointContainerRequest,
+    ) -> Result<()> {
+        let checkpoint_dir = req
+            .guest_checkpoint_dir
+            .as_ref()
+            .ok_or_else(|| anyhow!("guest checkpoint directory must be provided"))?;
+        if checkpoint_dir.is_empty() {
+            return Err(anyhow!("guest checkpoint directory must not be empty"));
+        }
+
+        if let Some(parent) = req.parent_checkpoint_id.as_ref() {
+            if !parent.is_empty() {
+                return Err(anyhow!(
+                    "incremental checkpoints are not supported yet (parent provided: {})",
+                    parent
+                ));
+            }
+        }
+
+        if !req.runtime_options.is_empty() {
+            info!(
+                sl(),
+                "runtime checkpoint options were provided but are currently ignored"
+            );
+        }
+
+        let criu_path = req
+            .criu_path
+            .as_ref()
+            .filter(|p| !p.is_empty())
+            .cloned()
+            .unwrap_or_else(|| DEFAULT_CRIU_PATH.to_string());
+
+        let mut sandbox = self.sandbox.lock().await;
+        let ctr = sandbox
+            .get_container(&req.container_id)
+            .ok_or_else(|| anyhow!(crate::sandbox::ERR_INVALID_CONTAINER_ID))?;
+
+        let images_dir = PathBuf::from(checkpoint_dir);
+        let cfg = CheckpointConfig {
+            work_dir: images_dir.join("work"),
+            images_dir,
+            criu_path: PathBuf::from(criu_path),
+            leave_running: req.leave_running,
+        };
+
+        ctr.checkpoint(&cfg).await
+    }
+
+    #[instrument]
+    async fn do_restore_container(
+        &self,
+        req: protocols::agent::RestoreContainerRequest,
+    ) -> Result<()> {
+        let checkpoint_dir = req
+            .guest_checkpoint_dir
+            .as_ref()
+            .ok_or_else(|| anyhow!("guest checkpoint directory must be provided"))?;
+        if checkpoint_dir.is_empty() {
+            return Err(anyhow!("guest checkpoint directory must not be empty"));
+        }
+
+        if !req.runtime_options.is_empty() {
+            info!(
+                sl(),
+                "runtime restore options were provided but are currently ignored"
+            );
+        }
+
+        let criu_path = req
+            .criu_path
+            .as_ref()
+            .filter(|p| !p.is_empty())
+            .cloned()
+            .unwrap_or_else(|| DEFAULT_CRIU_PATH.to_string());
+
+        let mut sandbox = self.sandbox.lock().await;
+        let ctr = sandbox
+            .get_container(&req.container_id)
+            .ok_or_else(|| anyhow!(crate::sandbox::ERR_INVALID_CONTAINER_ID))?;
+
+        let images_dir = PathBuf::from(checkpoint_dir);
+        let cfg = RestoreConfig {
+            work_dir: images_dir.join("work"),
+            images_dir,
+            criu_path: PathBuf::from(criu_path),
+        };
+
+        ctr.restore(&cfg).await
+    }
 }
 
 fn mem_agent_memcgconfig_to_memcg_optionconfig(
@@ -870,6 +968,30 @@ impl agent_ttrpc::AgentService for AgentService {
             .get_container(&req.container_id)
             .map_ttrpc_err(ttrpc::Code::INVALID_ARGUMENT, "invalid container id")?;
         ctr.resume().map_ttrpc_err(same)?;
+        Ok(Empty::new())
+    }
+
+    async fn checkpoint_container(
+        &self,
+        ctx: &TtrpcContext,
+        req: protocols::agent::CheckpointContainerRequest,
+    ) -> ttrpc::Result<protocols::empty::Empty> {
+        trace_rpc_call!(ctx, "checkpoint_container", req);
+        is_allowed(&req).await?;
+        self.do_checkpoint_container(req)
+            .await
+            .map_ttrpc_err(same)?;
+        Ok(Empty::new())
+    }
+
+    async fn restore_container(
+        &self,
+        ctx: &TtrpcContext,
+        req: protocols::agent::RestoreContainerRequest,
+    ) -> ttrpc::Result<protocols::empty::Empty> {
+        trace_rpc_call!(ctx, "restore_container", req);
+        is_allowed(&req).await?;
+        self.do_restore_container(req).await.map_ttrpc_err(same)?;
         Ok(Empty::new())
     }
 
