@@ -22,6 +22,8 @@ service AgentService {
 	// execution
 	rpc CreateContainer(CreateContainerRequest) returns (google.protobuf.Empty);
 	rpc StartContainer(StartContainerRequest) returns (google.protobuf.Empty);
+	rpc CheckpointContainer(CheckpointContainerRequest) returns (google.protobuf.Empty);
+	rpc RestoreContainer(RestoreContainerRequest) returns (google.protobuf.Empty);
 
 	// RemoveContainer will tear down an existing container by forcibly terminating
 	// all processes running inside that container and releasing all internal
@@ -172,6 +174,38 @@ message PauseContainerRequest {
 
 message ResumeContainerRequest {
     string container_id = 1;
+}
+
+message CheckpointContainerRequest {
+	string container_id = 1;
+
+	// Absolute path inside the guest where CRIU should emit checkpoint data.
+	string guest_checkpoint_dir = 2;
+
+	// Optional identifier for incremental checkpoints.
+	string parent_checkpoint_id = 3;
+
+	// If true the container will continue running after checkpointing.
+	bool leave_running = 4;
+
+	// Serialized containerd CheckpointOptions payload.
+	bytes runtime_options = 5;
+
+	// Absolute path to the CRIU binary inside the guest.
+	string criu_path = 6;
+}
+
+message RestoreContainerRequest {
+	string container_id = 1;
+
+	// Absolute path inside the guest where CRIU should read checkpoint data.
+	string guest_checkpoint_dir = 2;
+
+	// Serialized runtime specific create options.
+	bytes runtime_options = 3;
+
+	// Absolute path to the CRIU binary inside the guest.
+	string criu_path = 4;
 }
 
 message CpuUsage {
