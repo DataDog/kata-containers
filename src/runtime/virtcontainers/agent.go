@@ -139,6 +139,12 @@ type agent interface {
 	// resumeContainer will resume a paused container
 	resumeContainer(ctx context.Context, sandbox *Sandbox, c Container) error
 
+	// checkpointContainer instructs the agent to create a CRIU checkpoint for the container.
+	checkpointContainer(ctx context.Context, req *grpc.CheckpointContainerRequest) error
+
+	// restoreContainer instructs the agent to restore a container from a CRIU checkpoint.
+	restoreContainer(ctx context.Context, req *grpc.RestoreContainerRequest) error
+
 	// removeStaleVirtiofsShareMounts will tell the agent to remove stale virtiofs share mounts in the guest.
 	removeStaleVirtiofsShareMounts(ctx context.Context) error
 

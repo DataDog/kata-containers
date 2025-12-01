@@ -146,6 +146,16 @@ func (s *Sandbox) ResumeContainer(ctx context.Context, contID string) error {
 	return nil
 }
 
+// CheckpointContainer implements the VCSandbox function of the same name.
+func (s *Sandbox) CheckpointContainer(ctx context.Context, req vc.CheckpointRequest) (*vc.CheckpointResult, error) {
+	return &vc.CheckpointResult{}, nil
+}
+
+// RestoreContainer implements the VCSandbox function of the same name.
+func (s *Sandbox) RestoreContainer(ctx context.Context, req vc.RestoreRequest) error {
+	return nil
+}
+
 // Status implements the VCSandbox function of the same name.
 func (s *Sandbox) Status() vc.SandboxStatus {
 	return vc.SandboxStatus{}

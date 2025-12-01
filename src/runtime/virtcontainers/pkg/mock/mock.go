@@ -205,6 +205,14 @@ func (p *HybridVSockTTRPCMockImp) ResumeContainer(ctx context.Context, req *pb.R
 	return emptyResp, nil
 }
 
+func (p *HybridVSockTTRPCMockImp) CheckpointContainer(ctx context.Context, req *pb.CheckpointContainerRequest) (*gpb.Empty, error) {
+	return emptyResp, nil
+}
+
+func (p *HybridVSockTTRPCMockImp) RestoreContainer(ctx context.Context, req *pb.RestoreContainerRequest) (*gpb.Empty, error) {
+	return emptyResp, nil
+}
+
 func (p *HybridVSockTTRPCMockImp) ReseedRandomDev(ctx context.Context, req *pb.ReseedRandomDevRequest) (*gpb.Empty, error) {
 	return emptyResp, nil
 }

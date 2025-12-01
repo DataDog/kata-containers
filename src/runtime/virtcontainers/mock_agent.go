@@ -181,6 +181,14 @@ func (n *mockAgent) resumeContainer(ctx context.Context, sandbox *Sandbox, c Con
 	return nil
 }
 
+func (n *mockAgent) checkpointContainer(ctx context.Context, req *grpc.CheckpointContainerRequest) error {
+	return nil
+}
+
+func (n *mockAgent) restoreContainer(ctx context.Context, req *grpc.RestoreContainerRequest) error {
+	return nil
+}
+
 // configure is the Noop agent configuration implementation. It does nothing.
 func (n *mockAgent) configure(ctx context.Context, h Hypervisor, id, sharePath string, config KataAgentConfig) error {
 	return nil
