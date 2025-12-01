@@ -77,15 +77,18 @@ containerd's Docker-style command line tool [`nerdctl`](https://github.com/conta
 
 ### checkpoint and restore
 
-The runtime does not provide `checkpoint` and `restore` commands. There
-are discussions about using VM save and restore to give us a
-[`criu`](https://github.com/checkpoint-restore/criu)-like functionality,
-which might provide a solution.
+Kata now supports `containerd`'s `CheckpointTask` / `CreateTask` flows when using
+the Go shim (`io.containerd.kata.v2`). The feature is **opt‑in**:
 
-Note that the OCI standard does not specify `checkpoint` and `restore`
-commands.
+- `[runtime] enable_checkpoint` must be set to `true` in the Kata config.
+- Guest images must contain a compatible [`CRIU`](https://github.com/checkpoint-restore/criu)
+  binary (osbuilder installs `criu` automatically when the option is enabled).
+- Only Linux hosts are supported and the workloads must use CRIU‑compatible
+  features (no GPUs, incremental checkpoints, etc. yet).
 
-See issue https://github.com/kata-containers/runtime/issues/184 for more information.
+When the feature is disabled, Kata behaves the same as before (checkpoint
+requests are rejected). See [How to use Kata checkpoint/restore](how-to/how-to-use-kata-checkpoint-restore.md)
+for configuration details and usage examples.
 
 ### events command
 
