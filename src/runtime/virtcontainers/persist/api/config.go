@@ -295,4 +295,13 @@ type SandboxConfig struct {
 
 	// EnableVCPUsPinning controls whether each vCPU thread should be scheduled to a fixed CPU
 	EnableVCPUsPinning bool
+
+	Checkpoint CheckpointConfig
+}
+
+type CheckpointConfig struct {
+	Enable bool
+	GuestDir string
+	GuestCriuPath string
+	HostDir string
 }

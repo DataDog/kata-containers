@@ -84,6 +84,15 @@ type Process struct {
 	Pid int
 }
 
+// CheckpointStatus stores metadata about a checkpoint artifact.
+type CheckpointStatus struct {
+	ID        string
+	HostPath  string
+	GuestPath string
+	ParentID  string
+	CreatedAt time.Time
+}
+
 // ContainerState represents container state
 type ContainerState struct {
 	// State is container running status
@@ -108,4 +117,7 @@ type ContainerState struct {
 
 	// Mounts is mount info from OCI spec
 	Mounts []Mount
+
+	// Checkpoints tracks checkpoint artifacts for this container.
+	Checkpoints map[string]CheckpointStatus
 }
