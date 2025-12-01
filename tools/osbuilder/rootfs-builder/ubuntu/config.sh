@@ -9,6 +9,7 @@ OS_NAME=ubuntu
 OS_VERSION=${OS_VERSION:-""}
 [ -z "$OS_VERSION" ] && echo "OS_VERSION is required, but was not set" && exit 1
 PACKAGES="chrony iptables dbus"
+[ "${ENABLE_CHECKPOINT:-yes}" = "yes" ] && PACKAGES+=" criu"
 [ "$AGENT_INIT" = no ] && PACKAGES+=" init"
 [ "$MEASURED_ROOTFS" = yes ] && PACKAGES+=" cryptsetup-bin e2fsprogs"
 [ "$SECCOMP" = yes ] && PACKAGES+=" libseccomp2"

@@ -15,6 +15,7 @@ BASE_PACKAGES="alpine-base"
 MIRROR=http://dl-cdn.alpinelinux.org/alpine/
 
 PACKAGES="bash iptables ip6tables"
+[ "${ENABLE_CHECKPOINT:-yes}" = "yes" ] && PACKAGES+=" criu"
 
 # Init process must be one of {systemd,kata-agent}
 INIT_PROCESS=kata-agent

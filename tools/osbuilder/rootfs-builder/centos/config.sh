@@ -6,6 +6,7 @@
 OS_NAME=centos
 OS_VERSION=${OS_VERSION:-stream9}
 PACKAGES="chrony iptables"
+[ "${ENABLE_CHECKPOINT:-yes}" = "yes" ] && PACKAGES+=" criu"
 [ "$AGENT_INIT" = no ] && PACKAGES+=" systemd"
 [ "$SECCOMP" = yes ] && PACKAGES+=" libseccomp"
 [ "$SELINUX" = yes ] && PACKAGES+=" container-selinux"
