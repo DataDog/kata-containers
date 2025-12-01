@@ -726,3 +726,16 @@ experimental_force_guest_pull = @DEFFORCEGUESTPULL@
 #      cold_plug_vfio != no_port AND pod_resource_api_sock != "" => kubelet
 #              based cold plug.
 pod_resource_api_sock = "@DEFPODRESOURCEAPISOCK@"
+
+# Enable CRIU-based container checkpoint/restore support.
+enable_checkpoint = false
+
+# Path to the CRIU binary inside the guest image.
+guest_criu_path = "/usr/sbin/criu"
+
+# Directory inside the guest where checkpoint images will be staged.
+guest_checkpoint_dir = "/run/kata-containers/checkpoints"
+
+# Directory on the host that will hold exported checkpoint archives when
+# containerd does not request a custom location.
+host_checkpoint_dir = "/var/lib/kata-containers/checkpoints"
