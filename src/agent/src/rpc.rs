@@ -714,21 +714,16 @@ impl AgentService {
         &self,
         req: protocols::agent::CheckpointContainerRequest,
     ) -> Result<()> {
-        let checkpoint_dir = req
-            .guest_checkpoint_dir
-            .as_ref()
-            .ok_or_else(|| anyhow!("guest checkpoint directory must be provided"))?;
-        if checkpoint_dir.is_empty() {
-            return Err(anyhow!("guest checkpoint directory must not be empty"));
+        if req.guest_checkpoint_dir.is_empty() {
+            return Err(anyhow!("guest checkpoint directory must be provided"));
         }
+        let checkpoint_dir = &req.guest_checkpoint_dir;
 
-        if let Some(parent) = req.parent_checkpoint_id.as_ref() {
-            if !parent.is_empty() {
-                return Err(anyhow!(
-                    "incremental checkpoints are not supported yet (parent provided: {})",
-                    parent
-                ));
-            }
+        if !req.parent_checkpoint_id.is_empty() {
+            return Err(anyhow!(
+                "incremental checkpoints are not supported yet (parent provided: {})",
+                req.parent_checkpoint_id
+            ));
         }
 
         if !req.runtime_options.is_empty() {
@@ -738,12 +733,11 @@ impl AgentService {
             );
         }
 
-        let criu_path = req
-            .criu_path
-            .as_ref()
-            .filter(|p| !p.is_empty())
-            .cloned()
-            .unwrap_or_else(|| DEFAULT_CRIU_PATH.to_string());
+        let criu_path = if req.criu_path.is_empty() {
+            DEFAULT_CRIU_PATH.to_string()
+        } else {
+            req.criu_path.clone()
+        };
 
         let mut sandbox = self.sandbox.lock().await;
         let ctr = sandbox
@@ -766,13 +760,10 @@ impl AgentService {
         &self,
         req: protocols::agent::RestoreContainerRequest,
     ) -> Result<()> {
-        let checkpoint_dir = req
-            .guest_checkpoint_dir
-            .as_ref()
-            .ok_or_else(|| anyhow!("guest checkpoint directory must be provided"))?;
-        if checkpoint_dir.is_empty() {
-            return Err(anyhow!("guest checkpoint directory must not be empty"));
+        if req.guest_checkpoint_dir.is_empty() {
+            return Err(anyhow!("guest checkpoint directory must be provided"));
         }
+        let checkpoint_dir = &req.guest_checkpoint_dir;
 
         if !req.runtime_options.is_empty() {
             info!(
@@ -781,12 +772,11 @@ impl AgentService {
             );
         }
 
-        let criu_path = req
-            .criu_path
-            .as_ref()
-            .filter(|p| !p.is_empty())
-            .cloned()
-            .unwrap_or_else(|| DEFAULT_CRIU_PATH.to_string());
+        let criu_path = if req.criu_path.is_empty() {
+            DEFAULT_CRIU_PATH.to_string()
+        } else {
+            req.criu_path.clone()
+        };
 
         let mut sandbox = self.sandbox.lock().await;
         let ctr = sandbox
