@@ -14,7 +14,7 @@ PACKAGES="chrony iptables dbus"
 [ "$MEASURED_ROOTFS" = yes ] && PACKAGES+=" cryptsetup-bin e2fsprogs"
 [ "$SECCOMP" = yes ] && PACKAGES+=" libseccomp2"
 [ "$(uname -m)" = "s390x" ] && PACKAGES+=" libcurl4 libnghttp2-14"
-REPO_COMPONENTS=${REPO_COMPONENTS:-main}
+REPO_COMPONENTS=${REPO_COMPONENTS:-main,universe}
 
 case "$ARCH" in
 	aarch64) DEB_ARCH=arm64;;
