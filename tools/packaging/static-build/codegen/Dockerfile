@@ -9,7 +9,14 @@ FROM busybox:1.37.0 AS resources
 WORKDIR /usr/local
 
 ARG PROTOC_VERSION=
-RUN wget -O /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip && \
+RUN case `uname -m` in \
+        x86_64) \
+            wget -O /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip ;; \
+        aarch64) \
+            wget -O /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-aarch_64.zip ;; \
+        *) \
+            echo "Unsupported architecture: `uname -m`"; exit 1 ;; \
+    esac && \
     unzip /tmp/protoc.zip
 
 FROM golang:${GO_VERSION}
