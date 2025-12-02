@@ -944,11 +944,6 @@ func (s *service) Checkpoint(ctx context.Context, r *taskAPI.CheckpointTaskReque
 		return nil, errdefs.ToGRPCf(errdefs.ErrFailedPrecondition, "sandbox not started")
 	}
 
-	c, err := s.getContainer(r.ID)
-	if err != nil {
-		return nil, err
-	}
-
 	var runtimeOpts []byte
 	leaveRunning := true
 	if r.Options != nil {
