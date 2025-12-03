@@ -1879,13 +1879,15 @@ func (s *Sandbox) CheckpointContainer(ctx context.Context, req CheckpointRequest
 		return nil, fmt.Errorf("container %s must be running or paused to checkpoint (state=%s)", c.id, c.state.State)
 	}
 
-	hostDir, guestDir := s.resolveCheckpointDirs(req.ContainerID, req.CheckpointID)
-	if err := os.RemoveAll(hostDir); err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("failed to clean checkpoint directory %s: %w", hostDir, err)
-	}
-	if err := os.MkdirAll(hostDir, DirMode); err != nil {
-		return nil, fmt.Errorf("failed to create checkpoint directory %s: %w", hostDir, err)
-	}
+	// Note: The agent will create the checkpoint directory in the guest
+	// No need to create it on the host side first
+	// hostDir, guestDir := s.resolveCheckpointDirs(req.ContainerID, req.CheckpointID)
+	// if err := os.RemoveAll(hostDir); err != nil && !os.IsNotExist(err) {
+	// 	return nil, fmt.Errorf("failed to clean checkpoint directory %s: %w", hostDir, err)
+	// }
+	// if err := os.MkdirAll(hostDir, DirMode); err != nil {
+	// 	return nil, fmt.Errorf("failed to create checkpoint directory %s: %w", hostDir, err)
+	// }
 
 	grpcReq := &grpc.CheckpointContainerRequest{
 		ContainerId:        req.ContainerID,

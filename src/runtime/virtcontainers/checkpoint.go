@@ -77,8 +77,14 @@ func (c CheckpointConfig) validate() error {
 }
 
 // checkpointHostBase returns the host directory used as the root for checkpoint staging.
+// Checkpoints are stored inside the sandbox shared directory so they are accessible
+// to both the host and guest agent.
 func (s *Sandbox) checkpointHostBase() string {
-	return filepath.Join(GetSharePath(s.id), checkpointDirName)
+	// Use a subdirectory of the shared path, not the root shared directory
+	sharePath := GetSharePath(s.id)
+	// Get the parent of the "shared" directory to place checkpoints alongside it
+	sandboxDir := filepath.Dir(sharePath)
+	return filepath.Join(sandboxDir, checkpointDirName)
 }
 
 func (s *Sandbox) checkpointGuestBase() string {
