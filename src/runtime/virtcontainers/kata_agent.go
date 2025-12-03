@@ -151,6 +151,8 @@ const (
 	grpcStatsContainerRequest                 = "grpc.StatsContainerRequest"
 	grpcPauseContainerRequest                 = "grpc.PauseContainerRequest"
 	grpcResumeContainerRequest                = "grpc.ResumeContainerRequest"
+	grpcCheckpointContainerRequest            = "grpc.CheckpointContainerRequest"
+	grpcRestoreContainerRequest               = "grpc.RestoreContainerRequest"
 	grpcReseedRandomDevRequest                = "grpc.ReseedRandomDevRequest"
 	grpcGuestDetailsRequest                   = "grpc.GuestDetailsRequest"
 	grpcMemHotplugByProbeRequest              = "grpc.MemHotplugByProbeRequest"
@@ -2359,6 +2361,12 @@ func (k *kataAgent) installReqFunc(c *kataclient.AgentClient) {
 	}
 	k.reqHandlers[grpcResumeContainerRequest] = func(ctx context.Context, req interface{}) (interface{}, error) {
 		return k.client.AgentServiceClient.ResumeContainer(ctx, req.(*grpc.ResumeContainerRequest))
+	}
+	k.reqHandlers[grpcCheckpointContainerRequest] = func(ctx context.Context, req interface{}) (interface{}, error) {
+		return k.client.AgentServiceClient.CheckpointContainer(ctx, req.(*grpc.CheckpointContainerRequest))
+	}
+	k.reqHandlers[grpcRestoreContainerRequest] = func(ctx context.Context, req interface{}) (interface{}, error) {
+		return k.client.AgentServiceClient.RestoreContainer(ctx, req.(*grpc.RestoreContainerRequest))
 	}
 	k.reqHandlers[grpcReseedRandomDevRequest] = func(ctx context.Context, req interface{}) (interface{}, error) {
 		return k.client.AgentServiceClient.ReseedRandomDev(ctx, req.(*grpc.ReseedRandomDevRequest))
