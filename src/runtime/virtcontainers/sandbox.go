@@ -1874,8 +1874,9 @@ func (s *Sandbox) CheckpointContainer(ctx context.Context, req CheckpointRequest
 		return nil, err
 	}
 
-	if c.state.State != types.StateRunning {
-		return nil, fmt.Errorf("container %s must be running to checkpoint (state=%s)", c.id, c.state.State)
+	// Container can be either running or paused (containerd pauses before checkpointing)
+	if c.state.State != types.StateRunning && c.state.State != types.StatePaused {
+		return nil, fmt.Errorf("container %s must be running or paused to checkpoint (state=%s)", c.id, c.state.State)
 	}
 
 	hostDir, guestDir := s.resolveCheckpointDirs(req.ContainerID, req.CheckpointID)
