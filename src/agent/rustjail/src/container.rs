@@ -1791,9 +1791,10 @@ impl LinuxContainer {
             ));
         }
 
-        if self.status.status() != ContainerState::Running {
+        // Container can be either running or paused (containerd pauses before checkpointing)
+        if self.status.status() != ContainerState::Running && self.status.status() != ContainerState::Paused {
             return Err(anyhow!(
-                "cannot checkpoint container {}: not running",
+                "cannot checkpoint container {}: not running or paused",
                 self.id
             ));
         }
@@ -1832,15 +1833,21 @@ impl LinuxContainer {
             "running criu dump for container {} (dir: {:?})", self.id, cfg.images_dir
         );
 
-        let status = cmd
-            .status()
+        let output = cmd
+            .output()
             .await
             .context("failed to execute criu dump command")?;
-        if !status.success() {
+        if !output.status.success() {
+            error!(
+                self.logger,
+                "criu dump failed. stdout: {}, stderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
             return Err(anyhow!(
                 "criu dump for container {} failed with status {:?}",
                 self.id,
-                status.code()
+                output.status.code()
             ));
         }
 
