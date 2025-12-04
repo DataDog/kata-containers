@@ -714,6 +714,8 @@ impl AgentService {
         &self,
         req: protocols::agent::CheckpointContainerRequest,
     ) -> Result<()> {
+        info!(sl(), "do_checkpoint_container CALLED with container_id: {}, guest_checkpoint_dir: {}", req.container_id, req.guest_checkpoint_dir);
+        std::fs::write("/run/kata-containers/shared/containers/rpc-debug.log", format!("RPC handler called: container_id={}, guest_checkpoint_dir={}\n", req.container_id, req.guest_checkpoint_dir)).ok();
         if req.guest_checkpoint_dir.is_empty() {
             return Err(anyhow!("guest checkpoint directory must be provided"));
         }
@@ -745,6 +747,7 @@ impl AgentService {
             .ok_or_else(|| anyhow!(crate::sandbox::ERR_INVALID_CONTAINER_ID))?;
 
         let images_dir = PathBuf::from(checkpoint_dir);
+        std::fs::write("/run/kata-containers/shared/containers/rpc-debug.log", format!("About to create CheckpointConfig, images_dir={:?}\n", images_dir)).ok();
         let cfg = CheckpointConfig {
             work_dir: images_dir.join("work"),
             images_dir,
@@ -760,6 +763,8 @@ impl AgentService {
         &self,
         req: protocols::agent::RestoreContainerRequest,
     ) -> Result<()> {
+        info!(sl(), "do_checkpoint_container CALLED with container_id: {}, guest_checkpoint_dir: {}", req.container_id, req.guest_checkpoint_dir);
+        std::fs::write("/run/kata-containers/shared/containers/rpc-debug.log", format!("RPC handler called: container_id={}, guest_checkpoint_dir={}\n", req.container_id, req.guest_checkpoint_dir)).ok();
         if req.guest_checkpoint_dir.is_empty() {
             return Err(anyhow!("guest checkpoint directory must be provided"));
         }
