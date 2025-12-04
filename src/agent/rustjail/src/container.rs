@@ -1783,7 +1783,24 @@ impl LinuxContainer {
         Ok(())
     }
 
+    async fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
+        tokio::fs::create_dir_all(dst).await?;
+        let mut entries = tokio::fs::read_dir(src).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let file_type = entry.file_type().await?;
+            let src_path = entry.path();
+            let dst_path = dst.join(entry.file_name());
+            if file_type.is_dir() {
+                Box::pin(Self::copy_dir_all(&src_path, &dst_path)).await?;
+            } else {
+                tokio::fs::copy(&src_path, &dst_path).await?;
+            }
+        }
+        Ok(())
+    }
+
     pub async fn checkpoint(&mut self, cfg: &CheckpointConfig) -> Result<()> {
+        info!(self.logger, "=== CHECKPOINT CALLED === id: {}, images_dir: {:?}, work_dir: {:?}", self.id, cfg.images_dir, cfg.work_dir);
         if self.init_process_pid <= 0 {
             return Err(anyhow!(
                 "cannot checkpoint container {}: init pid invalid",
@@ -1799,29 +1816,43 @@ impl LinuxContainer {
             ));
         }
 
-        tokio::fs::create_dir_all(&cfg.images_dir)
-            .await
-            .context("create checkpoint images directory")?;
-        tokio::fs::create_dir_all(&cfg.work_dir)
-            .await
-            .context("create checkpoint work directory")?;
+        // Use local temporary directories since shared mount is read-only
+        let temp_base = PathBuf::from(format!("/tmp/criu-checkpoint-{}", self.id));
+        let temp_images = temp_base.join("images");
+        let temp_work = temp_base.join("work");
 
-        let log_file = cfg.log_file();
+        info!(self.logger, "Creating temp directories: base={:?}, images={:?}, work={:?}", temp_base, temp_images, temp_work);
+        tokio::fs::create_dir_all(&temp_base)
+            .await
+            .context("create temp base directory")?;
+        info!(self.logger, "Created temp base directory");
+        tokio::fs::create_dir_all(&temp_images)
+            .await
+            .context("create temp images directory")?;
+        info!(self.logger, "Created temp images directory");
+        tokio::fs::create_dir_all(&temp_work)
+            .await
+            .context("create temp work directory")?;
+        info!(self.logger, "Created temp work directory");
+
+        let temp_log_file = temp_work.join("criu-dump.log");
         let mut cmd = Command::new(&cfg.criu_path);
         cmd.arg("dump")
             .arg("--tree")
             .arg(self.init_process_pid.to_string())
             .arg("--images-dir")
-            .arg(&cfg.images_dir)
+            .arg(&temp_images)
             .arg("--work-dir")
-            .arg(&cfg.work_dir)
+            .arg(&temp_work)
             .arg("--log-file")
-            .arg(&log_file)
+            .arg(&temp_log_file)
             .arg("--tcp-established")
             .arg("--ext-unix-sk")
             .arg("--shell-job")
             .arg("--file-locks");
 
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
         if cfg.leave_running {
             cmd.arg("--leave-running");
         }
@@ -1831,10 +1862,15 @@ impl LinuxContainer {
             "running criu dump for container {} (dir: {:?})", self.id, cfg.images_dir
         );
 
+        info!(self.logger, "About to execute CRIU dump command");
+        // Test CRIU binary accessibility
+        let test_output = Command::new(&cfg.criu_path).arg("--version").output().await;
+        info!(self.logger, "CRIU version check: {:?}", test_output);
         let output = cmd
             .output()
             .await
             .context("failed to execute criu dump command")?;
+        info!(self.logger, "CRIU command executed, checking result");
         if !output.status.success() {
             return Err(anyhow!(
                 "criu dump for container {} failed with status {:?}. STDOUT: {}. STDERR: {}",
@@ -1844,6 +1880,24 @@ impl LinuxContainer {
                 String::from_utf8_lossy(&output.stderr)
             ));
         }
+
+        // Copy checkpoint files from temporary local directory to shared directory
+        info!(self.logger, "Copying checkpoint files from {:?} to {:?}", temp_images, cfg.images_dir);
+        tokio::fs::create_dir_all(&cfg.images_dir)
+            .await
+            .context("create shared images directory")?;
+        tokio::fs::create_dir_all(&cfg.work_dir)
+            .await
+            .context("create shared work directory")?;
+
+        Self::copy_dir_all(&temp_images, &cfg.images_dir)
+            .await
+            .context("copy images to shared dir")?;
+        Self::copy_dir_all(&temp_work, &cfg.work_dir)
+            .await
+            .context("copy work to shared dir")?;
+
+        info!(self.logger, "Checkpoint files copied successfully");
 
         if !cfg.leave_running {
             self.status.transition(ContainerState::Stopped);
