@@ -1837,7 +1837,7 @@ impl LinuxContainer {
             .context("failed to execute criu dump command")?;
         if !output.status.success() {
             return Err(anyhow!(
-                "criu dump for container {} failed with status {:?}. STDOUT: {}. STDERR: {}",",
+                "criu dump for container {} failed with status {:?}. STDOUT: {}. STDERR: {}",
                 self.id,
                 output.status.code(),
                 String::from_utf8_lossy(&output.stdout),
