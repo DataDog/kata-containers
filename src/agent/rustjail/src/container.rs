@@ -1817,8 +1817,6 @@ impl LinuxContainer {
             .arg(&cfg.work_dir)
             .arg("--log-file")
             .arg(&log_file)
-            .arg("--log-level")
-            .arg("4")
             .arg("--tcp-established")
             .arg("--ext-unix-sk")
             .arg("--shell-job")
@@ -1838,16 +1836,12 @@ impl LinuxContainer {
             .await
             .context("failed to execute criu dump command")?;
         if !output.status.success() {
-            error!(
-                self.logger,
-                "criu dump failed. stdout: {}, stderr: {}",
+            return Err(anyhow!(
+                "criu dump for container {} failed with status {:?}. STDOUT: {}. STDERR: {}",",
+                self.id,
+                output.status.code(),
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
-            );
-            return Err(anyhow!(
-                "criu dump for container {} failed with status {:?}",
-                self.id,
-                output.status.code()
             ));
         }
 
