@@ -1882,6 +1882,7 @@ func (s *Sandbox) CheckpointContainer(ctx context.Context, req CheckpointRequest
 	hostDir, guestDir := s.resolveCheckpointDirs(req.ContainerID, req.CheckpointID)
 	// Note: The agent will create the checkpoint directory in the guest.
 	// We don't pre-create on the host to avoid issues with the virtiofs read-only shared mount.
+	s.Logger().WithField("hostDir", hostDir).WithField("guestDir", guestDir).Warn("DEBUG: Checkpoint directories resolved")
 
 	grpcReq := &grpc.CheckpointContainerRequest{
 		ContainerId:        req.ContainerID,
