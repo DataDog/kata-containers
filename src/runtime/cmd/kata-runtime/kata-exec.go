@@ -76,20 +76,28 @@ var kataExecCLICommand = cli.Command{
 		}
 		defer conn.Close()
 
-		con := console.Current()
-		defer con.Reset()
-
-		if err := con.SetRaw(); err != nil {
-			return err
-		}
-
 		iostream := &iostream{
 			conn:   conn,
 			exitch: make(chan struct{}),
 			closed: false,
 		}
 
-		ioCopy(iostream, con)
+		// Check if we have a TTY - if so, use console with raw mode
+		// If not, just use stdin/stdout directly (for scripts/non-interactive)
+		if _, err := console.ConsoleFromFile(os.Stdin); err == nil {
+			// We have a TTY - use console with raw mode
+			con := console.Current()
+			defer con.Reset()
+
+			if err := con.SetRaw(); err != nil {
+				return err
+			}
+
+			ioCopy(iostream, con)
+		} else {
+			// No TTY - use stdin/stdout directly
+			ioCopyNoTTY(iostream)
+		}
 
 		<-iostream.exitch
 		return nil
@@ -113,6 +121,39 @@ func ioCopy(stream *iostream, con console.Console) {
 		defer bufPool.Put(p)
 		io.CopyBuffer(os.Stdout, stream, *p)
 		wg.Done()
+	}()
+
+	wg.Wait()
+	close(stream.exitch)
+}
+
+func ioCopyNoTTY(stream *iostream) {
+	var wg sync.WaitGroup
+	stdinDone := make(chan struct{})
+
+	// stdin - copy until EOF
+	go func() {
+		p := bufPool.Get().(*[]byte)
+		defer bufPool.Put(p)
+		io.CopyBuffer(stream, os.Stdin, *p)
+		close(stdinDone)
+	}()
+
+	// stdout - copy until connection closes
+	wg.Add(1)
+	go func() {
+		p := bufPool.Get().(*[]byte)
+		defer bufPool.Put(p)
+		io.CopyBuffer(os.Stdout, stream, *p)
+		wg.Done()
+	}()
+
+	// When stdin is done, give output a moment to drain, then close connection
+	go func() {
+		<-stdinDone
+		// Give the remote side a moment to send remaining output
+		time.Sleep(100 * time.Millisecond)
+		stream.Close()
 	}()
 
 	wg.Wait()
