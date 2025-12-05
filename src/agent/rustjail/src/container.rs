@@ -818,6 +818,13 @@ fn do_init_child(cwfd: RawFd) -> Result<()> {
     let _ = unistd::close(crfd);
     let _ = unistd::close(cwfd);
 
+    // For checkpoint/restore to work with CRIU, the init process must be its own session leader.
+    // This ensures the session leader is within the container's PID namespace.
+    // We always call setsid() for init processes, not just when terminal is enabled.
+    if init {
+        unistd::setsid().context("create a new session for init process")?;
+    }
+
     if oci_process.terminal().unwrap_or_default() {
         cfg_if::cfg_if! {
             if #[cfg(feature = "standard-oci-runtime")] {
@@ -828,7 +835,11 @@ fn do_init_child(cwfd: RawFd) -> Result<()> {
                 }
             }
             else {
-                unistd::setsid().context("create a new session")?;
+                // Terminal handling - make this process the controlling terminal
+                // (setsid was already called above for init processes)
+                if !init {
+                    unistd::setsid().context("create a new session")?;
+                }
                 unsafe { libc::ioctl(0, libc::TIOCSCTTY) };
             }
         }
