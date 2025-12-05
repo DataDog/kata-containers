@@ -1880,9 +1880,19 @@ func (s *Sandbox) CheckpointContainer(ctx context.Context, req CheckpointRequest
 	}
 
 	hostDir, guestDir := s.resolveCheckpointDirs(req.ContainerID, req.CheckpointID)
-	// Note: The agent will create the checkpoint directory in the guest.
-	// We don't pre-create on the host to avoid issues with the virtiofs read-only shared mount.
-	s.Logger().WithField("hostDir", hostDir).WithField("guestDir", guestDir).Warn("DEBUG: Checkpoint directories resolved")
+
+	// Create the checkpoint directories on the host side, including images and work subdirectories
+	// The virtiofs mount is read-only from the guest, so the agent cannot create these directories
+	imagesDir := filepath.Join(hostDir, "images")
+	workDir := filepath.Join(hostDir, "work")
+	if err := os.MkdirAll(imagesDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create images directory %s: %w", imagesDir, err)
+	}
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create work directory %s: %w", workDir, err)
+	}
+
+	s.Logger().WithField("hostDir", hostDir).WithField("guestDir", guestDir).Warn("DEBUG: Checkpoint directories created and resolved")
 
 	grpcReq := &grpc.CheckpointContainerRequest{
 		ContainerId:        req.ContainerID,
