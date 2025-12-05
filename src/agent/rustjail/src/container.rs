@@ -1800,26 +1800,55 @@ impl LinuxContainer {
     }
 
     pub async fn checkpoint(&mut self, cfg: &CheckpointConfig) -> Result<()> {
+        // Diagnostic file in /run/kata-containers/shared which should be accessible from host
+        let trace_file = PathBuf::from("/run/kata-containers/shared/containers/checkpoint-trace.log");
+        std::fs::create_dir_all("/run/kata-containers/shared/containers").ok();
+        std::fs::write(&trace_file, format!("=== CHECKPOINT START ===\ncontainer_id: {}\n", self.id)).ok();
+        
         info!(self.logger, "=== CHECKPOINT CALLED === id: {}, images_dir: {:?}, work_dir: {:?}", self.id, cfg.images_dir, cfg.work_dir);
+        
         if self.init_process_pid <= 0 {
+            std::fs::OpenOptions::new().append(true).open(&trace_file).and_then(|mut f| {
+                use std::io::Write;
+                writeln!(f, "ERROR: init_process_pid invalid: {}", self.init_process_pid)
+            }).ok();
             return Err(anyhow!(
                 "cannot checkpoint container {}: init pid invalid",
                 self.id
             ));
         }
+        
+        std::fs::OpenOptions::new().append(true).open(&trace_file).and_then(|mut f| {
+            use std::io::Write;
+            writeln!(f, "init_process_pid OK: {}", self.init_process_pid)
+        }).ok();
 
         // Container can be either running or paused (containerd pauses before checkpointing)
         if self.status.status() != ContainerState::Running && self.status.status() != ContainerState::Paused {
+            std::fs::OpenOptions::new().append(true).open(&trace_file).and_then(|mut f| {
+                use std::io::Write;
+                writeln!(f, "ERROR: invalid state: {:?}", self.status.status())
+            }).ok();
             return Err(anyhow!(
                 "cannot checkpoint container {}: not running or paused",
                 self.id
             ));
         }
 
+        std::fs::OpenOptions::new().append(true).open(&trace_file).and_then(|mut f| {
+            use std::io::Write;
+            writeln!(f, "State OK: {:?}", self.status.status())
+        }).ok();
+
         // Use local temporary directories since shared mount is read-only
         let temp_base = PathBuf::from(format!("/tmp/criu-checkpoint-{}", self.id));
         let temp_images = temp_base.join("images");
         let temp_work = temp_base.join("work");
+        
+        std::fs::OpenOptions::new().append(true).open(&trace_file).and_then(|mut f| {
+            use std::io::Write;
+            writeln!(f, "About to create temp dirs: {:?}", temp_base)
+        }).ok();
 
         info!(self.logger, "Creating temp directories: base={:?}, images={:?}, work={:?}", temp_base, temp_images, temp_work);
         tokio::fs::create_dir_all(&temp_base)
@@ -1849,46 +1878,140 @@ impl LinuxContainer {
             .arg("--tcp-established")
             .arg("--ext-unix-sk")
             .arg("--shell-job")
-            .arg("--file-locks");
+            .arg("--file-locks")
+            .arg("--skip-mnt")
+            .arg("/dev/shm")  // Skip /dev/shm mount which has unreachable sharing
+            .arg("--skip-mnt")
+            .arg("/etc/hostname")  // Skip bind-mounted config files
+            .arg("--skip-mnt")
+            .arg("/etc/hosts")
+            .arg("--skip-mnt")
+            .arg("/etc/resolv.conf");
 
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
+        // Redirect CRIU output to files in /tmp for debugging
+        let stdout_file = temp_base.join("criu-stdout.log");
+        let stderr_file = temp_base.join("criu-stderr.log");
+        
+        let stdout_fd = std::fs::File::create(&stdout_file)
+            .context("create criu stdout file")?;
+        let stderr_fd = std::fs::File::create(&stderr_file)
+            .context("create criu stderr file")?;
+        
+        cmd.stdout(stdout_fd);
+        cmd.stderr(stderr_fd);
+
         if cfg.leave_running {
             cmd.arg("--leave-running");
         }
 
         info!(
             self.logger,
-            "running criu dump for container {} (dir: {:?})", self.id, cfg.images_dir
+            "running criu dump for container {} (dir: {:?}, stdout_file: {:?}, stderr_file: {:?})", 
+            self.id, cfg.images_dir, stdout_file, stderr_file
         );
 
         info!(self.logger, "About to execute CRIU dump command");
-        // Test CRIU binary accessibility
-        let test_output = Command::new(&cfg.criu_path).arg("--version").output().await;
-        info!(self.logger, "CRIU version check: {:?}", test_output);
+        
+        // First test if CRIU can execute at all with a comprehensive check command
+        let check_stdout = temp_base.join("check-stdout.log");
+        let check_stderr = temp_base.join("check-stderr.log");
+        let mut check_cmd = Command::new(&cfg.criu_path);
+        check_cmd.arg("check")
+            .arg("--all")  // Check all features
+            .stdout(std::fs::File::create(&check_stdout).unwrap())
+            .stderr(std::fs::File::create(&check_stderr).unwrap());
+        let check_result = check_cmd.status().await;
+        let check_stdout_content = tokio::fs::read_to_string(&check_stdout).await.unwrap_or_default();
+        let check_stderr_content = tokio::fs::read_to_string(&check_stderr).await.unwrap_or_default();
+        
+        // Write diagnostic information to temp location (will copy to shared later)
+        let diag_file = temp_base.join("criu-diagnostic.log");
+        let mut diag_content = format!("=== CRIU DIAGNOSTIC ===\n");
+        diag_content.push_str(&format!("Container ID: {}\n", self.id));
+        diag_content.push_str(&format!("CRIU path: {}\n", cfg.criu_path.display()));
+        diag_content.push_str(&format!("CRIU check result: {:?}\n", check_result));
+        diag_content.push_str(&format!("Init PID: {}\n", self.init_process_pid));
+        diag_content.push_str(&format!("Images dir: {:?}\n", cfg.images_dir));
+        diag_content.push_str(&format!("Work dir: {:?}\n", cfg.work_dir));
+        diag_content.push_str(&format!("Temp base: {:?}\n", temp_base));
+        diag_content.push_str("\n=== CRIU CHECK STDOUT ===\n");
+        diag_content.push_str(&check_stdout_content);
+        diag_content.push_str("\n=== CRIU CHECK STDERR ===\n");
+        diag_content.push_str(&check_stderr_content);
+        
+        // Also check /proc/sys/kernel/checkpoint_restore
+        diag_content.push_str("\n=== KERNEL CONFIG ===\n");
+        if let Ok(cr_val) = std::fs::read_to_string("/proc/sys/kernel/checkpoint_restore") {
+            diag_content.push_str(&format!("/proc/sys/kernel/checkpoint_restore: {}\n", cr_val.trim()));
+        } else {
+            diag_content.push_str("/proc/sys/kernel/checkpoint_restore: NOT FOUND\n");
+        }
+        
+        std::fs::write(&diag_file, diag_content).ok();
+        
+        info!(self.logger, "Diagnostic file created at: {:?}", diag_file);
+        
+        // Note: We'll copy diagnostic files to shared directory at the end
+        // Can't do it now because cfg.work_dir is read-only from guest
+        
+        info!(self.logger, "CRIU check result: {:?}, stdout: {}, stderr: {}", check_result, check_stdout_content, check_stderr_content);
+
         let output = cmd
-            .output()
+            .status()
             .await
             .context("failed to execute criu dump command")?;
         info!(self.logger, "CRIU command executed, checking result");
-        if !output.status.success() {
+        
+        // Read the output files
+        let stdout_content = tokio::fs::read_to_string(&stdout_file).await.unwrap_or_default();
+        let stderr_content = tokio::fs::read_to_string(&stderr_file).await.unwrap_or_default();
+        
+        if !output.success() {
+            // Try to copy diagnostic file even on failure
+            tokio::fs::create_dir_all(&cfg.work_dir).await.ok();
+            if diag_file.exists() {
+                tokio::fs::copy(&diag_file, cfg.work_dir.join("criu-diagnostic.log")).await.ok();
+            }
+            if stdout_file.exists() {
+                tokio::fs::copy(&stdout_file, cfg.work_dir.join("criu-stdout.log")).await.ok();
+            }
+            if stderr_file.exists() {
+                tokio::fs::copy(&stderr_file, cfg.work_dir.join("criu-stderr.log")).await.ok();
+            }
+            
             return Err(anyhow!(
-                "criu dump for container {} failed with status {:?}. STDOUT: {}. STDERR: {}",
+                "criu dump for container {} failed with status {:?}. STDOUT ({}): {}. STDERR ({}): {}. Check {:?} for diagnostic info.",
                 self.id,
-                output.status.code(),
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
+                output.code(),
+                stdout_file.display(),
+                stdout_content,
+                stderr_file.display(),
+                stderr_content,
+                cfg.work_dir.join("criu-diagnostic.log")
             ));
         }
 
         // Copy checkpoint files from temporary local directory to shared directory
+        // Note: Directories are pre-created by the runtime on the host, so we don't need to create them
         info!(self.logger, "Copying checkpoint files from {:?} to {:?}", temp_images, cfg.images_dir);
-        tokio::fs::create_dir_all(&cfg.images_dir)
-            .await
-            .context("create shared images directory")?;
-        tokio::fs::create_dir_all(&cfg.work_dir)
-            .await
-            .context("create shared work directory")?;
+        
+        // Check if directories exist and are accessible
+        let images_exists = cfg.images_dir.exists();
+        let work_exists = cfg.work_dir.exists();
+        info!(self.logger, "Directory check: images_dir exists={}, work_dir exists={}", images_exists, work_exists);
+        
+        // Check if they're writable by attempting to create a test file
+        let test_file = cfg.work_dir.join(".write-test");
+        match std::fs::write(&test_file, b"test") {
+            Ok(_) => {
+                info!(self.logger, "Work directory is writable");
+                std::fs::remove_file(&test_file).ok();
+            }
+            Err(e) => {
+                error!(self.logger, "Work directory is NOT writable: {:?}", e);
+                return Err(anyhow!("Work directory {:?} is not writable from guest: {}", cfg.work_dir, e));
+            }
+        }
 
         Self::copy_dir_all(&temp_images, &cfg.images_dir)
             .await
@@ -1896,6 +2019,17 @@ impl LinuxContainer {
         Self::copy_dir_all(&temp_work, &cfg.work_dir)
             .await
             .context("copy work to shared dir")?;
+        
+        // Also copy debug log files
+        if diag_file.exists() {
+            tokio::fs::copy(&diag_file, cfg.work_dir.join("criu-diagnostic.log")).await.ok();
+        }
+        if stdout_file.exists() {
+            tokio::fs::copy(&stdout_file, cfg.work_dir.join("criu-stdout.log")).await.ok();
+        }
+        if stderr_file.exists() {
+            tokio::fs::copy(&stderr_file, cfg.work_dir.join("criu-stderr.log")).await.ok();
+        }
 
         info!(self.logger, "Checkpoint files copied successfully");
 
