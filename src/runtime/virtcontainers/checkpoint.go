@@ -77,8 +77,9 @@ func (c CheckpointConfig) validate() error {
 }
 
 // checkpointHostBase returns the host directory used as the root for checkpoint staging.
+// We use getMountPath instead of GetSharePath because shared/ is a read-only bind mount of mounts/
 func (s *Sandbox) checkpointHostBase() string {
-	return filepath.Join(GetSharePath(s.id), checkpointDirName)
+	return filepath.Join(getMountPath(s.id), checkpointDirName)
 }
 
 func (s *Sandbox) checkpointGuestBase() string {
