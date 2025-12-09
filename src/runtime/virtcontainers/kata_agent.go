@@ -89,6 +89,7 @@ var (
 	checkRequestTimeout              = 30 * time.Second
 	createContainerRequestTimeout    = 60 * time.Second
 	defaultRequestTimeout            = 60 * time.Second
+	checkpointRequestTimeout         = 10 * time.Minute // CRIU can take a long time
 	remoteRequestTimeout             = 300 * time.Second
 	customRequestTimeoutKey          = customRequestTimeoutKeyType(struct{}{})
 	errorMissingOCISpec              = errors.New("Missing OCI specification")
@@ -2421,6 +2422,9 @@ func (k *kataAgent) getReqContext(ctx context.Context, reqName string) (newCtx c
 		newCtx, cancel = context.WithTimeout(ctx, checkRequestTimeout)
 	case grpcCreateContainerRequest:
 		newCtx, cancel = context.WithTimeout(ctx, createContainerRequestTimeout)
+	case grpcCheckpointContainerRequest, grpcRestoreContainerRequest:
+		// Checkpoint/restore can take a very long time (CRIU operations)
+		newCtx, cancel = context.WithTimeout(ctx, checkpointRequestTimeout)
 	default:
 		var requestTimeout = defaultRequestTimeout
 
