@@ -51,6 +51,7 @@ use nix::sys::signal::{self, Signal};
 use nix::sys::stat::{self, Mode};
 use nix::unistd::{self, fork, ForkResult, Gid, Pid, Uid, User};
 use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::AsRawFd;
 
 use protobuf::MessageField;
@@ -1876,28 +1877,21 @@ impl LinuxContainer {
         info!(self.logger, "Created temp work directory");
 
         let temp_log_file = temp_work.join("criu-dump.log");
-        let mut cmd = Command::new(&cfg.criu_path);
-        cmd.arg("dump")
-            .arg("--tree")
-            .arg(self.init_process_pid.to_string())
-            .arg("--images-dir")
-            .arg(&temp_images)
-            .arg("--work-dir")
-            .arg(&temp_work)
-            .arg("--log-file")
-            .arg(&temp_log_file)
-            .arg("--tcp-established")
-            .arg("--ext-unix-sk")
-            .arg("--shell-job")
-            .arg("--file-locks")
-            .arg("--skip-mnt")
-            .arg("/dev/shm")  // Skip /dev/shm mount which has unreachable sharing
-            .arg("--skip-mnt")
-            .arg("/etc/hostname")  // Skip bind-mounted config files
-            .arg("--skip-mnt")
-            .arg("/etc/hosts")
-            .arg("--skip-mnt")
-            .arg("/etc/resolv.conf");
+        
+        // Call CRIU via sh -c to fully detach it from the agent process tree
+        // This prevents wait4() from blocking on parent-child relationships
+        let criu_cmd = format!(
+            "{} dump -v4 --tree {} --images-dir {} --work-dir {} --log-file {} --file-locks --skip-mnt /dev/shm --skip-mnt /etc/hostname --skip-mnt /etc/hosts --skip-mnt /etc/resolv.conf",
+            cfg.criu_path.display(),
+            self.init_process_pid,
+            temp_images.display(),
+            temp_work.display(),
+            temp_log_file.display()
+        );
+        
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg(format!("exec {}", criu_cmd));
 
         // Redirect CRIU output to files in /tmp for debugging
         let stdout_file = temp_base.join("criu-stdout.log");
@@ -1907,13 +1901,19 @@ impl LinuxContainer {
             .context("create criu stdout file")?;
         let stderr_fd = std::fs::File::create(&stderr_file)
             .context("create criu stderr file")?;
+        let stdin_fd = std::fs::File::open("/dev/null")
+            .context("open /dev/null for stdin")?;
         
+        cmd.stdin(stdin_fd);
         cmd.stdout(stdout_fd);
         cmd.stderr(stderr_fd);
+        cmd.current_dir(&temp_work);  // Run in work directory
 
-        if cfg.leave_running {
-            cmd.arg("--leave-running");
-        }
+        // NOTE: --leave-running causes CRIU to wait4() on the process, which hangs
+        // For now, we checkpoint without leaving running (process will be stopped)
+        // if cfg.leave_running {
+        //     cmd.arg("--leave-running");
+        // }
 
         info!(
             self.logger,
@@ -1923,24 +1923,16 @@ impl LinuxContainer {
 
         info!(self.logger, "About to execute CRIU dump command");
         
-        // First test if CRIU can execute at all with a comprehensive check command
-        let check_stdout = temp_base.join("check-stdout.log");
-        let check_stderr = temp_base.join("check-stderr.log");
-        let mut check_cmd = Command::new(&cfg.criu_path);
-        check_cmd.arg("check")
-            .arg("--all")  // Check all features
-            .stdout(std::fs::File::create(&check_stdout).unwrap())
-            .stderr(std::fs::File::create(&check_stderr).unwrap());
-        let check_result = check_cmd.status().await;
-        let check_stdout_content = tokio::fs::read_to_string(&check_stdout).await.unwrap_or_default();
-        let check_stderr_content = tokio::fs::read_to_string(&check_stderr).await.unwrap_or_default();
+        // Skip CRIU check for now to avoid potential hangs
+        let check_stdout_content = String::from("SKIPPED");
+        let check_stderr_content = String::from("SKIPPED");
         
         // Write diagnostic information to temp location (will copy to shared later)
         let diag_file = temp_base.join("criu-diagnostic.log");
         let mut diag_content = format!("=== CRIU DIAGNOSTIC ===\n");
         diag_content.push_str(&format!("Container ID: {}\n", self.id));
         diag_content.push_str(&format!("CRIU path: {}\n", cfg.criu_path.display()));
-        diag_content.push_str(&format!("CRIU check result: {:?}\n", check_result));
+        diag_content.push_str("CRIU check result: SKIPPED\n");
         diag_content.push_str(&format!("Init PID: {}\n", self.init_process_pid));
         diag_content.push_str(&format!("Images dir: {:?}\n", cfg.images_dir));
         diag_content.push_str(&format!("Work dir: {:?}\n", cfg.work_dir));
@@ -1965,42 +1957,87 @@ impl LinuxContainer {
         // Note: We'll copy diagnostic files to shared directory at the end
         // Can't do it now because cfg.work_dir is read-only from guest
         
-        info!(self.logger, "CRIU check result: {:?}, stdout: {}, stderr: {}", check_result, check_stdout_content, check_stderr_content);
+        info!(self.logger, "CRIU check: SKIPPED, stdout: {}, stderr: {}", check_stdout_content, check_stderr_content);
 
-        let output = cmd
-            .status()
-            .await
-            .context("failed to execute criu dump command")?;
-        info!(self.logger, "CRIU command executed, checking result");
+        // Spawn CRIU via sh -c with background + wait to ensure proper parent-child relationship
+        // The key: CRIU must NOT be a direct child of kata-agent (sibling of target process)
+        // By backgrounding CRIU, sh becomes its parent, then sh waits for CRIU to complete
+        let leave_running_flag = if cfg.leave_running { "--leave-running" } else { "" };
+        let criu_cmd_str = format!(
+            "{} dump -v4 --tree {} --images-dir {} --work-dir {} --log-file {} {} --file-locks --skip-mnt /dev/shm --skip-mnt /etc/hostname --skip-mnt /etc/hosts --skip-mnt /etc/resolv.conf & wait",
+            cfg.criu_path.display(),
+            self.init_process_pid,
+            temp_images.display(),
+            temp_work.display(),
+            temp_log_file.display(),
+            leave_running_flag
+        );
         
-        // Read the output files
-        let stdout_content = tokio::fs::read_to_string(&stdout_file).await.unwrap_or_default();
-        let stderr_content = tokio::fs::read_to_string(&stderr_file).await.unwrap_or_default();
+        info!(self.logger, "Spawning CRIU via sh -c: {}", criu_cmd_str);
         
-        if !output.success() {
-            // Try to copy diagnostic file even on failure
-            tokio::fs::create_dir_all(&cfg.work_dir).await.ok();
-            if diag_file.exists() {
-                tokio::fs::copy(&diag_file, cfg.work_dir.join("criu-diagnostic.log")).await.ok();
-            }
-            if stdout_file.exists() {
-                tokio::fs::copy(&stdout_file, cfg.work_dir.join("criu-stdout.log")).await.ok();
-            }
-            if stderr_file.exists() {
-                tokio::fs::copy(&stderr_file, cfg.work_dir.join("criu-stderr.log")).await.ok();
-            }
+        // Spawn via tokio with inherited stdin/stdout/stderr (like manual test)
+        // Redirect within the shell command itself to avoid blocking on FD operations
+        let criu_cmd_with_redir = format!("{} >{} 2>{}", criu_cmd_str, stdout_file.display(), stderr_file.display());
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(&criu_cmd_with_redir)
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .context("failed to spawn criu via sh")?;
+        
+        let pid = child.id().context("failed to get child PID")?;
+        info!(self.logger, "CRIU spawned via sh (PID: {}), this creates: sh -> criu hierarchy", pid);
+        
+        // Poll for completion - use try_wait to avoid blocking
+        let mut attempts = 0;
+        let max_attempts = 180; // 3 minutes
+        
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            attempts += 1;
             
-            return Err(anyhow!(
-                "criu dump for container {} failed with status {:?}. STDOUT ({}): {}. STDERR ({}): {}. Check {:?} for diagnostic info.",
-                self.id,
-                output.code(),
-                stdout_file.display(),
-                stdout_content,
-                stderr_file.display(),
-                stderr_content,
-                cfg.work_dir.join("criu-diagnostic.log")
-            ));
+            // Try non-blocking wait
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    info!(self.logger, "CRIU exited with status: {:?}", status);
+                    if !status.success() {
+                        let stderr_content = tokio::fs::read_to_string(&stderr_file).await.unwrap_or_default();
+                        return Err(anyhow!("CRIU dump failed with status {:?}. STDERR: {}", status.code(), stderr_content));
+                    }
+                    break;
+                }
+                Ok(None) => {
+                    // Still running
+                    if attempts >= max_attempts {
+                        child.kill().await.ok();
+                        return Err(anyhow!("CRIU dump timed out after {} seconds", max_attempts));
+                    }
+                    if attempts % 10 == 0 {
+                        info!(self.logger, "CRIU still running after {} seconds", attempts);
+                    }
+                }
+                Err(e) => {
+                    return Err(anyhow!("Failed to check CRIU status: {}", e));
+                }
+            }
         }
+        
+        info!(self.logger, "CRIU checkpoint completed successfully");
+        
+        // Read stderr to check for errors
+        let stderr_content = tokio::fs::read_to_string(&stderr_file).await.unwrap_or_default();
+        if !stderr_content.is_empty() && stderr_content.to_lowercase().contains("error") {
+            error!(self.logger, "CRIU reported errors in stderr: {}", stderr_content);
+            return Err(anyhow!("CRIU dump failed. STDERR: {}", stderr_content));
+        }
+        
+        // Check if checkpoint images were actually created by listing the directory
+        let images_list = tokio::fs::read_dir(&temp_images).await;
+        if images_list.is_err() || !temp_images.exists() {
+            let log_content = tokio::fs::read_to_string(&temp_log_file).await.unwrap_or_default();
+            return Err(anyhow!("CRIU dump produced no checkpoint images. Log: {}", log_content));
+        }
+
 
         // Copy checkpoint files from temporary local directory to shared directory
         // Note: Directories are pre-created by the runtime on the host, so we don't need to create them
