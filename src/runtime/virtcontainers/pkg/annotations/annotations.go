@@ -236,6 +236,12 @@ const (
 	// Denotes whether flush requests for the device are ignored.
 	BlockDeviceCacheNoflush = kataAnnotHypervisorPrefix + "block_device_cache_noflush"
 
+	// BlockDeviceMounts is an annotation that specifies block devices (from volumeDevices)
+	// that should be mounted by kata-agent instead of being passed as raw devices.
+	// Format: JSON object mapping device path to mount configuration.
+	// Example: {"io.katacontainers.volume.block-mounts": "{"/dev/vdb": {"mount": "/data", "fstype": "ext4"}}"}
+	BlockDeviceMounts = kataAnnotationsPrefix + "volume.block-mounts"
+
 	// RxRateLimiterMaxRate is a sandbox annotation that specifies max rate on network I/O inbound bandwidth.
 	RxRateLimiterMaxRate = kataAnnotHypervisorPrefix + "rx_rate_limiter_max_rate"
 
