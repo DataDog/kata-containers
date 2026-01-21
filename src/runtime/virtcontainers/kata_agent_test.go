@@ -1352,3 +1352,325 @@ func TestKataAgentCreateContainerVFIODevices(t *testing.T) {
 		})
 	}
 }
+
+func TestParseBlockMountAnnotation(t *testing.T) {
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		want        BlockMountAnnotation
+		wantErr     bool
+	}{
+		{
+			name:        "no annotation",
+			annotations: map[string]string{},
+			want:        nil,
+			wantErr:     false,
+		},
+		{
+			name: "empty annotation value",
+			annotations: map[string]string{
+				vcAnnotations.BlockDeviceMounts: "",
+			},
+			want:    nil,
+			wantErr: false,
+		},
+		{
+			name: "valid single mount",
+			annotations: map[string]string{
+				vcAnnotations.BlockDeviceMounts: `{"/dev/vdb": {"mount": "/data", "fstype": "ext4"}}`,
+			},
+			want: BlockMountAnnotation{
+				"/dev/vdb": {Mount: "/data", Fstype: "ext4"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid multiple mounts",
+			annotations: map[string]string{
+				vcAnnotations.BlockDeviceMounts: `{"/dev/vdb": {"mount": "/data", "fstype": "ext4"}, "/dev/vdc": {"mount": "/cache", "fstype": "xfs"}}`,
+			},
+			want: BlockMountAnnotation{
+				"/dev/vdb": {Mount: "/data", Fstype: "ext4"},
+				"/dev/vdc": {Mount: "/cache", Fstype: "xfs"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid with options",
+			annotations: map[string]string{
+				vcAnnotations.BlockDeviceMounts: `{"/dev/vdb": {"mount": "/data", "fstype": "ext4", "options": ["rw", "noatime"]}}`,
+			},
+			want: BlockMountAnnotation{
+				"/dev/vdb": {Mount: "/data", Fstype: "ext4", Options: []string{"rw", "noatime"}},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid with fsGroup",
+			annotations: map[string]string{
+				vcAnnotations.BlockDeviceMounts: `{"/dev/vdb": {"mount": "/data", "fstype": "ext4", "fsGroup": 1000}}`,
+			},
+			want: BlockMountAnnotation{
+				"/dev/vdb": {Mount: "/data", Fstype: "ext4", FsGroup: func() *int64 { v := int64(1000); return &v }()},
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid json",
+			annotations: map[string]string{
+				vcAnnotations.BlockDeviceMounts: `{invalid}`,
+			},
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name: "invalid device path - not in /dev",
+			annotations: map[string]string{
+				vcAnnotations.BlockDeviceMounts: `{"/etc/passwd": {"mount": "/data", "fstype": "ext4"}}`,
+			},
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name: "invalid - missing mount destination",
+			annotations: map[string]string{
+				vcAnnotations.BlockDeviceMounts: `{"/dev/vdb": {"fstype": "ext4"}}`,
+			},
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name: "invalid - relative mount path",
+			annotations: map[string]string{
+				vcAnnotations.BlockDeviceMounts: `{"/dev/vdb": {"mount": "data", "fstype": "ext4"}}`,
+			},
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name: "invalid - unsupported fstype",
+			annotations: map[string]string{
+				vcAnnotations.BlockDeviceMounts: `{"/dev/vdb": {"mount": "/data", "fstype": "ntfs"}}`,
+			},
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name: "valid - empty fstype defaults to ext4",
+			annotations: map[string]string{
+				vcAnnotations.BlockDeviceMounts: `{"/dev/vdb": {"mount": "/data"}}`,
+			},
+			want: BlockMountAnnotation{
+				"/dev/vdb": {Mount: "/data", Fstype: ""},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseBlockMountAnnotation(tt.annotations)
+			if tt.wantErr {
+				assert.Error(t, err, "parseBlockMountAnnotation() should return error")
+				return
+			}
+			assert.NoError(t, err, "parseBlockMountAnnotation() should not return error")
+			assert.Equal(t, tt.want, got, "parseBlockMountAnnotation() result mismatch")
+		})
+	}
+}
+
+func TestCreateAnnotationBlockStorages(t *testing.T) {
+	k := kataAgent{}
+
+	// Create a container with block devices
+	devID := "test-block-dev"
+	devicePath := "/dev/vdb"
+	pciPath, err := types.PciPathFromString("01/02")
+	assert.NoError(t, err)
+
+	bDev := drivers.NewBlockDevice(&config.DeviceInfo{ID: devID})
+	bDev.BlockDrive = &config.BlockDrive{PCIPath: pciPath, VirtPath: "/dev/vdb"}
+
+	var devices []api.Device
+	devices = append(devices, bDev)
+
+	tmpDir := "/vhost/user/dir"
+	dm := manager.NewDeviceManager(config.VirtioBlock, false, tmpDir, 0, devices)
+
+	sConfig := SandboxConfig{}
+	sConfig.HypervisorConfig.BlockDeviceDriver = config.VirtioBlock
+
+	tests := []struct {
+		name             string
+		annotations      map[string]string
+		containerDevices []ContainerDevice
+		ociDevices       []specs.LinuxDevice
+		wantStorageCount int
+		wantMountCount   int
+		wantDevicesCount int
+		wantErr          bool
+	}{
+		{
+			name:             "no annotation",
+			annotations:      map[string]string{},
+			containerDevices: []ContainerDevice{{ID: devID, ContainerPath: devicePath}},
+			ociDevices:       []specs.LinuxDevice{{Path: devicePath, Type: "b", Major: 8, Minor: 16}},
+			wantStorageCount: 0,
+			wantMountCount:   0, // No new mounts added
+			wantDevicesCount: 1, // Device not removed
+			wantErr:          false,
+		},
+		{
+			name: "valid annotation - single mount",
+			annotations: map[string]string{
+				vcAnnotations.BlockDeviceMounts: `{"/dev/vdb": {"mount": "/data", "fstype": "ext4"}}`,
+			},
+			containerDevices: []ContainerDevice{{ID: devID, ContainerPath: devicePath}},
+			ociDevices:       []specs.LinuxDevice{{Path: devicePath, Type: "b", Major: 8, Minor: 16}},
+			wantStorageCount: 1,
+			wantMountCount:   1, // Mount added for /data
+			wantDevicesCount: 0, // Device removed from OCI spec
+			wantErr:          false,
+		},
+		{
+			name: "device not in container devices - returns error",
+			annotations: map[string]string{
+				vcAnnotations.BlockDeviceMounts: `{"/dev/vdc": {"mount": "/cache", "fstype": "xfs"}}`,
+			},
+			containerDevices: []ContainerDevice{{ID: devID, ContainerPath: devicePath}},
+			ociDevices:       []specs.LinuxDevice{{Path: devicePath, Type: "b", Major: 8, Minor: 16}, {Path: "/dev/vdc", Type: "b", Major: 8, Minor: 32}},
+			wantStorageCount: 0,
+			wantMountCount:   0,
+			wantDevicesCount: 2,
+			wantErr:          true, // Device not found in c.devices should error
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sandbox := &Sandbox{
+				id:         "test-sandbox",
+				hypervisor: &mockHypervisor{},
+				devManager: dm,
+				ctx:        context.Background(),
+				config:     &sConfig,
+			}
+
+			contConfig := &ContainerConfig{
+				Annotations: tt.annotations,
+			}
+
+			container := &Container{
+				sandbox: sandbox,
+				id:      "test-container",
+				config:  contConfig,
+				devices: tt.containerDevices,
+			}
+
+			// Create OCI spec with devices
+			spec := &specs.Spec{
+				Linux: &specs.Linux{
+					Devices: tt.ociDevices,
+				},
+				Mounts: []specs.Mount{},
+			}
+
+			initialMountCount := len(spec.Mounts)
+
+			storages, err := k.createAnnotationBlockStorages(container, spec)
+
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+
+			assert.NoError(t, err)
+			assert.Len(t, storages, tt.wantStorageCount, "Storage count mismatch")
+			assert.Len(t, spec.Mounts, initialMountCount+tt.wantMountCount, "Mount count mismatch")
+			assert.Len(t, spec.Linux.Devices, tt.wantDevicesCount, "OCI devices count mismatch")
+
+			// Verify storage properties if any were created
+			if tt.wantStorageCount > 0 {
+				storage := storages[0]
+				assert.Equal(t, kataBlkDevType, storage.Driver, "Storage driver should be blk")
+				assert.NotEmpty(t, storage.MountPoint, "Storage mount point should be set")
+			}
+
+			// Verify mount was added pointing to the storage mount point
+			if tt.wantMountCount > 0 {
+				mount := spec.Mounts[len(spec.Mounts)-1]
+				assert.Equal(t, "bind", mount.Type, "Mount type should be bind")
+			}
+		})
+	}
+}
+
+func TestValidateBlockMountConfig(t *testing.T) {
+	tests := []struct {
+		name       string
+		devicePath string
+		config     BlockMountConfig
+		wantErr    bool
+	}{
+		{
+			name:       "valid config",
+			devicePath: "/dev/vdb",
+			config:     BlockMountConfig{Mount: "/data", Fstype: "ext4"},
+			wantErr:    false,
+		},
+		{
+			name:       "valid config with xfs",
+			devicePath: "/dev/vdc",
+			config:     BlockMountConfig{Mount: "/cache", Fstype: "xfs"},
+			wantErr:    false,
+		},
+		{
+			name:       "valid config with btrfs",
+			devicePath: "/dev/vdd",
+			config:     BlockMountConfig{Mount: "/storage", Fstype: "btrfs"},
+			wantErr:    false,
+		},
+		{
+			name:       "device not in /dev",
+			devicePath: "/sys/block/vdb",
+			config:     BlockMountConfig{Mount: "/data", Fstype: "ext4"},
+			wantErr:    true,
+		},
+		{
+			name:       "empty mount",
+			devicePath: "/dev/vdb",
+			config:     BlockMountConfig{Mount: "", Fstype: "ext4"},
+			wantErr:    true,
+		},
+		{
+			name:       "relative mount path",
+			devicePath: "/dev/vdb",
+			config:     BlockMountConfig{Mount: "data/dir", Fstype: "ext4"},
+			wantErr:    true,
+		},
+		{
+			name:       "unsupported fstype",
+			devicePath: "/dev/vdb",
+			config:     BlockMountConfig{Mount: "/data", Fstype: "ntfs"},
+			wantErr:    true,
+		},
+		{
+			name:       "empty fstype is allowed",
+			devicePath: "/dev/vdb",
+			config:     BlockMountConfig{Mount: "/data", Fstype: ""},
+			wantErr:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateBlockMountConfig(tt.devicePath, tt.config)
+			if tt.wantErr {
+				assert.Error(t, err, "validateBlockMountConfig() should return error")
+			} else {
+				assert.NoError(t, err, "validateBlockMountConfig() should not return error")
+			}
+		})
+	}
+}

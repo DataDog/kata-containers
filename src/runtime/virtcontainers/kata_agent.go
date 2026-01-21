@@ -166,6 +166,75 @@ const (
 	grpcSetPolicyRequest                      = "grpc.SetPolicyRequest"
 )
 
+// BlockMountConfig specifies how a block device should be mounted by kata-agent
+type BlockMountConfig struct {
+	// Mount is the destination path inside the container
+	Mount string `json:"mount"`
+	// Fstype is the filesystem type (ext4, xfs, etc.)
+	Fstype string `json:"fstype,omitempty"`
+	// Options are mount options (ro, rw, noatime, etc.)
+	Options []string `json:"options,omitempty"`
+	// FsGroup sets ownership of the mounted filesystem
+	FsGroup *int64 `json:"fsGroup,omitempty"`
+}
+
+// BlockMountAnnotation maps device paths to their mount configurations
+// Key: device path (e.g., "/dev/vdb")
+// Value: mount configuration
+type BlockMountAnnotation map[string]BlockMountConfig
+
+// allowedBlockMountFsTypes defines the filesystem types allowed for block mount annotation
+var allowedBlockMountFsTypes = map[string]bool{
+	"ext4": true, "ext3": true, "ext2": true,
+	"xfs": true, "btrfs": true, "vfat": true,
+	"": true, // empty is allowed, defaults to ext4 at mount time
+}
+
+// parseBlockMountAnnotation parses the block mount annotation from container/sandbox annotations
+func parseBlockMountAnnotation(annotations map[string]string) (BlockMountAnnotation, error) {
+	raw, ok := annotations[vcAnnotations.BlockDeviceMounts]
+	if !ok || raw == "" {
+		return nil, nil
+	}
+
+	var config BlockMountAnnotation
+	if err := json.Unmarshal([]byte(raw), &config); err != nil {
+		return nil, fmt.Errorf("failed to parse %s annotation: %w", vcAnnotations.BlockDeviceMounts, err)
+	}
+
+	// Validate the configuration
+	for devicePath, mountConfig := range config {
+		if err := validateBlockMountConfig(devicePath, mountConfig); err != nil {
+			return nil, err
+		}
+	}
+
+	return config, nil
+}
+
+// validateBlockMountConfig validates a single block mount configuration
+func validateBlockMountConfig(devicePath string, config BlockMountConfig) error {
+	// Validate device path format
+	if !strings.HasPrefix(devicePath, "/dev/") {
+		return fmt.Errorf("invalid device path %q: must start with /dev/", devicePath)
+	}
+
+	// Validate mount destination
+	if config.Mount == "" {
+		return fmt.Errorf("mount destination required for device %s", devicePath)
+	}
+	if !filepath.IsAbs(config.Mount) {
+		return fmt.Errorf("mount destination %q must be absolute path", config.Mount)
+	}
+
+	// Validate filesystem type
+	if !allowedBlockMountFsTypes[config.Fstype] {
+		return fmt.Errorf("unsupported filesystem type %q for device %s", config.Fstype, devicePath)
+	}
+
+	return nil
+}
+
 // newKataAgent returns an agent from an agent type.
 func newKataAgent() agent {
 	return &kataAgent{}
@@ -1246,6 +1315,20 @@ func (k *kataAgent) appendVfioDevice(dev ContainerDevice, device api.Device, c *
 }
 
 func (k *kataAgent) appendDevices(deviceList []*grpc.Device, c *Container) []*grpc.Device {
+	// Parse block mount annotation to know which devices to skip
+	// (they will be mounted by the agent instead of being passed as raw devices)
+	var annotations map[string]string
+	if c.config != nil {
+		annotations = c.config.Annotations
+	}
+	if annotations == nil && c.sandbox != nil && c.sandbox.config != nil {
+		annotations = c.sandbox.config.Annotations
+	}
+	blockMounts, err := parseBlockMountAnnotation(annotations)
+	if err != nil {
+		k.Logger().WithError(err).Warn("Failed to parse block mount annotation, devices will not be filtered")
+	}
+
 	for _, dev := range c.devices {
 		device := c.sandbox.devManager.GetDeviceByID(dev.ID)
 		if device == nil {
@@ -1255,6 +1338,14 @@ func (k *kataAgent) appendDevices(deviceList []*grpc.Device, c *Container) []*gr
 
 		if strings.HasPrefix(dev.ContainerPath, defaultKataGuestVirtualVolumedir) {
 			continue
+		}
+
+		// Skip devices that will be mounted via annotation
+		if blockMounts != nil {
+			if _, shouldMount := blockMounts[dev.ContainerPath]; shouldMount {
+				k.Logger().WithField("device", dev.ContainerPath).Debug("Skipping device in appendDevices (will be mounted via annotation)")
+				continue
+			}
 		}
 
 		var kataDevice *grpc.Device
@@ -1451,6 +1542,16 @@ func (k *kataAgent) createContainer(ctx context.Context, sandbox *Sandbox, c *Co
 	}
 
 	ctrStorages = append(ctrStorages, volumeStorages...)
+
+	// Handle annotation-based block device mounts (for volumeDevices that should be mounted)
+	annotationStorages, err := k.createAnnotationBlockStorages(c, ociSpec)
+	if err != nil {
+		return nil, fmt.Errorf("failed to process block mount annotations: %w", err)
+	}
+	if len(annotationStorages) > 0 {
+		ctrStorages = append(ctrStorages, annotationStorages...)
+		k.Logger().WithField("count", len(annotationStorages)).Info("Added annotation-based block mount storages")
+	}
 
 	// Layer storage objects are prepended to the list so that they come _before_ the
 	// rootfs because the rootfs depends on them (it's an overlay of the layers).
@@ -1933,6 +2034,160 @@ func (k *kataAgent) handleBlkOCIMounts(c *Container, spec *specs.Spec) ([]*grpc.
 	}
 
 	return layerStorages, volumeStorages, nil
+}
+
+// createAnnotationBlockStorages creates Storage objects for devices specified in the
+// block mount annotation. These devices are already hotplugged via the normal
+// volumeDevices path; this function adds mount instructions for the agent.
+func (k *kataAgent) createAnnotationBlockStorages(c *Container, spec *specs.Spec) ([]*grpc.Storage, error) {
+	// Get annotations from container config (falls back to sandbox config)
+	var annotations map[string]string
+	if c.config != nil {
+		annotations = c.config.Annotations
+	}
+	if annotations == nil && c.sandbox != nil && c.sandbox.config != nil {
+		annotations = c.sandbox.config.Annotations
+	}
+
+	// Skip sandbox containers
+	ctrType := ContainerType(annotations[vcAnnotations.ContainerTypeKey])
+	if ctrType.IsCriSandbox() {
+		return nil, nil
+	}
+
+	blockMounts, err := parseBlockMountAnnotation(annotations)
+	if err != nil {
+		return nil, err
+	}
+	if blockMounts == nil {
+		return nil, nil
+	}
+
+	k.Logger().WithField("count", len(blockMounts)).Debug("Processing block mount annotations")
+
+	var storages []*grpc.Storage
+	devicesToRemove := make(map[string]bool)
+
+	for devicePath, mountConfig := range blockMounts {
+
+		// Find the corresponding device in c.devices to get the BlockDrive info
+		var blockDrive *config.BlockDrive
+		for _, dev := range c.devices {
+			if dev.ContainerPath == devicePath {
+				device := c.sandbox.devManager.GetDeviceByID(dev.ID)
+				if device != nil && device.DeviceType() == config.DeviceBlock {
+					blockDrive = device.GetDeviceInfo().(*config.BlockDrive)
+					break
+				}
+			}
+		}
+
+		// Determine the source and driver type for the Storage object
+		var source string
+		var driverType string
+
+		if blockDrive != nil {
+			// Use the block drive information from the hotplugged device
+			switch c.sandbox.config.HypervisorConfig.BlockDeviceDriver {
+			case config.VirtioMmio:
+				driverType = kataMmioBlkDevType
+				source = blockDrive.VirtPath
+			case config.VirtioBlock:
+				driverType = kataBlkDevType
+				source = blockDrive.PCIPath.String()
+			case config.VirtioBlockCCW:
+				driverType = kataBlkCCWDevType
+				source = blockDrive.DevNo
+			case config.VirtioSCSI:
+				driverType = kataSCSIDevType
+				source = blockDrive.SCSIAddr
+			case config.Nvdimm:
+				driverType = kataNvdimmDevType
+				source = fmt.Sprintf("/dev/pmem%s", blockDrive.NvdimmID)
+			default:
+				driverType = kataBlkDevType
+				source = blockDrive.VirtPath
+			}
+		} else {
+			return nil, fmt.Errorf("block device %q not found in container devices - ensure volumeDevices.devicePath matches annotation key", devicePath)
+		}
+
+		// Default filesystem type
+		fstype := mountConfig.Fstype
+		if fstype == "" {
+			fstype = "ext4"
+		}
+
+		// Default mount options
+		options := mountConfig.Options
+		if len(options) == 0 {
+			options = []string{"rw"}
+		}
+
+		// Create unique mount point in guest for this device
+		// Same pattern as handleBlkOCIMounts
+		filename := b64.URLEncoding.EncodeToString([]byte(source))
+		guestMountPoint := filepath.Join(kataGuestSandboxStorageDir(), filename)
+
+		storage := &grpc.Storage{
+			Driver:     driverType,
+			Source:     source,
+			Fstype:     fstype,
+			Options:    options,
+			MountPoint: guestMountPoint,
+		}
+
+		// Set fsGroup if specified
+		if mountConfig.FsGroup != nil {
+			storage.FsGroup = &grpc.FSGroup{
+				GroupId:           uint32(*mountConfig.FsGroup),
+				GroupChangePolicy: pbTypes.FSGroupChangePolicy_Always,
+			}
+		}
+
+		storages = append(storages, storage)
+
+		// Mark device for removal from OCI spec
+		devicesToRemove[devicePath] = true
+
+		// Add mount entry to OCI spec
+		// The source is the guest mount point where agent will mount the device
+		spec.Mounts = append(spec.Mounts, specs.Mount{
+			Destination: mountConfig.Mount,
+			Source:      guestMountPoint,
+			Type:        "bind",
+			Options:     []string{"bind"},
+		})
+
+		k.Logger().WithFields(logrus.Fields{
+			"device": devicePath,
+			"mount":  mountConfig.Mount,
+		}).Debug("Created storage for annotation-based block mount")
+	}
+
+	// Remove devices from OCI spec that are now being mounted
+	if len(devicesToRemove) > 0 {
+		k.removeDevicesFromOCISpec(spec, devicesToRemove)
+	}
+
+	return storages, nil
+}
+
+// removeDevicesFromOCISpec removes specified devices from the OCI spec's Linux.Devices
+func (k *kataAgent) removeDevicesFromOCISpec(spec *specs.Spec, devicesToRemove map[string]bool) {
+	if spec.Linux == nil || len(spec.Linux.Devices) == 0 {
+		return
+	}
+
+	filtered := make([]specs.LinuxDevice, 0, len(spec.Linux.Devices))
+	for _, dev := range spec.Linux.Devices {
+		if !devicesToRemove[dev.Path] {
+			filtered = append(filtered, dev)
+		} else {
+			k.Logger().WithField("device", dev.Path).Debug("Removing device from OCI spec (will be mounted instead)")
+		}
+	}
+	spec.Linux.Devices = filtered
 }
 
 // handlePidNamespace checks if Pid namespace for a container needs to be shared with its sandbox
