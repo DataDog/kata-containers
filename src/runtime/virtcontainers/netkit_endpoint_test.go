@@ -146,7 +146,8 @@ func TestNetkitEndpointPciPath(t *testing.T) {
 	assert.NoError(err)
 
 	// Test PciPath get/set
-	testPciPath := vcTypes.PciPath{Bus: "0x01", Device: "0x02", Function: "0x03"}
+	testPciPath, err := vcTypes.PciPathFromString("01/02")
+	assert.NoError(err)
 	endpoint.SetPciPath(testPciPath)
 	assert.Equal(testPciPath, endpoint.PciPath())
 }
@@ -158,7 +159,8 @@ func TestNetkitEndpointCcwDevice(t *testing.T) {
 	assert.NoError(err)
 
 	// Test CcwDevice get/set
-	testCcwDev := vcTypes.CcwDevice{DevNo: "fe.0.0001"}
+	testCcwDev, err := vcTypes.CcwDeviceFrom(0, "0001")
+	assert.NoError(err)
 	endpoint.SetCcwDevice(testCcwDev)
 	ccwDevice := endpoint.CcwDevice()
 	assert.NotNil(ccwDevice)
