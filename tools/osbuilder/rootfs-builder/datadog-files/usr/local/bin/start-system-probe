@@ -1,0 +1,12 @@
+#!/bin/sh
+BASE_PATH="run/kata-containers/shared/containers"
+
+while true; do
+    DD_AUTH_TOKEN_FILE_PATH=$(find "${BASE_PATH}" -path "*-auth/token" 2>/dev/null | head -n 1)
+    if [ -n "${DD_AUTH_TOKEN_FILE_PATH}" ]; then
+        break
+    fi
+    sleep 1
+done
+
+/opt/datadog-agent/embedded/bin/system-probe "$@"
