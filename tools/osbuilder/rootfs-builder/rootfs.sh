@@ -897,13 +897,9 @@ delete_unnecessary_files()
 ############### [DATADOG] ###############
 setup_rootfs_dd_specific()
 {
-	for file in $(find ${script_dir}/datadog-files -type f -printf "%P\n"); do
-		dir=$(dirname "$file")
-		if [ ! -d "${ROOTFS_DIR}/$dir" ]; then
-			mkdir -p "${ROOTFS_DIR}/$dir"
-		fi
-		cp -r "${script_dir}/datadog-files/$file" "${ROOTFS_DIR}/$file"
-	done
+	if [ -d "${script_dir}/datadog-files" ]; then
+		cp -a "${script_dir}/datadog-files/." "${ROOTFS_DIR}/"
+	fi
 }
 ########################################
 
