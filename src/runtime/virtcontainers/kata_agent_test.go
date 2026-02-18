@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -1708,4 +1709,85 @@ func TestValidateBlockMountConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFormatBlockDeviceIfNeeded(t *testing.T) {
+	// Skip if running without root (loopback device setup requires root).
+	if os.Getuid() != 0 {
+		// We can still test the "missing binary" and "already formatted" paths
+		// using real files.
+	}
+
+	t.Run("already formatted device - blkid succeeds", func(t *testing.T) {
+		if _, err := exec.LookPath("blkid"); err != nil {
+			t.Skip("blkid not available")
+		}
+		if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+			t.Skip("mkfs.ext4 not available")
+		}
+		if os.Getuid() != 0 {
+			t.Skip("requires root for loopback device")
+		}
+
+		// Create a temp file, format it, attach as loop device.
+		f, err := os.CreateTemp("", "kata-format-test-*")
+		assert.NoError(t, err)
+		defer os.Remove(f.Name())
+
+		// Create a 10MB sparse file.
+		assert.NoError(t, f.Truncate(10*1024*1024))
+		f.Close()
+
+		// Format it first so blkid will see a filesystem.
+		out, err := exec.Command("mkfs.ext4", "-F", f.Name()).CombinedOutput()
+		assert.NoError(t, err, "mkfs.ext4 setup failed: %s", string(out))
+
+		// formatBlockDeviceIfNeeded should be a no-op.
+		err = formatBlockDeviceIfNeeded(f.Name(), "ext4")
+		assert.NoError(t, err)
+	})
+
+	t.Run("unformatted device - mkfs runs", func(t *testing.T) {
+		if _, err := exec.LookPath("blkid"); err != nil {
+			t.Skip("blkid not available")
+		}
+		if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+			t.Skip("mkfs.ext4 not available")
+		}
+		if os.Getuid() != 0 {
+			t.Skip("requires root for blkid on file")
+		}
+
+		// Create a zeroed sparse file (no filesystem).
+		f, err := os.CreateTemp("", "kata-format-test-*")
+		assert.NoError(t, err)
+		defer os.Remove(f.Name())
+
+		assert.NoError(t, f.Truncate(10*1024*1024))
+		f.Close()
+
+		// formatBlockDeviceIfNeeded should format the file.
+		err = formatBlockDeviceIfNeeded(f.Name(), "ext4")
+		assert.NoError(t, err)
+
+		// Verify that blkid now finds a filesystem.
+		out, err := exec.Command("blkid", "-p", f.Name()).CombinedOutput()
+		assert.NoError(t, err, "blkid should succeed after format: %s", string(out))
+		assert.Contains(t, string(out), "ext4")
+	})
+
+	t.Run("missing mkfs binary - clear error", func(t *testing.T) {
+		// Create a zeroed sparse file.
+		f, err := os.CreateTemp("", "kata-format-test-*")
+		assert.NoError(t, err)
+		defer os.Remove(f.Name())
+
+		assert.NoError(t, f.Truncate(10*1024*1024))
+		f.Close()
+
+		// Use a nonexistent fstype so mkfs.<type> will not be found.
+		err = formatBlockDeviceIfNeeded(f.Name(), "nonexistentfs12345")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "mkfs.nonexistentfs12345")
+	})
 }

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -2041,6 +2042,25 @@ func (k *kataAgent) handleBlkOCIMounts(c *Container, spec *specs.Spec) ([]*grpc.
 	return layerStorages, volumeStorages, nil
 }
 
+// formatBlockDeviceIfNeeded checks whether the host-side block device already
+// has a filesystem.  If blkid reports nothing, it runs mkfs.<fstype> so the
+// kata-agent can mount the device without needing filesystem tools in the guest.
+func formatBlockDeviceIfNeeded(hostPath, fstype string) error {
+	// blkid -p exits 0 and produces output when a filesystem is present.
+	out, err := exec.Command("blkid", "-p", hostPath).CombinedOutput()
+	if err == nil && len(out) > 0 {
+		// Device already has a filesystem — nothing to do.
+		return nil
+	}
+
+	// No filesystem detected — format the device.
+	mkfsCmd := fmt.Sprintf("mkfs.%s", fstype)
+	if out, err := exec.Command(mkfsCmd, hostPath).CombinedOutput(); err != nil {
+		return fmt.Errorf("%s failed on %s: %s: %w", mkfsCmd, hostPath, string(out), err)
+	}
+	return nil
+}
+
 // createAnnotationBlockStorages creates Storage objects for devices specified in the
 // block mount annotation. These devices are already hotplugged via the normal
 // volumeDevices path; this function adds mount instructions for the agent.
@@ -2074,12 +2094,25 @@ func (k *kataAgent) createAnnotationBlockStorages(c *Container, spec *specs.Spec
 			return nil, fmt.Errorf("block device %q not found in container devices - ensure volumeDevices.devicePath matches annotation key", devicePath)
 		}
 
+		fstype := mountConfig.Fstype
+		if fstype == "" {
+			fstype = "ext4"
+		}
+
 		var vol *grpc.Storage
 		switch device.DeviceType() {
 		case config.DeviceBlock:
 			vol, err = handleBlockVolume(c, device)
 			if err != nil {
 				return nil, err
+			}
+			// Format the host-side block device if it has no filesystem yet.
+			// Fresh ephemeral volumes (e.g. EBS) arrive unformatted, and the
+			// guest rootfs does not ship mkfs/blkid.
+			if blockDrive, ok := device.GetDeviceInfo().(*config.BlockDrive); ok && blockDrive != nil && blockDrive.File != "" {
+				if err := formatBlockDeviceIfNeeded(blockDrive.File, fstype); err != nil {
+					return nil, fmt.Errorf("failed to format block device %s: %w", devicePath, err)
+				}
 			}
 		case config.VhostUserBlk:
 			d, ok := device.GetDeviceInfo().(*config.VhostUserDeviceAttrs)
@@ -2092,11 +2125,6 @@ func (k *kataAgent) createAnnotationBlockStorages(c *Container, spec *specs.Spec
 			}
 		default:
 			return nil, fmt.Errorf("unsupported device type %s for annotation-based block mount", device.DeviceType())
-		}
-
-		fstype := mountConfig.Fstype
-		if fstype == "" {
-			fstype = "ext4"
 		}
 		options := mountConfig.Options
 		if len(options) == 0 {
