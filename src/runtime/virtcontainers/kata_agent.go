@@ -186,8 +186,7 @@ type BlockMountAnnotation map[string]BlockMountConfig
 
 // allowedBlockMountFsTypes defines the filesystem types allowed for block mount annotation
 var allowedBlockMountFsTypes = map[string]bool{
-	"ext4": true, "ext3": true, "ext2": true,
-	"xfs": true, "btrfs": true, "vfat": true,
+	"ext4": true, "xfs": true,
 	"": true, // empty is allowed, defaults to ext4 at mount time
 }
 

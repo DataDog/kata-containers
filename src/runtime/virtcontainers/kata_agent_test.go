@@ -1662,10 +1662,10 @@ func TestValidateBlockMountConfig(t *testing.T) {
 			wantErr:    false,
 		},
 		{
-			name:       "valid config with btrfs",
+			name:       "unsupported fstype btrfs",
 			devicePath: "/dev/vdd",
 			config:     BlockMountConfig{Mount: "/storage", Fstype: "btrfs"},
-			wantErr:    false,
+			wantErr:    true,
 		},
 		{
 			name:       "device not in /dev",
