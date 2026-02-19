@@ -1564,6 +1564,23 @@ func TestCreateAnnotationBlockStorages(t *testing.T) {
 			wantErr:          false,
 		},
 		{
+			name: "duplicate container devices - error",
+			annotations: map[string]string{
+				vcAnnotations.BlockDeviceMounts: `{"/dev/vdb": {"mount": "/data", "fstype": "ext4"}}`,
+			},
+			blockDriver: config.VirtioBlock,
+			devices:     []api.Device{bDev},
+			containerDevices: []ContainerDevice{
+				{ID: devID, ContainerPath: devicePath},
+				{ID: devID, ContainerPath: devicePath},
+			},
+			ociDevices:       []specs.LinuxDevice{{Path: devicePath, Type: "b", Major: 8, Minor: 16}},
+			wantStorageCount: 0,
+			wantMountCount:   0,
+			wantDevicesCount: 1,
+			wantErr:          true,
+		},
+		{
 			name: "device not in container devices",
 			annotations: map[string]string{
 				vcAnnotations.BlockDeviceMounts: `{"/dev/vde": {"mount": "/cache", "fstype": "xfs"}}`,

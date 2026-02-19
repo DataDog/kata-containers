@@ -2081,16 +2081,19 @@ func (k *kataAgent) createAnnotationBlockStorages(c *Container, spec *specs.Spec
 	var storages []*grpc.Storage
 	devicesToRemove := make(map[string]bool)
 
-	for devicePath, mountConfig := range blockMounts {
-		var device api.Device
-		for _, dev := range c.devices {
-			if dev.ContainerPath == devicePath {
-				device = c.sandbox.devManager.GetDeviceByID(dev.ID)
-				break
+	for _, dev := range c.devices {
+		devicePath := dev.ContainerPath
+		mountConfig, ok := blockMounts[devicePath]
+		if !ok {
+			if devicesToRemove[devicePath] {
+				return nil, fmt.Errorf("duplicate container device %q", devicePath)
 			}
+			continue
 		}
+		delete(blockMounts, devicePath)
+		device := c.sandbox.devManager.GetDeviceByID(dev.ID)
 		if device == nil {
-			return nil, fmt.Errorf("block device %q not found in container devices - ensure volumeDevices.devicePath matches annotation key", devicePath)
+			return nil, fmt.Errorf("block device %q not found in device manager", devicePath)
 		}
 
 		fstype := mountConfig.Fstype
@@ -2153,6 +2156,14 @@ func (k *kataAgent) createAnnotationBlockStorages(c *Container, spec *specs.Spec
 			Type:        "bind",
 			Options:     []string{"bind"},
 		})
+	}
+
+	if len(blockMounts) > 0 {
+		unmatched := make([]string, 0, len(blockMounts))
+		for devicePath := range blockMounts {
+			unmatched = append(unmatched, devicePath)
+		}
+		return nil, fmt.Errorf("annotated block mounts not matched to any container device: %v", unmatched)
 	}
 
 	if len(devicesToRemove) > 0 {
