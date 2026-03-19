@@ -8,6 +8,7 @@ package virtcontainers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net"
@@ -17,6 +18,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/containernetworking/plugins/pkg/ns"
@@ -1044,12 +1046,18 @@ func addQdiscIngress(index int) error {
 		},
 	}
 
-	err := netlink.QdiscAdd(qdisc)
-	if err != nil {
-		return fmt.Errorf("Failed to add qdisc for network index %d : %s", index, err)
+	var err error
+	for i := 0; i < 5; i++ {
+		err = netlink.QdiscAdd(qdisc)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, syscall.EBUSY) {
+			break // non-retryable error
+		}
+		time.Sleep(time.Duration(10*(i+1)) * time.Millisecond)
 	}
-
-	return nil
+	return fmt.Errorf("Failed to add qdisc for network index %d : %s", index, err)
 }
 
 // addRedirectTCFilter adds a tc filter for device with index "sourceIndex".

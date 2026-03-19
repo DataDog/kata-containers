@@ -4,6 +4,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use rtnetlink::Handle;
@@ -42,19 +44,11 @@ impl NetworkModel for TcFilterModel {
             .await
             .context("fetch virt by index")?;
 
-        handle
-            .qdisc()
-            .add(tap_index as i32)
-            .ingress()
-            .execute()
+        add_ingress_qdisc(&handle, tap_index as i32)
             .await
             .context("add tap ingress")?;
 
-        handle
-            .qdisc()
-            .add(virt_index as i32)
-            .ingress()
-            .execute()
+        add_ingress_qdisc(&handle, virt_index as i32)
             .await
             .context("add virt ingress")?;
 
@@ -92,6 +86,35 @@ impl NetworkModel for TcFilterModel {
         let virt_index = fetch_index(&handle, &pair.virt_iface.name).await?;
         handle.qdisc().del(virt_index as i32).execute().await?;
         Ok(())
+    }
+}
+
+/// Add an ingress qdisc to the device at the given index, retrying up to 5
+/// times on EBUSY with linear backoff (10ms, 20ms, …, 50ms).
+async fn add_ingress_qdisc(handle: &Handle, index: i32) -> Result<(), rtnetlink::Error> {
+    let mut last_err = None;
+    for i in 0u64..5 {
+        match handle.qdisc().add(index).ingress().execute().await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if !is_ebusy(&e) {
+                    return Err(e);
+                }
+                last_err = Some(e);
+                tokio::time::sleep(Duration::from_millis(10 * (i + 1))).await;
+            }
+        }
+    }
+    Err(last_err.unwrap())
+}
+
+fn is_ebusy(err: &rtnetlink::Error) -> bool {
+    match err {
+        rtnetlink::Error::NetlinkError(msg) => {
+            msg.code
+                .map_or(false, |c| c.get() == -(libc::EBUSY as i32))
+        }
+        _ => false,
     }
 }
 
