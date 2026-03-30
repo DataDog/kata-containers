@@ -100,6 +100,11 @@ There are several kinds of Kata configurations and they are listed below.
 | `io.katacontainers.config.hypervisor.block_device_num_queues` | `usize` | The number of queues to use for block devices (runtime-rs only) |
 | `io.katacontainers.config.hypervisor.block_device_queue_size` | uint32 | The size of the of the queue to use for block devices (runtime-rs only) |
 
+## Volume Options
+| Key | Value Type | Comments |
+|-------| ----- | ----- |
+| `io.katacontainers.volume.block-mounts` | string (JSON) | Specifies block devices (from `volumeDevices`) that should be mounted as filesystems inside the guest VM instead of being passed as raw devices. Value is a JSON object mapping device paths to mount configurations. See [design doc](../design/annotation-block-device-mounts.md) for details |
+
 ## Container Options
 | Key | Value Type | Comments |
 |-------| ----- | ----- |
