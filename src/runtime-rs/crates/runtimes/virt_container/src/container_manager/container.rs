@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agent::Agent;
+use agent::{Agent, Storage};
 use anyhow::{anyhow, Context, Result};
 use common::{
     error::Error,
@@ -26,7 +26,8 @@ use oci_spec::runtime as oci;
 
 use oci::{LinuxResources, Process as OCIProcess};
 use resource::{
-    cdi_devices::container_device::annotate_container_devices, ResourceManager, ResourceUpdateOp,
+    cdi_devices::{container_device::annotate_container_devices, ContainerDevice},
+    ResourceManager, ResourceUpdateOp,
 };
 use tokio::sync::RwLock;
 
@@ -202,6 +203,15 @@ impl Container {
             .resource_manager
             .handler_devices(&config.container_id, linux)
             .await?;
+
+        // Handle annotation-based block device mounts.
+        // Devices listed in the annotation are mounted as filesystems by the agent
+        // rather than passed as raw block devices, so filter them out first.
+        let (container_devices, annotation_storages) =
+            handle_block_mount_annotation(&updated_annotations, container_devices, &mut spec)
+                .context("handle block mount annotation")?;
+        storages.extend(annotation_storages);
+
         let devices_agent = annotate_container_devices(&mut spec, container_devices)
             .context("annotate container devices failed")?;
 
@@ -641,6 +651,115 @@ impl Container {
             )
             .await
     }
+}
+
+const BLOCK_DEVICE_MOUNTS_ANNOTATION: &str = "io.katacontainers.volume.block-mounts";
+
+#[derive(Debug, serde::Deserialize)]
+struct BlockMountConfig {
+    mount: String,
+    #[serde(default)]
+    fstype: String,
+    #[serde(default)]
+    options: Vec<String>,
+}
+
+// Parses the block mount annotation and processes any matching container devices.
+//
+// Devices listed in the annotation are meant to be mounted as filesystems by the agent
+// (not passed as raw block devices). This function:
+//   1. Splits container_devices into annotated and remaining sets.
+//   2. Creates a Storage object for each annotated device.
+//   3. Adds a bind mount in the OCI spec from the guest storage path to the destination.
+//   4. Removes matching devices from spec.linux.devices.
+//
+// Returns (remaining_devices, new_storages).
+fn handle_block_mount_annotation(
+    annotations: &HashMap<String, String>,
+    container_devices: Vec<ContainerDevice>,
+    spec: &mut oci::Spec,
+) -> Result<(Vec<ContainerDevice>, Vec<Storage>)> {
+    let raw = match annotations.get(BLOCK_DEVICE_MOUNTS_ANNOTATION) {
+        Some(v) if !v.is_empty() => v.as_str(),
+        _ => return Ok((container_devices, vec![])),
+    };
+
+    let block_mounts: HashMap<String, BlockMountConfig> =
+        serde_json::from_str(raw).context("failed to parse block mount annotation")?;
+
+    if block_mounts.is_empty() {
+        return Ok((container_devices, vec![]));
+    }
+
+    let mut storages = Vec::new();
+    let mut mounted_paths: HashMap<String, bool> = HashMap::new();
+
+    let (annotated, remaining): (Vec<_>, Vec<_>) = container_devices
+        .into_iter()
+        .partition(|cd| block_mounts.contains_key(&cd.device.container_path));
+
+    for cd in annotated {
+        let config = block_mounts
+            .get(&cd.device.container_path)
+            .expect("partition guarantees key exists");
+
+        let source = cd.device.id.clone();
+        let driver = cd.device.field_type.clone();
+        let fstype = if config.fstype.is_empty() {
+            "ext4".to_string()
+        } else {
+            config.fstype.clone()
+        };
+        let options = if config.options.is_empty() {
+            vec!["rw".to_string()]
+        } else {
+            config.options.clone()
+        };
+
+        // Build a unique, valid path component from the PCI source string.
+        let sanitized: String = source
+            .chars()
+            .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+            .collect();
+        let guest_mount_point = format!("/run/kata-containers/storage/{}", sanitized);
+
+        storages.push(Storage {
+            driver,
+            source,
+            fs_type: fstype,
+            options,
+            mount_point: guest_mount_point.clone(),
+            ..Default::default()
+        });
+
+        // Add bind mount: agent mounts the block device at guest_mount_point, then
+        // the bind mount exposes it at the container destination path.
+        let mut bind_mount = oci::Mount::default();
+        bind_mount.set_destination(std::path::PathBuf::from(&config.mount));
+        bind_mount.set_typ(Some("bind".to_string()));
+        bind_mount.set_source(Some(std::path::PathBuf::from(&guest_mount_point)));
+        bind_mount.set_options(Some(vec!["bind".to_string()]));
+
+        let mut mounts = spec.mounts().clone().unwrap_or_default();
+        mounts.push(bind_mount);
+        spec.set_mounts(Some(mounts));
+
+        mounted_paths.insert(cd.device.container_path, true);
+    }
+
+    // Remove matched devices from spec.linux.devices so the agent doesn't
+    // see them as character/block devices in the container namespace.
+    if !mounted_paths.is_empty() {
+        if let Some(linux) = spec.linux_mut() {
+            if let Some(devices) = linux.devices_mut() {
+                devices.retain(|d| {
+                    !mounted_paths.contains_key(&d.path().display().to_string())
+                });
+            }
+        }
+    }
+
+    Ok((remaining, storages))
 }
 
 fn amend_spec(
