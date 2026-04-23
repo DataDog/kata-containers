@@ -14,7 +14,7 @@ import (
 	"strings"
 
 	"github.com/container-orchestrated-devices/container-device-interface/pkg/cdi"
-	"github.com/go-ini/ini"
+	"gopkg.in/ini.v1"
 	"github.com/kata-containers/kata-containers/src/runtime/pkg/device"
 	vcTypes "github.com/kata-containers/kata-containers/src/runtime/virtcontainers/types"
 	"github.com/opencontainers/runtime-spec/specs-go"
