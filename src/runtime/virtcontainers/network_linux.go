@@ -781,24 +781,33 @@ func createLink(netHandle *netlink.Handle, name string, expectedLink netlink.Lin
 }
 
 func getLinkForEndpoint(endpoint Endpoint, netHandle *netlink.Handle) (netlink.Link, error) {
-	var link netlink.Link
-
-	switch ep := endpoint.(type) {
-	case *VethEndpoint:
-		link = &netlink.Veth{}
-	case *NetkitEndpoint:
-		link = &netlink.Netkit{}
-	case *MacvlanEndpoint:
-		link = &netlink.Macvlan{}
-	case *IPVlanEndpoint:
-		link = &netlink.IPVlan{}
-	case *TuntapEndpoint:
-		link = &netlink.Tuntap{}
-	default:
-		return nil, fmt.Errorf("Unexpected endpointType %s", ep.Type())
+	netPair := endpoint.NetworkPair()
+	if netPair == nil {
+		return nil, fmt.Errorf("endpoint %s has no network pair", endpoint.Type())
 	}
+	name := netPair.VirtIface.Name
 
-	return getLinkByName(netHandle, endpoint.NetworkPair().VirtIface.Name, link)
+	switch endpoint.(type) {
+	case *VethEndpoint:
+		link, err := netHandle.LinkByName(name)
+		if err != nil {
+			return nil, fmt.Errorf("LinkByName() failed for %s: %s", name, err)
+		}
+		// Accept the concrete type returned by the kernel (e.g.
+		// *netlink.Veth for real veths, *netlink.Device for mlx5
+		// SFs / generic netdevs). All callers only need Attrs().
+		return link, nil
+	case *MacvlanEndpoint:
+		return getLinkByName(netHandle, name, &netlink.Macvlan{})
+	case *IPVlanEndpoint:
+		return getLinkByName(netHandle, name, &netlink.IPVlan{})
+	case *TuntapEndpoint:
+		return getLinkByName(netHandle, name, &netlink.Tuntap{})
+	case *NetkitEndpoint:
+		return getLinkByName(netHandle, name, &netlink.Netkit{})
+	default:
+		return nil, fmt.Errorf("Unexpected endpointType %s", endpoint.Type())
+	}
 }
 
 func getLinkByName(netHandle *netlink.Handle, name string, expectedLink netlink.Link) (netlink.Link, error) {
