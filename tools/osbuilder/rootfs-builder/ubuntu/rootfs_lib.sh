@@ -15,10 +15,11 @@ build_rootfs() {
 		PACKAGES=$(echo "$PACKAGES" | tr ' ' ',')
 		EXTRA_PKGS=$(echo "$EXTRA_PKGS" | tr ' ' ',')
 	fi
-	if ! mmdebstrap --mode auto --arch "$DEB_ARCH" --variant required \
-			--components="$REPO_COMPONENTS" \
+	# shellcheck disable=SC2154
+	if ! mmdebstrap --mode auto --arch "${DEB_ARCH}" --variant required \
+			--components="${REPO_COMPONENTS}" \
 			--customize-hook "/kata-containers/tools/osbuilder/hooks/download_generate_sbom.sh" \
-			--include "$PACKAGES,$EXTRA_PKGS" "$OS_VERSION" "$rootfs_dir" "$REPO_URL"; then
+			--include "${PACKAGES},${EXTRA_PKGS}" "${OS_VERSION}" "${rootfs_dir}" "${REPO_URL}"; then
 		echo "ERROR: mmdebstrap failed, cannot proceed" && exit 1
 	else
 		echo "INFO: mmdebstrap succeeded"
