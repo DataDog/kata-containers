@@ -175,7 +175,7 @@ impl Process {
             } else {
                 info!(logger, "created console socket!");
 
-                let (stdin, pstdin) = unistd::pipe2(OFlag::O_CLOEXEC)?;
+                let  (stdin, pstdin) = unistd::pipe2(OFlag::O_CLOEXEC)?;
                 p.parent_stdin = Some(pstdin);
                 p.stdin = Some(stdin);
 
