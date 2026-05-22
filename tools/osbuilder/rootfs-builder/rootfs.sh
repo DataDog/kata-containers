@@ -970,6 +970,15 @@ delete_unnecessary_files()
 	done
 }
 
+############### [DATADOG] ###############
+setup_rootfs_dd_specific()
+{
+	if [ -d "${script_dir}/datadog-files" ]; then
+		cp -a "${script_dir}/datadog-files/." "${ROOTFS_DIR}/"
+	fi
+}
+########################################
+
 main()
 {
 	# The dedicated GPU-extension image already contains the pinned NVIDIA
@@ -1012,6 +1021,7 @@ main()
 
 	init="${ROOTFS_DIR}/sbin/init"
 	setup_rootfs
+	setup_rootfs_dd_specific
 
 	if is_nvidia_variant; then
 		# The monolith and nvidia base continue to share stage-one.
