@@ -1,0 +1,25 @@
+# Confines system-probe: read-only access to the Datadog auth token, broad access for eBPF/monitoring.
+
+#include <tunables/global>
+
+profile datadog-system-probe /opt/datadog-agent/embedded/bin/system-probe
+    flags=(attach_disconnected) {
+  #include <abstractions/base>
+
+  capability,
+  network,
+
+  /run/kata-containers/shared/containers/*/datadog-agent/auth/** r,
+  deny /run/kata-containers/shared/containers/*/datadog-agent/auth/** wklmx,
+
+  /proc/** r,
+  /sys/** r,
+  /dev/** rw,
+  /tmp/** rw,
+  /run/** rw,
+  /var/** rw,
+  /opt/datadog-agent/** rmix,
+  /usr/** rmix,
+  /lib/** rmix,
+  /lib64/** rmix,
+}
