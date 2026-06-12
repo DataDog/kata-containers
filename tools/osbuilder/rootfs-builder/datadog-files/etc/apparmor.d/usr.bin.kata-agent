@@ -1,0 +1,21 @@
+# Confines the kata-agent; transitions all exec'd children to the kata-container profile.
+
+#include <tunables/global>
+
+profile usr.bin.kata-agent /usr/bin/kata-agent flags=(attach_disconnected) {
+  #include <abstractions/base>
+
+  capability,
+  network,
+  mount,
+  remount,
+  umount,
+  pivot_root,
+  ptrace,
+  signal,
+  dbus,
+
+  /** rwklmx,
+
+  /** Px -> kata-container,
+}

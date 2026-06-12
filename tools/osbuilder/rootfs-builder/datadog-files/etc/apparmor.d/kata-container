@@ -1,0 +1,25 @@
+# Applied to every container process by the kata-agent; denies access to the Datadog auth token and vsock.
+
+#include <tunables/global>
+
+profile kata-container flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  capability,
+  network,
+  mount,
+  remount,
+  umount,
+  pivot_root,
+  ptrace,
+  signal,
+  dbus,
+
+  /** rwklmx,
+  /** ix,
+
+  deny /run/kata-containers/shared/containers/*/datadog-agent/auth/**  rwklmx,
+  deny /proc/*/root/run/kata-containers/shared/containers/*/datadog-agent/auth/** rwklmx,
+
+  deny network vsock,
+}
