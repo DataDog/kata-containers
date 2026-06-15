@@ -495,7 +495,7 @@ func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (_ *taskAP
 	//start a container
 	if r.ExecID == "" {
 		if hc := s.hostMgr.Get(c.id); hc != nil {
-			err = startHostContainer(spanCtx, c, hc)
+			err = startHostContainer(spanCtx, s, c, hc)
 		} else {
 			err = startContainer(spanCtx, s, c)
 		}

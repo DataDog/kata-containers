@@ -119,6 +119,15 @@ func (m *Manager) Create(ctx context.Context, p CreateParams) (*Container, error
 	if err := m.rt.Create(ctx, p.ID, p.Bundle, opts); err != nil {
 		return nil, fmt.Errorf("host sidecar %s: runtime create: %w", p.ID, err)
 	}
+	// After runc create, close the write ends of the IO pipes that we hold.
+	// The container's init process now owns them; releasing our copies ensures
+	// that when the container exits and closes its ends, the read ends (used by
+	// the shim's ioCopy) see EOF rather than blocking indefinitely.
+	if sc, ok := io.(runc.StartCloser); ok {
+		if err := sc.CloseAfterStart(); err != nil {
+			return nil, fmt.Errorf("host sidecar %s: close after start: %w", p.ID, err)
+		}
+	}
 
 	c := &Container{
 		id:     p.ID,
@@ -127,6 +136,7 @@ func (m *Manager) Create(ctx context.Context, p CreateParams) (*Container, error
 		status: task.Status_CREATED,
 		onExit: p.OnExit,
 		exitCh: make(chan uint32, 1),
+		pipeIO: p.IO, // non-nil only when caller provided real pipes; nil for auto NullIO
 	}
 	m.mu.Lock()
 	m.containers[p.ID] = c

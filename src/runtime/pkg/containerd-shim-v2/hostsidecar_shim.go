@@ -13,6 +13,7 @@ package containerdshim
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path"
 	"time"
@@ -21,6 +22,7 @@ import (
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v2"
 	"github.com/containerd/containerd/api/types/task"
 	"github.com/containerd/containerd/mount"
+	runc "github.com/containerd/go-runc"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -44,13 +46,29 @@ func newHostSidecarManager() *hostsidecar.Manager {
 // createHostContainer routes an annotated container to an OCI runtime on the
 // host (in the pod network namespace) instead of into the VM. The rootfs is
 // already mounted at <bundlePath>/rootfs by the caller.
+//
+// When containerd supplies non-empty stdout/stderr FIFO paths, a pipe IO is
+// created so the shim can forward the sidecar's output to the log driver. The
+// pipe read ends are stored on the hostsidecar.Container and retrieved by
+// startHostContainer to launch the ioCopy goroutines.
 func createHostContainer(ctx context.Context, s *service, r *taskAPI.CreateTaskRequest, spec *specs.Spec, bundlePath string) error {
+	var pio runc.IO
+	if r.Stdout != "" || r.Stderr != "" {
+		var err error
+		pio, err = runc.NewPipeIO(0, 0, func(o *runc.IOOption) {
+			o.OpenStdin = r.Stdin != ""
+		})
+		if err != nil {
+			return fmt.Errorf("host sidecar %s: pipe io: %w", r.ID, err)
+		}
+	}
 	_, err := s.hostMgr.Create(ctx, hostsidecar.CreateParams{
 		ID:        r.ID,
 		SandboxID: s.sandbox.ID(),
 		Bundle:    bundlePath,
 		Spec:      spec,
 		NetnsPath: s.sandbox.GetNetNs(),
+		IO:        pio,
 		OnExit:    s.hostSidecarOnExit(r.ID),
 	})
 	return err
@@ -84,16 +102,36 @@ func (s *service) hostSidecarOnExit(id string) func(uint32, time.Time) {
 	}
 }
 
-// startHostContainer starts a host sidecar and marks the shim container
-// running. Host sidecars have no VM IO streams, so the generic io/stdin
-// channels are closed here to avoid blocking the shim's close paths.
-func startHostContainer(ctx context.Context, c *container, hc *hostsidecar.Container) error {
+// startHostContainer starts a host sidecar, marks the shim container running,
+// and wires up stdio forwarding when containerd requested log capture.
+//
+// If the container was created with a pipe IO (r.Stdout/r.Stderr non-empty),
+// ioCopy goroutines are launched to stream the sidecar's output to
+// containerd's log driver. exitIOch is closed by ioCopy when all data has been
+// flushed — matching the in-VM container lifecycle so Wait behaves correctly.
+// When no log capture was requested the channels are closed immediately, as
+// before.
+func startHostContainer(ctx context.Context, s *service, c *container, hc *hostsidecar.Container) error {
 	if err := hc.Start(ctx); err != nil {
 		return err
 	}
 	c.status = task.Status_RUNNING
-	close(c.exitIOch)
-	close(c.stdinCloser)
+
+	if hc.StdoutPipe() != nil || hc.StderrPipe() != nil {
+		tty, err := newTtyIO(ctx, s.namespace, c.id, c.stdin, c.stdout, c.stderr, c.terminal)
+		if err != nil {
+			return fmt.Errorf("host sidecar %s: ttyIO: %w", c.id, err)
+		}
+		c.ttyio = tty
+		c.stdinPipe = hc.StdinPipe()
+		go func() {
+			ioCopy(shimLog.WithField("container", c.id), c.exitIOch, c.stdinCloser, tty, hc.StdinPipe(), hc.StdoutPipe(), hc.StderrPipe())
+			hc.ClosePipes()
+		}()
+	} else {
+		close(c.exitIOch)
+		close(c.stdinCloser)
+	}
 	return nil
 }
 

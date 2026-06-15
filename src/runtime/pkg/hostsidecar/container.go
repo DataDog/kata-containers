@@ -7,6 +7,7 @@ package hostsidecar
 
 import (
 	"context"
+	"io"
 	"sync"
 	"syscall"
 	"time"
@@ -35,6 +36,10 @@ type Container struct {
 	// exited. The shim uses it to feed its own exit machinery (exitCh + the
 	// TaskExit event) so State/Wait/Delete need no host-specific handling.
 	onExit func(status uint32, at time.Time)
+	// pipeIO, if non-nil, provides the container's stdio as pipe pairs so the
+	// shim can forward stdout/stderr to containerd's log infrastructure. It is
+	// set only when the caller requested log capture (i.e. r.Stdout != "").
+	pipeIO runc.IO
 
 	mu         sync.Mutex
 	status     task.Status
@@ -64,6 +69,41 @@ func (c *Container) Pid() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.pid
+}
+
+// StdinPipe returns the write-end of the container's stdin pipe, or nil if
+// no stdin capture was requested at create time.
+func (c *Container) StdinPipe() io.WriteCloser {
+	if c.pipeIO == nil {
+		return nil
+	}
+	return c.pipeIO.Stdin()
+}
+
+// StdoutPipe returns the read-end of the container's stdout pipe, or nil if
+// no stdout capture was requested at create time.
+func (c *Container) StdoutPipe() io.ReadCloser {
+	if c.pipeIO == nil {
+		return nil
+	}
+	return c.pipeIO.Stdout()
+}
+
+// StderrPipe returns the read-end of the container's stderr pipe, or nil if
+// no stderr capture was requested at create time.
+func (c *Container) StderrPipe() io.ReadCloser {
+	if c.pipeIO == nil {
+		return nil
+	}
+	return c.pipeIO.Stderr()
+}
+
+// ClosePipes closes all pipe FDs. Called after ioCopy finishes to release
+// the read ends that were drained.
+func (c *Container) ClosePipes() {
+	if c.pipeIO != nil {
+		_ = c.pipeIO.Close()
+	}
 }
 
 // Start starts the created container, refreshes its PID, and begins watching
