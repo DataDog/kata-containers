@@ -44,12 +44,18 @@ func newManagerWithRuntime(cfg Config, rt OCIRuntime) *Manager {
 	}
 }
 
-// Enabled reports whether host-sidecar routing is active.
-func (m *Manager) Enabled() bool { return m.cfg.Enabled }
+// Enabled reports whether host-sidecar routing is active. A nil manager (e.g.
+// a service constructed directly in tests, bypassing New) is treated as
+// disabled so callers need no nil checks.
+func (m *Manager) Enabled() bool { return m != nil && m.cfg.Enabled }
 
-// Get returns the host sidecar for id, or nil if id is not host-managed. A nil
-// return is the signal the shim uses to fall back to the in-VM path.
+// Get returns the host sidecar for id, or nil if id is not host-managed (or the
+// manager is nil). A nil return is the signal the shim uses to fall back to the
+// in-VM path.
 func (m *Manager) Get(id string) *Container {
+	if m == nil {
+		return nil
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.containers[id]
@@ -117,6 +123,9 @@ func (m *Manager) Create(ctx context.Context, p CreateParams) (*Container, error
 // Remove drops a container from the manager's tracking. Callers must have
 // already deleted it from the runtime (see Container.Delete).
 func (m *Manager) Remove(id string) {
+	if m == nil {
+		return
+	}
 	m.mu.Lock()
 	delete(m.containers, id)
 	m.mu.Unlock()

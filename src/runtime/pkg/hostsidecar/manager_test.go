@@ -153,6 +153,15 @@ func TestManagerGetUnknown(t *testing.T) {
 	assert.Nil(t, m.Get("nope"))
 }
 
+// A nil manager (a service built directly in tests, bypassing New) must behave
+// as "host routing disabled" rather than panic.
+func TestNilManagerSafe(t *testing.T) {
+	var m *Manager
+	assert.False(t, m.Enabled())
+	assert.Nil(t, m.Get("x"))
+	assert.NotPanics(t, func() { m.Remove("x") })
+}
+
 func TestManagerRemove(t *testing.T) {
 	rt := &fakeRuntime{}
 	m := newTestManager(rt)
