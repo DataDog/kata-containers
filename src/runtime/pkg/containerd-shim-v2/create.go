@@ -23,6 +23,7 @@ import (
 	containerd_types "github.com/containerd/containerd/api/types"
 	"github.com/containerd/containerd/mount"
 	"github.com/containerd/typeurl/v2"
+	"github.com/kata-containers/kata-containers/src/runtime/pkg/hostsidecar"
 	"github.com/kata-containers/kata-containers/src/runtime/pkg/utils"
 	"github.com/kata-containers/kata-containers/src/runtime/virtcontainers"
 	"github.com/kata-containers/kata-containers/src/runtime/virtcontainers/pkg/annotations"
@@ -228,9 +229,17 @@ func create(ctx context.Context, s *service, r *taskAPI.CreateTaskRequest) (*con
 		// during device attachment.
 		removeCDIAnnotations(ociSpec.Annotations)
 
-		_, err = katautils.CreateContainer(ctx, s.sandbox, *ociSpec, rootFs, r.ID, bundlePath, disableOutput, runtimeConfig.DisableGuestEmptyDir)
-		if err != nil {
-			return nil, err
+		// Route annotated "host sidecar" containers to an OCI runtime on the
+		// host (in the pod netns) instead of into the VM. See pkg/hostsidecar.
+		if s.hostMgr.Enabled() && hostsidecar.IsHostSidecar(ociSpec) {
+			if err = createHostContainer(ctx, s, r, ociSpec, bundlePath); err != nil {
+				return nil, err
+			}
+		} else {
+			_, err = katautils.CreateContainer(ctx, s.sandbox, *ociSpec, rootFs, r.ID, bundlePath, disableOutput, runtimeConfig.DisableGuestEmptyDir)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
