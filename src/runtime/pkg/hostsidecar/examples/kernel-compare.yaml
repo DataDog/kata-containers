@@ -9,7 +9,7 @@
 #
 # Apply:
 #   sudo k3s kubectl apply -f kernel-compare.yaml
-#   sudo k3s kubectl wait --for=condition=Succeeded pod/kernel-compare --timeout=120s
+#   sudo k3s kubectl wait --for=condition=Ready pod/kernel-compare --timeout=120s
 #   sudo k3s kubectl logs kernel-compare -c workload
 #   # Expected output (values depend on your kernel versions):
 #   #   host-kernel: 6.8.0-117-generic
@@ -25,7 +25,6 @@ metadata:
     io.katacontainers.host-sidecar-containers: "host-logger"
 spec:
   runtimeClassName: kata
-  restartPolicy: Never
   volumes:
     - name: data
       emptyDir: {}
@@ -59,6 +58,7 @@ spec:
         - |
           echo "host-kernel: $(cat /data/host-kernel)"
           echo "guest-kernel: $(uname -r)"
+          sleep infinity
       volumeMounts:
         - name: data
           mountPath: /data
