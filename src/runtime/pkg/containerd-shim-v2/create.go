@@ -153,6 +153,7 @@ func create(ctx context.Context, s *service, r *taskAPI.CreateTaskRequest) (*con
 		//	a single container.
 		if containerType == virtcontainers.PodSandbox {
 			s.config.SandboxCPUs, s.config.SandboxMemMB = oci.CalculateSandboxSizing(ociSpec)
+			s.config.SandboxCPUs, s.config.SandboxMemMB = hostsidecar.SubtractFromSandboxSizing(ociSpec, s.config.SandboxCPUs, s.config.SandboxMemMB)
 		} else {
 			s.config.SandboxCPUs, s.config.SandboxMemMB = oci.CalculateContainerSizing(ociSpec)
 		}

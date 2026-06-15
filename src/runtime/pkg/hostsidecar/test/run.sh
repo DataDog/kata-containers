@@ -51,11 +51,24 @@ echo "    host kernel=$host_kernel  workload kernel=$wl_kernel"
 [ -n "$wl_kernel" ] || fail "could not read workload kernel"
 [ "$wl_kernel" != "$host_kernel" ] || fail "workload kernel == host kernel (workload not isolated in VM)"
 
+echo "==> [3b/4] VM memory is reduced by the host-sidecar allocation (M3)"
+# pod.yaml sets host-sidecar-mem-bytes=67108864 (64 MiB). The default VM is
+# 2048 MiB; after subtraction it should be at most 1984 MiB.
+vm_total_kb=$($K exec hostsidecar-e2e -c workload -- grep MemTotal /proc/meminfo | awk '{print $2}')
+vm_total_mb=$(( vm_total_kb / 1024 ))
+echo "    VM MemTotal=${vm_total_mb} MiB (expect ≤ 1984, i.e. < 2048 default)"
+[ "$vm_total_mb" -lt 2048 ] || fail "VM MemTotal ${vm_total_mb} MiB >= 2048 MiB default (host-sidecar mem subtraction had no effect)"
+
 echo "==> [4/4] teardown removes the host sidecar cleanly"
 $K delete -f "$POD" --wait=true --timeout=60s
-sleep 3
+# Wait up to 10 s for the host process to exit (runc sends SIGKILL then deletes).
+for _ in $(seq 1 10); do
+  left=$(pgrep -fc "sleep 100000" || true)
+  [ "$left" = "0" ] && break
+  sleep 1
+done
 left=$(pgrep -fc "sleep 100000" || true)
-[ "$left" = "0" ] || fail "host sidecar process leaked after delete (found $left)"
+[ "$left" = "0" ] || fail "host sidecar process leaked after delete (found $left after 10s)"
 remaining=$(sudo runc --root "$RUNC_ROOT" list 2>/dev/null | grep -c running || true)
 [ "$remaining" = "0" ] || fail "host sidecar left in runc state after delete"
 

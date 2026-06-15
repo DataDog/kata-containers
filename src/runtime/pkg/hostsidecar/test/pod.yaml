@@ -8,6 +8,8 @@ metadata:
   name: hostsidecar-e2e
   annotations:
     io.katacontainers.host-sidecar-containers: "host-proxy"
+    # 64 MiB reserved for the host-proxy sidecar; shim subtracts from VM allocation.
+    io.katacontainers.host-sidecar-mem-bytes: "67108864"
 spec:
   runtimeClassName: kata
   initContainers:
