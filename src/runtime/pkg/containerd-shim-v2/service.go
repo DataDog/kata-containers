@@ -942,6 +942,11 @@ func (s *service) CloseIO(ctx context.Context, r *taskAPI.CloseIORequest) (_ *em
 		return nil, err
 	}
 
+	if s.hostMgr.Get(c.id) != nil {
+		// host sidecars have no IO streams; stdinCloser was pre-closed, nothing to close.
+		return empty, nil
+	}
+
 	stdin := c.stdinPipe
 	stdinCloser := c.stdinCloser
 
