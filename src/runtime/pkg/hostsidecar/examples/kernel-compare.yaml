@@ -1,19 +1,28 @@
-# Demonstrates M4: host-sidecar routing via a single-shot init container.
+# Demonstrates M4: host-sidecar routing.
 #
-# host-logger is a regular init container (no restartPolicy: Always) annotated
-# as a host sidecar.  The shim routes it to runc on the host; it writes
-# "$(uname -r)" to a shared emptyDir volume and exits 0.  The workload
-# container, which runs inside the Kata guest VM, reads the host kernel string
-# and appends its own "$(uname -r)" — giving two visibly different kernel
-# versions in a single kubectl logs call.
+# host-logger is a regular init container annotated as a host sidecar.  The
+# shim routes it to runc on the host (proving the routing works); it runs
+# uname -r and exits 0.  The workload runs inside the Kata guest VM and stays
+# alive, so its guest kernel is readable via kubectl logs / kubectl exec.
+#
+# The two kernel versions can be compared with two kubectl commands:
+#
+#   guest kernel (in-VM):
+#     sudo k3s kubectl logs kernel-compare -c workload
+#     # e.g. 6.18.28  (kata-static 3.31.0 guest kernel)
+#
+#   host kernel (Lima VM):
+#     sudo k3s kubectl get node \
+#       -o jsonpath='{.items[0].status.nodeInfo.kernelVersion}{"\n"}'
+#     # e.g. 6.8.0-117-generic  (Lima VM host kernel)
 #
 # Apply:
 #   sudo k3s kubectl apply -f kernel-compare.yaml
 #   sudo k3s kubectl wait --for=condition=Ready pod/kernel-compare --timeout=120s
-#   sudo k3s kubectl logs kernel-compare -c workload
-#   # Expected output (values depend on your kernel versions):
-#   #   host-kernel: 6.8.0-117-generic
-#   #   guest-kernel: 6.18.28
+#
+# To verify the init container ran on the host (not in the VM), check runc
+# during the brief window when it is executing:
+#   sudo runc --root /run/kata-hostsidecar list
 #
 # Clean up:
 #   sudo k3s kubectl delete pod kernel-compare
@@ -25,13 +34,10 @@ metadata:
     io.katacontainers.host-sidecar-containers: "host-logger"
 spec:
   runtimeClassName: kata
-  volumes:
-    - name: data
-      emptyDir: {}
   initContainers:
     - name: host-logger
       image: busybox:1.36
-      command: ["sh", "-c", "uname -r > /data/host-kernel"]
+      command: ["uname", "-r"]
       resources:
         requests:
           cpu: 10m
@@ -39,26 +45,19 @@ spec:
         limits:
           cpu: 100m
           memory: 32Mi
-      volumeMounts:
-        - name: data
-          mountPath: /data
   containers:
     - name: workload
       image: busybox:1.36
-      resources:
-        requests:
-          cpu: 10m
-          memory: 16Mi
-        limits:
-          cpu: 100m
-          memory: 32Mi
       command:
         - sh
         - -c
         - |
-          echo "host-kernel: $(cat /data/host-kernel)"
           echo "guest-kernel: $(uname -r)"
           sleep infinity
-      volumeMounts:
-        - name: data
-          mountPath: /data
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 100m
+          memory: 32Mi
