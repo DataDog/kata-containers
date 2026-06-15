@@ -30,7 +30,7 @@
 #        ctr -n k8s.io images import ...
 #   2. internetworking_model=none in configuration.toml (apply-config.sh).
 #   3. Kata shim from em/host-sidecar deployed (deploy.sh).
-#   4. CoreDNS cluster IP verified (default: 10.96.0.10).
+#   4. CoreDNS cluster IP verified (k3s default: 10.43.0.10).
 #
 # Apply
 # -----
@@ -77,7 +77,7 @@ spec:
       args:
         - --vm-subnet=169.254.1.0/30
         - --dns-listen=169.254.1.1:53
-        - --cluster-dns=10.96.0.10:53
+        - --cluster-dns=10.43.0.10:53
         - --upstream-dns=8.8.8.8:53
         - --proxy-port=12345
         - --log-level=info
