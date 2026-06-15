@@ -98,10 +98,24 @@ func (m *Manager) Create(ctx context.Context, p CreateParams) (*Container, error
 		return nil, fmt.Errorf("host sidecar %s: %w", p.ID, err)
 	}
 
+	// IO must be non-nil. With a nil IO, go-runc captures "runc create"'s
+	// combined output via a pipe that the container's init process inherits;
+	// the read then blocks until the sidecar exits, hanging Create. NullIO
+	// points the container's stdio at /dev/null so create returns promptly.
+	// (Real log/stream wiring can replace this later.)
+	io := p.IO
+	if io == nil {
+		nullIO, err := runc.NewNullIO()
+		if err != nil {
+			return nil, fmt.Errorf("host sidecar %s: null io: %w", p.ID, err)
+		}
+		io = nullIO
+	}
+
 	// Note: no Detach here. "runc create" already creates the container
 	// detached (its init waits for "runc start"); --detach is only valid for
 	// "runc run" and is rejected by "runc create".
-	opts := &runc.CreateOpts{IO: p.IO}
+	opts := &runc.CreateOpts{IO: io}
 	if err := m.rt.Create(ctx, p.ID, p.Bundle, opts); err != nil {
 		return nil, fmt.Errorf("host sidecar %s: runtime create: %w", p.ID, err)
 	}
