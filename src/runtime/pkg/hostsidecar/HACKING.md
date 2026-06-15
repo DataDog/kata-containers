@@ -52,12 +52,19 @@ Everything those edits call is in `hostsidecar` or in the new
 ## Exit reaping (the one subtle part)
 
 A host sidecar's init process is created detached, so it is **not** a child of
-the shim and cannot be `waitpid`-ed directly. The containerd shim runtime sets
-the shim as a child subreaper, so the reparented init becomes reapable by the
-shim. The glue file must wire a go-runc process monitor / reaper so that, on
-sidecar exit, it feeds the shim container's `exitCh` and emits a `TaskExit`
-event — mirroring `wait()` on the in-VM path (`start.go`). This is integration
-behaviour validated by the e2e harness (plan milestone M4), not by unit tests.
+the shim and cannot be `waitpid`-ed directly. Installing a SIGCHLD/subreaper
+handler in the kata shim is rejected: the shim already reaps the hypervisor
+(`s.hpid`), and a process-wide reaper would collide with that.
+
+Instead, `Container.watch()` (in `container.go`) polls the OCI runtime state on
+a short interval and treats `stopped` (or a vanished state) as exit. On exit it
+records status/code/time exactly once and invokes the `OnExit` callback the
+shim supplied in `CreateParams`. The glue file's `OnExit` feeds the shim
+container's `exitCh` and emits a `TaskExit` event — mirroring `wait()` on the
+in-VM path (`start.go`). Exit code is best-effort: inferred from the last
+delivered signal, since runc does not report the real code to a non-parent.
+The polling FSM is unit-tested with a scripted fake runtime; end-to-end exit
+behaviour is validated by the e2e harness (plan milestone M4).
 
 ## Tests
 
