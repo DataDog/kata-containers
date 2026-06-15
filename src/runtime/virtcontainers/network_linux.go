@@ -875,6 +875,9 @@ func xConnectVMNetwork(ctx context.Context, endpoint Endpoint, h Hypervisor) err
 	case NetXConnectTCFilterModel:
 		networkLogger().Info("connect TCFilter to VM network")
 		err = setupTCFiltering(ctx, endpoint, queues, disableVhostNet)
+	case NetXConnectNoneModel:
+		networkLogger().Info("connect none model to VM network (proxy-managed)")
+		err = setupNoneNetworking(ctx, endpoint, queues, disableVhostNet)
 	default:
 		err = fmt.Errorf("Invalid internetworking model")
 	}
@@ -899,6 +902,8 @@ func xDisconnectVMNetwork(ctx context.Context, endpoint Endpoint) error {
 		err = untapNetworkPair(ctx, endpoint)
 	case NetXConnectTCFilterModel:
 		err = removeTCFiltering(ctx, endpoint)
+	case NetXConnectNoneModel:
+		err = removeNoneNetworking(ctx, endpoint)
 	default:
 		err = fmt.Errorf("Invalid internetworking model")
 	}
@@ -1151,6 +1156,115 @@ func setupTCFiltering(ctx context.Context, endpoint Endpoint, queues int, disabl
 	}
 
 	return nil
+}
+
+// proxyTapHostCIDR and proxyTapVMCIDR define the link-local subnet shared by the
+// tap host-side and the VM when internetworking_model=none.  A /30 is sufficient;
+// it does not conflict with the pod CIDR because it is link-local.
+const (
+	proxyTapHostCIDR = "169.254.1.1/30"
+	proxyTapVMCIDR   = "169.254.1.2/30"
+)
+
+// setupNoneNetworking creates the kata tap device in the current netns (the pod
+// netns) without installing any TC filters.  The host-sidecar proxy is
+// responsible for forwarding and for installing iptables rules.
+//
+// The VM is given a separate link-local subnet so that kernel routing can
+// correctly return proxied traffic through tap0_kata: the host side of the tap
+// gets 169.254.1.1/30 and the kata-agent is told to configure the VM's eth0
+// with 169.254.1.2/30 plus a default route via 169.254.1.1.
+func setupNoneNetworking(ctx context.Context, endpoint Endpoint, queues int, disableVhostNet bool) error {
+	span, _ := networkTrace(ctx, "setupNoneNetworking", endpoint)
+	defer span.End()
+
+	netHandle, err := netlink.NewHandle()
+	if err != nil {
+		return err
+	}
+	defer netHandle.Close()
+
+	netPair := endpoint.NetworkPair()
+
+	tapLink, fds, err := createLink(netHandle, netPair.TAPIface.Name, &netlink.Tuntap{}, queues)
+	if err != nil {
+		return fmt.Errorf("could not create TAP interface: %w", err)
+	}
+	netPair.VMFds = fds
+
+	if !disableVhostNet {
+		vhostFds, err := createVhostFds(queues)
+		if err != nil {
+			return fmt.Errorf("could not setup vhost fds %s: %w", netPair.VirtIface.Name, err)
+		}
+		netPair.VhostFds = vhostFds
+	}
+
+	link, err := getLinkForEndpoint(endpoint, netHandle)
+	if err != nil {
+		return err
+	}
+	attrs := link.Attrs()
+
+	netPair.TAPIface.HardAddr = attrs.HardwareAddr.String()
+
+	if err := netHandle.LinkSetMTU(tapLink, attrs.MTU); err != nil {
+		return fmt.Errorf("could not set TAP MTU %d: %w", attrs.MTU, err)
+	}
+	if err := netHandle.LinkSetUp(tapLink); err != nil {
+		return fmt.Errorf("could not enable TAP %s: %w", netPair.TAPIface.Name, err)
+	}
+
+	// Assign host-side IP so the kernel has a route to the VM subnet.
+	tapHostAddr, err := netlink.ParseAddr(proxyTapHostCIDR)
+	if err != nil {
+		return fmt.Errorf("parse tap host addr: %w", err)
+	}
+	if err := netHandle.AddrAdd(tapLink, tapHostAddr); err != nil {
+		return fmt.Errorf("could not assign host address to TAP %s: %w", netPair.TAPIface.Name, err)
+	}
+
+	// Override endpoint properties so kata-agent configures the VM with the
+	// tap-subnet IP and a default route via the tap host address — not the pod IP.
+	vmAddr, err := netlink.ParseAddr(proxyTapVMCIDR)
+	if err != nil {
+		return fmt.Errorf("parse tap VM addr: %w", err)
+	}
+	gw := net.ParseIP(tapHostAddr.IP.String())
+	_, tapNet, _ := net.ParseCIDR(proxyTapHostCIDR)
+
+	props := endpoint.Properties()
+	props.Addrs = []netlink.Addr{*vmAddr}
+	props.Routes = []netlink.Route{
+		{Dst: tapNet, Gw: nil, Scope: netlink.SCOPE_LINK},
+		{Dst: nil, Gw: gw},
+	}
+	endpoint.SetProperties(props)
+
+	return nil
+}
+
+// removeNoneNetworking tears down the tap created by setupNoneNetworking.
+func removeNoneNetworking(ctx context.Context, endpoint Endpoint) error {
+	span, _ := networkTrace(ctx, "removeNoneNetworking", endpoint)
+	defer span.End()
+
+	netHandle, err := netlink.NewHandle()
+	if err != nil {
+		return err
+	}
+	defer netHandle.Close()
+
+	netPair := endpoint.NetworkPair()
+
+	tapLink, err := getLinkByName(netHandle, netPair.TAPIface.Name, &netlink.Tuntap{})
+	if err != nil {
+		return fmt.Errorf("could not get TAP interface %s: %w", netPair.TAPIface.Name, err)
+	}
+	if err := netHandle.LinkSetDown(tapLink); err != nil {
+		return fmt.Errorf("could not disable TAP %s: %w", netPair.TAPIface.Name, err)
+	}
+	return netHandle.LinkDel(tapLink)
 }
 
 // addQdiscIngress creates a new qdisc for network interface with the specified network index
