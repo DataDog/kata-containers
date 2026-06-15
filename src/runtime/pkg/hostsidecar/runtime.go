@@ -23,6 +23,8 @@ type OCIRuntime interface {
 	State(ctx context.Context, id string) (*runc.Container, error)
 	Kill(ctx context.Context, id string, sig int, opts *runc.KillOpts) error
 	Delete(ctx context.Context, id string, opts *runc.DeleteOpts) error
+	Pause(ctx context.Context, id string) error
+	Resume(ctx context.Context, id string) error
 	Exec(ctx context.Context, id string, spec specs.Process, opts *runc.ExecOpts) error
 	Update(ctx context.Context, id string, resources *specs.LinuxResources) error
 	Stats(ctx context.Context, id string) (*runc.Stats, error)

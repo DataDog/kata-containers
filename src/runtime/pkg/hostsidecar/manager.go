@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/containerd/containerd/api/types/task"
 	runc "github.com/containerd/go-runc"
@@ -67,6 +68,9 @@ type CreateParams struct {
 	NetnsPath string
 	// IO wires the container's stdio; nil leaves it to the runtime default.
 	IO runc.IO
+	// OnExit, if set, is invoked once when the sidecar exits. The shim uses
+	// it to drive its existing exit machinery.
+	OnExit func(status uint32, at time.Time)
 }
 
 // Create rewrites the spec for host execution, writes the bundle config, and
@@ -101,6 +105,8 @@ func (m *Manager) Create(ctx context.Context, p CreateParams) (*Container, error
 		bundle: p.Bundle,
 		rt:     m.rt,
 		status: task.Status_CREATED,
+		onExit: p.OnExit,
+		exitCh: make(chan uint32, 1),
 	}
 	m.mu.Lock()
 	m.containers[p.ID] = c

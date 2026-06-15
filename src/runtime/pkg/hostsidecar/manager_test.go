@@ -26,6 +26,8 @@ type fakeRuntime struct {
 	deleteErr error
 	state     *runc.Container
 	stateErr  error
+	// stateFn, if set, overrides state/stateErr and is called per State call.
+	stateFn func() (*runc.Container, error)
 
 	created  []string
 	started  []string
@@ -52,6 +54,9 @@ func (f *fakeRuntime) Start(_ context.Context, id string) error {
 	return f.startErr
 }
 func (f *fakeRuntime) State(_ context.Context, id string) (*runc.Container, error) {
+	if f.stateFn != nil {
+		return f.stateFn()
+	}
 	if f.stateErr != nil {
 		return nil, f.stateErr
 	}
@@ -75,6 +80,8 @@ func (f *fakeRuntime) Update(_ context.Context, _ string, _ *specs.LinuxResource
 func (f *fakeRuntime) Stats(_ context.Context, _ string) (*runc.Stats, error) {
 	return &runc.Stats{}, nil
 }
+func (f *fakeRuntime) Pause(_ context.Context, _ string) error  { return nil }
+func (f *fakeRuntime) Resume(_ context.Context, _ string) error { return nil }
 
 func newTestManager(rt OCIRuntime) *Manager {
 	return newManagerWithRuntime(Config{Enabled: true}, rt)
