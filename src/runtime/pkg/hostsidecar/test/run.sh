@@ -20,6 +20,10 @@ trap cleanup EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+# Remove any leftover pod from a previous run so stale host processes don't
+# confuse the process-count assertions.
+${K} delete -f "${POD}" --ignore-not-found --wait=true --timeout=30s >/dev/null 2>&1 || true
+
 echo "==> applying pod"
 $K apply -f "$POD"
 
