@@ -98,10 +98,10 @@ func (m *Manager) Create(ctx context.Context, p CreateParams) (*Container, error
 		return nil, fmt.Errorf("host sidecar %s: %w", p.ID, err)
 	}
 
-	opts := &runc.CreateOpts{
-		IO:     p.IO,
-		Detach: true,
-	}
+	// Note: no Detach here. "runc create" already creates the container
+	// detached (its init waits for "runc start"); --detach is only valid for
+	// "runc run" and is rejected by "runc create".
+	opts := &runc.CreateOpts{IO: p.IO}
 	if err := m.rt.Create(ctx, p.ID, p.Bundle, opts); err != nil {
 		return nil, fmt.Errorf("host sidecar %s: runtime create: %w", p.ID, err)
 	}
