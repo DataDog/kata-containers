@@ -39,10 +39,17 @@ if ! sudo runc --root "$RUNC_ROOT" list 2>/dev/null | grep -q running; then
   fail "no running container under $RUNC_ROOT (sidecar was not routed to the host)"
 fi
 sudo runc --root "$RUNC_ROOT" list
+# Capture the sidecar's host PID from runc state for use in [2/4] and [4/4].
+SIDECAR_PID=$(sudo runc --root "$RUNC_ROOT" list -f json 2>/dev/null \
+  | python3 -c "import sys,json; cs=json.load(sys.stdin); print(cs[0]['pid'] if cs else 0)" 2>/dev/null || echo 0)
+[[ "${SIDECAR_PID}" != "0" ]] || fail "could not determine sidecar PID from runc state"
 
-echo "==> [2/4] exactly one host-side sleep process (sidecar on host; workload's sleep is in the VM)"
-n=$(pgrep -fc "sleep 100000" || true)
-[ "$n" = "1" ] || fail "expected exactly 1 host-side 'sleep 100000', found $n"
+echo "==> [2/4] sidecar process is alive on the host (workload's sleep runs in the VM)"
+# Use kill -0 against the exact PID from runc — avoids matching bash processes that
+# have 'sleep 100000' as a substring of their command-line arguments.
+sudo kill -0 "${SIDECAR_PID}" 2>/dev/null \
+  || fail "sidecar PID ${SIDECAR_PID} is not alive on the host"
+echo "    sidecar PID=${SIDECAR_PID} is alive"
 
 echo "==> [3/4] workload runs inside the guest VM (different kernel from host)"
 host_kernel=$(uname -r)
@@ -61,14 +68,14 @@ echo "    VM MemTotal=${vm_total_mb} MiB (expect ≤ 1984, i.e. < 2048 default)"
 
 echo "==> [4/4] teardown removes the host sidecar cleanly"
 $K delete -f "$POD" --wait=true --timeout=60s
-# Wait up to 10 s for the host process to exit (runc sends SIGKILL then deletes).
+# Wait up to 10 s for the exact sidecar PID to exit.
 for _ in $(seq 1 10); do
-  left=$(pgrep -fc "sleep 100000" || true)
-  [ "$left" = "0" ] && break
+  sudo kill -0 "${SIDECAR_PID}" 2>/dev/null || break
   sleep 1
 done
-left=$(pgrep -fc "sleep 100000" || true)
-[ "$left" = "0" ] || fail "host sidecar process leaked after delete (found $left after 10s)"
+if sudo kill -0 "${SIDECAR_PID}" 2>/dev/null; then
+  fail "sidecar PID ${SIDECAR_PID} still alive after pod delete"
+fi
 remaining=$(sudo runc --root "$RUNC_ROOT" list 2>/dev/null | grep -c running || true)
 [ "$remaining" = "0" ] || fail "host sidecar left in runc state after delete"
 
