@@ -64,7 +64,7 @@ spec:
       restartPolicy: Always
       args:
         # tapnet mode (internetworking_model=tapnet):
-        - --tapnet-socket=/run/kata-tapnet/tap0_kata.sock
+        - --tapnet-socket=/run/kata-tapnet/tap0_kata.ctrl
         - --vm-subnet=169.254.1.0/30
         # iptables mode (internetworking_model=none) — comment tapnet args above and
         # uncomment below:
@@ -72,7 +72,7 @@ spec:
         # - --cluster-dns=10.43.0.10:53
         # - --upstream-dns=8.8.8.8:53
         # - --proxy-port=12345
-        - --log-level=info
+        - --log-level=debug
       securityContext:
         runAsUser: 0
         capabilities:
