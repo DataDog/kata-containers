@@ -1026,15 +1026,17 @@ var VirtioNetTransport = map[VirtioTransport]string{
 
 // Valid returns true if the NetDevice structure is valid and complete.
 func (netdev NetDevice) Valid() bool {
-	if netdev.ID == "" || netdev.IFName == "" {
+	if netdev.ID == "" {
 		return false
 	}
 
 	switch netdev.Type {
 	case TAP:
-		return true
+		return netdev.IFName != ""
 	case MACVTAP:
-		return true
+		return netdev.IFName != ""
+	case NetDeviceStream:
+		return netdev.SocketPath != ""
 	default:
 		return false
 	}
