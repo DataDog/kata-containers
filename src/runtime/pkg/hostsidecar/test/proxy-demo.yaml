@@ -68,9 +68,7 @@ spec:
         - --log-level=info
       securityContext:
         runAsUser: 0
-        capabilities:
-          add:
-            - NET_ADMIN   # tap device creation
+        privileged: true  # required: grants /dev/net/tun access for openTap
   containers:
     - name: workload
       image: busybox:1.36
