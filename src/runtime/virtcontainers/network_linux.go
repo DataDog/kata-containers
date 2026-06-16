@@ -452,6 +452,14 @@ func (n *LinuxNetwork) scanEndpointsInNs(ctx context.Context, s *Sandbox, nsPath
 			continue
 		}
 
+		// Skip proxy-managed veth interfaces created by setupNoneNetworking.
+		// A stale kata-pvp in the pod netns (left by a failed prior attempt)
+		// must not be treated as a VM endpoint.
+		if netInfo.Iface.Name == proxyPodVethName {
+			networkLogger().WithField("endpoint", netInfo.Iface.Name).Info("skipping proxy veth")
+			continue
+		}
+
 		if err := doNetNS(nsPath, func(_ ns.NetNS) error {
 			ep, addErr := n.addSingleEndpoint(ctx, s, netInfo, hotplug)
 			if addErr == nil {
@@ -1158,35 +1166,103 @@ func setupTCFiltering(ctx context.Context, endpoint Endpoint, queues int, disabl
 	return nil
 }
 
-// proxyTapHostCIDR and proxyTapVMCIDR define the link-local subnet shared by the
-// tap host-side and the VM when internetworking_model=none.  A /30 is sufficient;
-// it does not conflict with the pod CIDR because it is link-local.
+// Addressing for internetworking_model=none jail networking.
+//
+// The VM runs inside an isolated "jail" network namespace that contains only
+// tap0_kata.  A veth pair bridges the jail netns to the pod netns:
+//
+//	jail netns:  tap0_kata (169.254.1.1/30) ─── kata-pvj (169.254.2.1/30)
+//	                                                  │ veth pair
+//	pod  netns:                               kata-pvp (169.254.2.2/30) ─── eth0
+//
+// The proxy (running in the pod netns) installs iptables REDIRECT rules on
+// kata-pvp.  Traffic arriving from the VM crosses the veth and is intercepted
+// by REDIRECT before it can reach eth0.  Non-TCP/DNS traffic has no forwarding
+// path to eth0 and is dropped — no bypass is possible.
 const (
-	proxyTapHostCIDR = "169.254.1.1/30"
-	proxyTapVMCIDR   = "169.254.1.2/30"
+	proxyTapHostCIDR  = "169.254.1.1/30"
+	proxyTapVMCIDR    = "169.254.1.2/30"
+	proxyJailVethCIDR = "169.254.2.1/30"
+	proxyPodVethCIDR  = "169.254.2.2/30"
 )
 
-// setupNoneNetworking creates the kata tap device in the current netns (the pod
-// netns) without installing any TC filters.  The host-sidecar proxy is
-// responsible for forwarding and for installing iptables rules.
+const (
+	proxyJailVethName = "kata-pvj"
+	proxyPodVethName  = "kata-pvp"
+)
+
+// jailNetnsName returns the /var/run/netns name for the jail netns created by
+// setupNoneNetworking so that removeNoneNetworking can look it up by name.
+func jailNetnsName(tapName string) string {
+	return "kata-jail-" + tapName
+}
+
+// setupNoneNetworking creates an isolated jail network namespace containing
+// only the kata tap device, connects it to the pod netns via a veth pair, and
+// configures routing so the host-sidecar proxy can intercept all VM egress.
 //
-// The VM is given a separate link-local subnet so that kernel routing can
-// correctly return proxied traffic through tap0_kata: the host side of the tap
-// gets 169.254.1.1/30 and the kata-agent is told to configure the VM's eth0
-// with 169.254.1.2/30 plus a default route via 169.254.1.1.
+// The VM gets 169.254.1.2/30 with a default route via the tap host address
+// (169.254.1.1).  The proxy's iptables REDIRECT rules (applied in the pod
+// netns on kata-pvp) intercept TCP and DNS-UDP; everything else is dropped by
+// the pod netns default FORWARD policy — structurally no bypass is possible.
 func setupNoneNetworking(ctx context.Context, endpoint Endpoint, queues int, disableVhostNet bool) error {
 	span, _ := networkTrace(ctx, "setupNoneNetworking", endpoint)
 	defer span.End()
 
-	netHandle, err := netlink.NewHandle()
+	netPair := endpoint.NetworkPair()
+
+	// Gather endpoint attributes (MTU, MAC) from the pod netns before we leave it.
+	podHandle, err := netlink.NewHandle()
 	if err != nil {
 		return err
 	}
-	defer netHandle.Close()
+	defer podHandle.Close()
 
-	netPair := endpoint.NetworkPair()
+	// Idempotent pre-clean: remove stale state from any previous failed attempt
+	// so that NewNamed and LinkAdd do not fail with EEXIST.
+	// DeleteNamed calls Unmount then Remove; if the netns was never fully
+	// bind-mounted (partial failure), Unmount returns EINVAL and the file is
+	// left behind.  Fall back to a direct Remove so NewNamed always gets a
+	// clean slate.
+	if err := netns.DeleteNamed(jailNetnsName(netPair.TAPIface.Name)); err != nil {
+		_ = os.Remove("/run/netns/" + jailNetnsName(netPair.TAPIface.Name))
+	}
+	if podVeth, err := podHandle.LinkByName(proxyPodVethName); err == nil {
+		_ = podHandle.LinkDel(podVeth)
+	}
 
-	tapLink, fds, err := createLink(netHandle, netPair.TAPIface.Name, &netlink.Tuntap{}, queues)
+	link, err := getLinkForEndpoint(endpoint, podHandle)
+	if err != nil {
+		return err
+	}
+	attrs := link.Attrs()
+
+	// Pin the OS thread so netns switches are stable across goroutine scheduling.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	podNsFd, err := netns.Get()
+	if err != nil {
+		return fmt.Errorf("get pod netns: %w", err)
+	}
+	defer podNsFd.Close()
+
+	// Create and enter the jail netns.  NewNamed bind-mounts it at
+	// /var/run/netns/<name> so removeNoneNetworking can open it by name.
+	jailNsFd, err := netns.NewNamed(jailNetnsName(netPair.TAPIface.Name))
+	if err != nil {
+		return fmt.Errorf("create jail netns: %w", err)
+	}
+	defer jailNsFd.Close()
+
+	jailHandle, err := netlink.NewHandle()
+	if err != nil {
+		return err
+	}
+	defer jailHandle.Close()
+
+	// Create tap in the jail netns.
+	tapLink, fds, err := createLink(jailHandle, netPair.TAPIface.Name, &netlink.Tuntap{}, queues)
 	if err != nil {
 		return fmt.Errorf("could not create TAP interface: %w", err)
 	}
@@ -1200,71 +1276,180 @@ func setupNoneNetworking(ctx context.Context, endpoint Endpoint, queues int, dis
 		netPair.VhostFds = vhostFds
 	}
 
-	link, err := getLinkForEndpoint(endpoint, netHandle)
-	if err != nil {
-		return err
-	}
-	attrs := link.Attrs()
-
 	netPair.TAPIface.HardAddr = attrs.HardwareAddr.String()
-
-	if err := netHandle.LinkSetMTU(tapLink, attrs.MTU); err != nil {
-		return fmt.Errorf("could not set TAP MTU %d: %w", attrs.MTU, err)
+	if err := jailHandle.LinkSetMTU(tapLink, attrs.MTU); err != nil {
+		return fmt.Errorf("could not set TAP MTU: %w", err)
 	}
-	if err := netHandle.LinkSetUp(tapLink); err != nil {
+	if err := jailHandle.LinkSetUp(tapLink); err != nil {
 		return fmt.Errorf("could not enable TAP %s: %w", netPair.TAPIface.Name, err)
 	}
 
-	// Assign host-side IP so the kernel has a route to the VM subnet.
 	tapHostAddr, err := netlink.ParseAddr(proxyTapHostCIDR)
 	if err != nil {
 		return fmt.Errorf("parse tap host addr: %w", err)
 	}
-	if err := netHandle.AddrAdd(tapLink, tapHostAddr); err != nil {
-		return fmt.Errorf("could not assign host address to TAP %s: %w", netPair.TAPIface.Name, err)
+	if err := jailHandle.AddrAdd(tapLink, tapHostAddr); err != nil {
+		return fmt.Errorf("assign tap host addr: %w", err)
 	}
 
-	// Override endpoint properties so kata-agent configures the VM with the
-	// tap-subnet IP and a default route via the tap host address — not the pod IP.
+	// Create the veth pair in the jail netns, then move the pod end out.
+	if err := jailHandle.LinkAdd(&netlink.Veth{
+		LinkAttrs: netlink.LinkAttrs{Name: proxyJailVethName},
+		PeerName:  proxyPodVethName,
+	}); err != nil {
+		return fmt.Errorf("create veth pair: %w", err)
+	}
+
+	jailVeth, err := jailHandle.LinkByName(proxyJailVethName)
+	if err != nil {
+		return fmt.Errorf("get jail veth: %w", err)
+	}
+	podVethPeer, err := jailHandle.LinkByName(proxyPodVethName)
+	if err != nil {
+		return fmt.Errorf("get pod veth peer: %w", err)
+	}
+	if err := jailHandle.LinkSetNsFd(podVethPeer, int(podNsFd)); err != nil {
+		return fmt.Errorf("move veth peer to pod netns: %w", err)
+	}
+
+	// Configure the jail-side veth and add a default route through it so
+	// VM traffic forwarded by the kernel reaches the pod netns.
+	jailVethAddr, err := netlink.ParseAddr(proxyJailVethCIDR)
+	if err != nil {
+		return fmt.Errorf("parse jail veth addr: %w", err)
+	}
+	if err := jailHandle.AddrAdd(jailVeth, jailVethAddr); err != nil {
+		return fmt.Errorf("assign jail veth addr: %w", err)
+	}
+	if err := jailHandle.LinkSetUp(jailVeth); err != nil {
+		return fmt.Errorf("enable jail veth: %w", err)
+	}
+	if err := jailHandle.RouteAdd(&netlink.Route{
+		LinkIndex: jailVeth.Attrs().Index,
+		Gw:        net.ParseIP("169.254.2.2"),
+	}); err != nil {
+		return fmt.Errorf("jail default route: %w", err)
+	}
+
+	// Enable IP forwarding inside the jail netns so the kernel forwards
+	// packets from tap0_kata to the veth.
+	if err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1\n"), 0644); err != nil {
+		return fmt.Errorf("enable ip_forward in jail netns: %w", err)
+	}
+
+	// Switch back to the pod netns.
+	if err := netns.Set(podNsFd); err != nil {
+		return fmt.Errorf("restore pod netns: %w", err)
+	}
+
+	// Create a fresh handle now that we're back in the pod netns so that
+	// LinkByName reflects the veth just moved here from the jail netns.
+	podHandle2, err := netlink.NewHandle()
+	if err != nil {
+		return err
+	}
+	defer podHandle2.Close()
+
+	// Configure the pod-side veth and add a return route to the VM subnet
+	// so the proxy can send responses back to the VM.
+	podVeth, err := podHandle2.LinkByName(proxyPodVethName)
+	if err != nil {
+		return fmt.Errorf("get pod veth: %w", err)
+	}
+	podVethAddr, err := netlink.ParseAddr(proxyPodVethCIDR)
+	if err != nil {
+		return fmt.Errorf("parse pod veth addr: %w", err)
+	}
+	if err := podHandle2.AddrAdd(podVeth, podVethAddr); err != nil {
+		return fmt.Errorf("assign pod veth addr: %w", err)
+	}
+	if err := podHandle2.LinkSetUp(podVeth); err != nil {
+		return fmt.Errorf("enable pod veth: %w", err)
+	}
+	_, vmSubnet, _ := net.ParseCIDR("169.254.1.0/30")
+	if err := podHandle2.RouteAdd(&netlink.Route{
+		LinkIndex: podVeth.Attrs().Index,
+		Dst:       vmSubnet,
+		Gw:        net.ParseIP("169.254.2.1"),
+	}); err != nil {
+		return fmt.Errorf("pod netns VM route: %w", err)
+	}
+
+	// Tell kata-agent to configure the VM with the tap-subnet IP and a default
+	// route via the tap host address.
 	vmAddr, err := netlink.ParseAddr(proxyTapVMCIDR)
 	if err != nil {
 		return fmt.Errorf("parse tap VM addr: %w", err)
 	}
-	gw := net.ParseIP(tapHostAddr.IP.String())
 	_, tapNet, _ := net.ParseCIDR(proxyTapHostCIDR)
 
 	props := endpoint.Properties()
 	props.Addrs = []netlink.Addr{*vmAddr}
 	props.Routes = []netlink.Route{
 		{Dst: tapNet, Gw: nil, Scope: netlink.SCOPE_LINK},
-		{Dst: nil, Gw: gw},
+		{Dst: nil, Gw: tapHostAddr.IP},
 	}
 	endpoint.SetProperties(props)
 
 	return nil
 }
 
-// removeNoneNetworking tears down the tap created by setupNoneNetworking.
+// removeNoneNetworking tears down the jail netns and veth pair created by
+// setupNoneNetworking.
 func removeNoneNetworking(ctx context.Context, endpoint Endpoint) error {
 	span, _ := networkTrace(ctx, "removeNoneNetworking", endpoint)
 	defer span.End()
 
-	netHandle, err := netlink.NewHandle()
+	netPair := endpoint.NetworkPair()
+
+	// Delete the pod-side veth; the kernel auto-deletes the jail-side peer.
+	podHandle, err := netlink.NewHandle()
 	if err != nil {
 		return err
 	}
-	defer netHandle.Close()
+	defer podHandle.Close()
 
-	netPair := endpoint.NetworkPair()
+	if podVeth, err := podHandle.LinkByName(proxyPodVethName); err == nil {
+		_ = podHandle.LinkDel(podVeth)
+	}
 
-	tapLink, err := getLinkByName(netHandle, netPair.TAPIface.Name, &netlink.Tuntap{})
+	// Enter the jail netns to remove the tap, then delete the named netns.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	curNsFd, err := netns.Get()
 	if err != nil {
-		return fmt.Errorf("could not get TAP interface %s: %w", netPair.TAPIface.Name, err)
+		return fmt.Errorf("get current netns: %w", err)
 	}
-	if err := netHandle.LinkSetDown(tapLink); err != nil {
-		return fmt.Errorf("could not disable TAP %s: %w", netPair.TAPIface.Name, err)
+	defer curNsFd.Close()
+	defer netns.Set(curNsFd) //nolint:errcheck
+
+	jailNsFd, err := netns.GetFromName(jailNetnsName(netPair.TAPIface.Name))
+	if err != nil {
+		return fmt.Errorf("open jail netns: %w", err)
 	}
-	return netHandle.LinkDel(tapLink)
+	defer jailNsFd.Close()
+
+	if err := netns.Set(jailNsFd); err != nil {
+		return fmt.Errorf("enter jail netns: %w", err)
+	}
+
+	jailHandle, err := netlink.NewHandle()
+	if err != nil {
+		return err
+	}
+	defer jailHandle.Close()
+
+	if tapLink, err := getLinkByName(jailHandle, netPair.TAPIface.Name, &netlink.Tuntap{}); err == nil {
+		jailHandle.LinkSetDown(tapLink) //nolint:errcheck
+		jailHandle.LinkDel(tapLink)     //nolint:errcheck
+	}
+
+	if err := netns.Set(curNsFd); err != nil {
+		return fmt.Errorf("restore netns after jail cleanup: %w", err)
+	}
+
+	return netns.DeleteNamed(jailNetnsName(netPair.TAPIface.Name))
 }
 
 // addQdiscIngress creates a new qdisc for network interface with the specified network index

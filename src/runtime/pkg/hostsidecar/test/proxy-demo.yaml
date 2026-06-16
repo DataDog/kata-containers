@@ -76,7 +76,6 @@ spec:
       restartPolicy: Always
       args:
         - --vm-subnet=169.254.1.0/30
-        - --dns-listen=169.254.1.1:53
         - --cluster-dns=10.43.0.10:53
         - --upstream-dns=8.8.8.8:53
         - --proxy-port=12345
