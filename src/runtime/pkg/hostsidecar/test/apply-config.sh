@@ -3,23 +3,26 @@
 # Copyright (c) 2026 Datadog, Inc.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Switch kata configuration for the proxy-based networking model.
+# Switch the Kata internetworking_model for host-sidecar proxy networking.
 # Run inside the VM (limactl shell kata-dev -- bash <this>). Idempotent.
 #
-# With internetworking_model=none, the Kata shim creates the tap device in the
-# pod's netns but does NOT install TC filters to connect it to eth0.  The host
-# sidecar proxy owns forwarding: it installs iptables REDIRECT rules that steer
-# all TCP and DNS-UDP from the VM subnet through its local listeners, then
-# re-originates the connections via eth0.  Killing the proxy severs VM egress.
+# Modes
+# -----
+#   (no args)  tapnet   — tap in pod netns; proxy drives gvisor-tap-vsock.
+#                         No iptables rules; kill-9 proof. [DEFAULT]
+#   --iptables           — tap in jail netns + veth; proxy uses iptables REDIRECT.
+#   --revert             — restore tcfilter (standard Kata, no host sidecar).
 #
-# Revert with: apply-config.sh --revert
 set -euo pipefail
 
 KATA_CONF=/opt/kata/share/defaults/kata-containers/configuration.toml
 
-revert=false
+model="tapnet"
 for arg in "$@"; do
-  [ "$arg" = "--revert" ] && revert=true
+  case "$arg" in
+    --iptables) model="none" ;;
+    --revert)   model="tcfilter" ;;
+  esac
 done
 
 patch_toml() {
@@ -31,13 +34,8 @@ patch_toml() {
   fi
 }
 
-if "$revert"; then
-  echo "==> reverting to tcfilter model"
-  patch_toml "internetworking_model" "tcfilter"
-else
-  echo "==> switching to none model for proxy-based networking"
-  patch_toml "internetworking_model" "none"
-fi
+echo "==> setting internetworking_model = ${model}"
+patch_toml "internetworking_model" "$model"
 
 echo "==> restarting k3s to pick up config"
 sudo systemctl restart k3s

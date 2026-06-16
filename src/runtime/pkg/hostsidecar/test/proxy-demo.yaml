@@ -1,4 +1,4 @@
-# M5 demo: kata-dev-network-proxy as a host sidecar.
+# M6 demo: kata-dev-network-proxy (tapnet mode) as a host sidecar.
 #
 # Architecture
 # ------------
@@ -6,50 +6,38 @@
 #   pod netns
 #   ┌────────────────────────────────────────────────────────────────────┐
 #   │                                                                    │
-#   │   Kata VM  ──tap0_kata──► iptables REDIRECT ──► net-proxy         │
-#   │   (workload)                                    (host sidecar)    │
-#   │                                                 CAP_NET_ADMIN     │
-#   │                                                    │              │
-#   │                                                    │ eth0         │
+#   │   Kata VM  ──tap0_kata──► gvisor-tap-vsock (user-space TCP/IP)    │
+#   │   (workload)  169.254.1.2   net-proxy / pkg/tapnet                │
+#   │                             gateway 169.254.1.1    │              │
+#   │                                                   eth0            │
 #   └────────────────────────────────────────────────────┼─────────────-┘
 #                                                        ▼
 #                                                 external network
 #
-# The net-proxy sidecar installs iptables REDIRECT rules that send:
-#   - all TCP from the VM subnet to the transparent TCP proxy (port 12345)
-#   - DNS UDP from the VM subnet to the split-horizon DNS (169.254.1.1:53)
-#
-# Killing or deleting the proxy severs all VM egress, proving there is no
-# bypass path through the tap when the proxy is absent.
+# The proxy owns the tap fd directly; the kernel never forwards VM frames.
+# Kill-9 proof: tap fd closes on proxy exit, VM network goes dark immediately.
+# No iptables rules are installed.
 #
 # Prerequisites
 # -------------
-#   1. kata-dev-network-proxy image loaded into the VM's container runtime:
-#        docker build -t kata-dev-network-proxy:latest \
-#          /path/to/kata-dev-network-proxy
-#        ctr -n k8s.io images import ...
-#   2. internetworking_model=none in configuration.toml (apply-config.sh).
-#   3. Kata shim from em/host-sidecar deployed (deploy.sh).
-#   4. CoreDNS cluster IP verified (k3s default: 10.43.0.10).
+#   1. Proxy image loaded (build-load-proxy.sh).
+#   2. internetworking_model=tapnet (apply-config.sh, default).
+#   3. Shim from em/host-sidecar deployed (deploy.sh).
 #
 # Apply
 # -----
 #   sudo k3s kubectl apply -f proxy-demo.yaml
 #   sudo k3s kubectl wait --for=condition=Ready pod/proxy-demo --timeout=180s
 #
-# Verify interception
-# -------------------
-#   # VM can reach external HTTP through the proxy:
+# Verify
+# ------
 #   sudo k3s kubectl exec proxy-demo -c workload -- wget -qO- http://example.com
+#   sudo k3s kubectl logs proxy-demo -c net-proxy
 #
-#   # Proxy logs show the intercepted connection:
-#   sudo runc --root /run/kata-hostsidecar list
-#   sudo runc --root /run/kata-hostsidecar exec <id> cat /proc/1/fd/1
-#
-#   # Kill the proxy, VM loses egress:
-#   sudo k3s kubectl exec proxy-demo -c net-proxy -- kill 1
-#   sudo k3s kubectl exec proxy-demo -c workload -- wget -qO- --timeout=5 http://example.com
-#   # ↑ should time out / connection refused
+# Demonstrate kill-9 isolation
+# ----------------------------
+#   sudo k3s kubectl exec proxy-demo -c net-proxy -- kill -9 1
+#   # VM immediately loses network (tap fd closed); KEP-753 restarts proxy after ~1s
 #
 # Clean up
 # --------
@@ -75,17 +63,14 @@ spec:
       imagePullPolicy: Never
       restartPolicy: Always
       args:
+        - --tap-device=tap0_kata
         - --vm-subnet=169.254.1.0/30
-        - --cluster-dns=10.43.0.10:53
-        - --upstream-dns=8.8.8.8:53
-        - --proxy-port=12345
         - --log-level=info
       securityContext:
         runAsUser: 0
         capabilities:
           add:
-            - NET_ADMIN   # required for iptables rule installation
-            - NET_RAW     # required for SO_ORIGINAL_DST getsockopt
+            - NET_ADMIN   # tap device creation
   containers:
     - name: workload
       image: busybox:1.36
