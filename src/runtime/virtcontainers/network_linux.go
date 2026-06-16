@@ -884,8 +884,11 @@ func xConnectVMNetwork(ctx context.Context, endpoint Endpoint, h Hypervisor) err
 		networkLogger().Info("connect TCFilter to VM network")
 		err = setupTCFiltering(ctx, endpoint, queues, disableVhostNet)
 	case NetXConnectNoneModel:
-		networkLogger().Info("connect none model to VM network (proxy-managed)")
+		networkLogger().Info("connect none model to VM network (iptables proxy)")
 		err = setupNoneNetworking(ctx, endpoint, queues, disableVhostNet)
+	case NetXConnectNoneTapnetModel:
+		networkLogger().Info("connect none model to VM network (tapnet proxy)")
+		err = setupTapnetNetworking(ctx, endpoint, queues, disableVhostNet)
 	default:
 		err = fmt.Errorf("Invalid internetworking model")
 	}
@@ -912,6 +915,8 @@ func xDisconnectVMNetwork(ctx context.Context, endpoint Endpoint) error {
 		err = removeTCFiltering(ctx, endpoint)
 	case NetXConnectNoneModel:
 		err = removeNoneNetworking(ctx, endpoint)
+	case NetXConnectNoneTapnetModel:
+		err = removeTapnetNetworking(ctx, endpoint)
 	default:
 		err = fmt.Errorf("Invalid internetworking model")
 	}
@@ -1391,6 +1396,99 @@ func setupNoneNetworking(ctx context.Context, endpoint Endpoint, queues int, dis
 	}
 	endpoint.SetProperties(props)
 
+	return nil
+}
+
+// setupTapnetNetworking creates a tap device directly in the pod network namespace
+// for the gvisor-tap-vsock proxy mode (internetworking_model=tapnet).
+//
+// Unlike setupNoneNetworking there is no jail netns or veth pair: the
+// host-sidecar proxy opens the tap fd directly (via --tap-device) and drives a
+// gVisor user-space TCP/IP stack.  No iptables rules or kernel forwarding paths
+// are installed by the shim.
+//
+// The VM is configured identically to the iptables path (169.254.1.2/30, default
+// route via 169.254.1.1) so kata-agent sees the same addressing in both modes.
+func setupTapnetNetworking(ctx context.Context, endpoint Endpoint, queues int, disableVhostNet bool) error {
+	span, _ := networkTrace(ctx, "setupTapnetNetworking", endpoint)
+	defer span.End()
+
+	netPair := endpoint.NetworkPair()
+
+	podHandle, err := netlink.NewHandle()
+	if err != nil {
+		return err
+	}
+	defer podHandle.Close()
+
+	link, err := getLinkForEndpoint(endpoint, podHandle)
+	if err != nil {
+		return err
+	}
+	attrs := link.Attrs()
+
+	tapLink, fds, err := createLink(podHandle, netPair.TAPIface.Name, &netlink.Tuntap{}, queues)
+	if err != nil {
+		return fmt.Errorf("could not create TAP interface: %w", err)
+	}
+	netPair.VMFds = fds
+
+	if !disableVhostNet {
+		vhostFds, err := createVhostFds(queues)
+		if err != nil {
+			return fmt.Errorf("could not setup vhost fds %s: %w", netPair.VirtIface.Name, err)
+		}
+		netPair.VhostFds = vhostFds
+	}
+
+	netPair.TAPIface.HardAddr = attrs.HardwareAddr.String()
+	if err := podHandle.LinkSetMTU(tapLink, attrs.MTU); err != nil {
+		return fmt.Errorf("could not set TAP MTU: %w", err)
+	}
+	if err := podHandle.LinkSetUp(tapLink); err != nil {
+		return fmt.Errorf("could not enable TAP %s: %w", netPair.TAPIface.Name, err)
+	}
+
+	// Tell kata-agent to configure the VM with 169.254.1.2/30 and a default
+	// route via 169.254.1.1 (the gvisor-tap-vsock gateway).
+	vmAddr, err := netlink.ParseAddr(proxyTapVMCIDR)
+	if err != nil {
+		return fmt.Errorf("parse tap VM addr: %w", err)
+	}
+	tapHostAddr, err := netlink.ParseAddr(proxyTapHostCIDR)
+	if err != nil {
+		return fmt.Errorf("parse tap host addr: %w", err)
+	}
+	_, tapNet, _ := net.ParseCIDR(proxyTapHostCIDR)
+
+	props := endpoint.Properties()
+	props.Addrs = []netlink.Addr{*vmAddr}
+	props.Routes = []netlink.Route{
+		{Dst: tapNet, Gw: nil, Scope: netlink.SCOPE_LINK},
+		{Dst: nil, Gw: tapHostAddr.IP},
+	}
+	endpoint.SetProperties(props)
+
+	return nil
+}
+
+// removeTapnetNetworking tears down the tap created by setupTapnetNetworking.
+func removeTapnetNetworking(ctx context.Context, endpoint Endpoint) error {
+	span, _ := networkTrace(ctx, "removeTapnetNetworking", endpoint)
+	defer span.End()
+
+	netPair := endpoint.NetworkPair()
+
+	podHandle, err := netlink.NewHandle()
+	if err != nil {
+		return err
+	}
+	defer podHandle.Close()
+
+	if tapLink, err := getLinkByName(podHandle, netPair.TAPIface.Name, &netlink.Tuntap{}); err == nil {
+		podHandle.LinkSetDown(tapLink) //nolint:errcheck
+		podHandle.LinkDel(tapLink)     //nolint:errcheck
+	}
 	return nil
 }
 
@@ -1917,7 +2015,7 @@ func addTxRateLimiter(endpoint Endpoint, maxRate uint64) error {
 				return err
 			}
 			return addHTBQdisc(link.Attrs().Index, maxRate)
-		case NetXConnectMacVtapModel, NetXConnectNoneModel:
+		case NetXConnectMacVtapModel, NetXConnectNoneModel, NetXConnectNoneTapnetModel:
 			linkName = netPair.TAPIface.Name
 		default:
 			return fmt.Errorf("Unsupported inter-networking model %v for adding tx rate limiter", netPair.NetInterworkingModel)
@@ -2010,7 +2108,7 @@ func removeTxRateLimiter(endpoint Endpoint, networkNSPath string) error {
 				return err
 			}
 			return nil
-		case NetXConnectMacVtapModel, NetXConnectNoneModel:
+		case NetXConnectMacVtapModel, NetXConnectNoneModel, NetXConnectNoneTapnetModel:
 			linkName = netPair.TAPIface.Name
 		}
 	case *MacvtapEndpoint, *TapEndpoint:
