@@ -74,3 +74,86 @@ behaviour is validated by the e2e harness (plan milestone M4).
 - Integration / e2e (in the Lima VM, on k3s): validates real runc lifecycle,
   netns placement, `kubectl exec`/`logs`, and exit reaping. See the design
   repo's M4 harness.
+
+## tapnet networking mode
+
+`internetworking_model=tapnet` is a new variant of the `none` model where
+the host-sidecar proxy drives a gVisor user-space TCP/IP stack instead of
+using iptables REDIRECT.
+
+### Architecture
+
+```
+  Kata shim                  QEMU
+  setupTapnetNetworking()    -netdev stream,server=on,
+  → MkdirAll /run/kata-tapnet  addr.type=unix,
+  → sets VM IP/routes          addr.path=/run/kata-tapnet/tap0_kata.sock
+  → no tap device, no VMFds                  |
+                                             | Unix stream socket
+                                             | (4-byte BE length-prefix frames)
+  kata-dev-network-proxy                     |
+  --tapnet-socket=/run/kata-tapnet/tap0_kata.sock
+  → dials socket  ←——————————————————————————┘
+  → AcceptQemu(ctx, conn)
+  → gVisor handles all VM frames in user space
+  → TCP/UDP NATted via host eth0
+```
+
+QEMU acts as the **server** (`server=on`) and listens on the socket before
+the proxy container starts.  The proxy **dials** the socket (with a 15 s
+retry window) and calls `AcceptQemu`, which speaks QEMU's 4-byte big-endian
+length-prefix framing (same as `gvproxy` in Podman Machine).
+
+### QEMU version requirement
+
+The `stream` netdev type is available from **QEMU 7.2+**.  The kata-static
+binary in the dev VM is QEMU 10.2.1 — well within range.
+
+Verify:
+```sh
+/opt/kata/bin/qemu-system-aarch64 -machine virt -netdev help 2>&1 | grep stream
+```
+
+### Socket path convention
+
+The shim derives the socket path from `netPair.TAPIface.Name` (e.g. `tap0_kata`):
+
+```
+/run/kata-tapnet/<tap-name>.sock
+```
+
+This is created by QEMU at sandbox start.  `removeTapnetNetworking` removes it
+on sandbox teardown.
+
+The proxy container needs `/run/kata-tapnet/` mounted as a hostPath volume
+so it can reach the socket created by QEMU (which runs on the host).
+
+### Upstream insertion points (tapnet additions)
+
+| File | Edit |
+|------|------|
+| `pkg/govmm/qemu/qemu.go` | `NetDeviceStream` type, `SocketPath` field, stream case in `QemuNetdevParam`/`QemuDeviceParam`/`QemuNetdevParams` |
+| `virtcontainers/network.go` | `NetXConnectNoneTapnetModel` iota value, `"tapnet"` string |
+| `virtcontainers/network_linux.go` | `tapnetSocketDir`, `tapnetSocketPath`, `setupTapnetNetworking`, `removeTapnetNetworking` |
+| `virtcontainers/qemu_arch_base.go` | `networkModelToQemuType` and `genericNetwork` tapnet branches |
+| `pkg/katautils/config.go` | `checkNetNsConfig` accepts `tapnet` alongside `none` |
+
+### Reproducing the setup from scratch
+
+1. Set `internetworking_model = tapnet` in configuration.toml (the
+   `apply-config.sh` script does this by default).
+2. Build and deploy the shim (`deploy.sh`).
+3. Build and load the proxy image (`build-load-proxy.sh`).
+4. Apply `proxy-demo.yaml` (uses `--tapnet-socket` and a hostPath volume).
+5. Verify:
+
+   ```sh
+   # QEMU socket exists after pod start:
+   ls -la /run/kata-tapnet/
+
+   # No iptables rules installed:
+   ip netns exec <cni-ns> iptables -t nat -L PREROUTING
+
+   # VM reaches external HTTP via gVisor NAT:
+   k3s kubectl exec proxy-demo -c workload -- wget -qO- http://example.com
+   ```

@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
@@ -1196,6 +1197,12 @@ const (
 	proxyPodVethName  = "kata-pvp"
 )
 
+const tapnetSocketDir = "/run/kata-tapnet"
+
+func tapnetSocketPath(tapName string) string {
+	return filepath.Join(tapnetSocketDir, tapName+".sock")
+}
+
 // jailNetnsName returns the /var/run/netns name for the jail netns created by
 // setupNoneNetworking so that removeNoneNetworking can look it up by name.
 func jailNetnsName(tapName string) string {
@@ -1399,16 +1406,17 @@ func setupNoneNetworking(ctx context.Context, endpoint Endpoint, queues int, dis
 	return nil
 }
 
-// setupTapnetNetworking creates a tap device directly in the pod network namespace
-// for the gvisor-tap-vsock proxy mode (internetworking_model=tapnet).
+// setupTapnetNetworking prepares the pod netns for the QEMU stream-socket
+// tapnet model (internetworking_model=tapnet).
 //
-// Unlike setupNoneNetworking there is no jail netns or veth pair: the
-// host-sidecar proxy opens the tap fd directly (via --tap-device) and drives a
-// gVisor user-space TCP/IP stack.  No iptables rules or kernel forwarding paths
-// are installed by the shim.
+// Unlike setupNoneNetworking there is no tap device, jail netns, or veth pair.
+// QEMU uses -netdev stream,server=on,addr.type=unix,addr.path=<socket> to
+// accept a connection from the host-sidecar proxy, which drives a gVisor
+// user-space TCP/IP stack.  Kills -9 of the proxy are safe: QEMU re-listens
+// on the socket; the VM loses connectivity until the proxy reconnects.
 //
-// The VM is configured identically to the iptables path (169.254.1.2/30, default
-// route via 169.254.1.1) so kata-agent sees the same addressing in both modes.
+// The VM is configured with 169.254.1.2/30 and a default route via 169.254.1.1
+// (the gVisor gateway), identical to the iptables path.
 func setupTapnetNetworking(ctx context.Context, endpoint Endpoint, queues int, disableVhostNet bool) error {
 	span, _ := networkTrace(ctx, "setupTapnetNetworking", endpoint)
 	defer span.End()
@@ -1421,36 +1429,20 @@ func setupTapnetNetworking(ctx context.Context, endpoint Endpoint, queues int, d
 	}
 	defer podHandle.Close()
 
+	// Read the pod veth MAC so QEMU can set the correct MAC on the virtio-net device.
 	link, err := getLinkForEndpoint(endpoint, podHandle)
 	if err != nil {
 		return err
 	}
-	attrs := link.Attrs()
+	netPair.TAPIface.HardAddr = link.Attrs().HardwareAddr.String()
 
-	tapLink, fds, err := createLink(podHandle, netPair.TAPIface.Name, &netlink.Tuntap{}, queues)
-	if err != nil {
-		return fmt.Errorf("could not create TAP interface: %w", err)
-	}
-	netPair.VMFds = fds
-
-	if !disableVhostNet {
-		vhostFds, err := createVhostFds(queues)
-		if err != nil {
-			return fmt.Errorf("could not setup vhost fds %s: %w", netPair.VirtIface.Name, err)
-		}
-		netPair.VhostFds = vhostFds
-	}
-
-	netPair.TAPIface.HardAddr = attrs.HardwareAddr.String()
-	if err := podHandle.LinkSetMTU(tapLink, attrs.MTU); err != nil {
-		return fmt.Errorf("could not set TAP MTU: %w", err)
-	}
-	if err := podHandle.LinkSetUp(tapLink); err != nil {
-		return fmt.Errorf("could not enable TAP %s: %w", netPair.TAPIface.Name, err)
+	// Ensure the tapnet socket directory exists so QEMU can create its socket.
+	if err := os.MkdirAll(tapnetSocketDir, 0o700); err != nil {
+		return fmt.Errorf("create tapnet socket dir %s: %w", tapnetSocketDir, err)
 	}
 
 	// Tell kata-agent to configure the VM with 169.254.1.2/30 and a default
-	// route via 169.254.1.1 (the gvisor-tap-vsock gateway).
+	// route via 169.254.1.1 (where the gvisor-tap-vsock proxy acts as gateway).
 	vmAddr, err := netlink.ParseAddr(proxyTapVMCIDR)
 	if err != nil {
 		return fmt.Errorf("parse tap VM addr: %w", err)
@@ -1472,23 +1464,15 @@ func setupTapnetNetworking(ctx context.Context, endpoint Endpoint, queues int, d
 	return nil
 }
 
-// removeTapnetNetworking tears down the tap created by setupTapnetNetworking.
+// removeTapnetNetworking cleans up after setupTapnetNetworking.
+// The socket is created by QEMU; removing it here ensures a clean slate on
+// restart so QEMU can bind the same path again.
 func removeTapnetNetworking(ctx context.Context, endpoint Endpoint) error {
 	span, _ := networkTrace(ctx, "removeTapnetNetworking", endpoint)
 	defer span.End()
 
 	netPair := endpoint.NetworkPair()
-
-	podHandle, err := netlink.NewHandle()
-	if err != nil {
-		return err
-	}
-	defer podHandle.Close()
-
-	if tapLink, err := getLinkByName(podHandle, netPair.TAPIface.Name, &netlink.Tuntap{}); err == nil {
-		podHandle.LinkSetDown(tapLink) //nolint:errcheck
-		podHandle.LinkDel(tapLink)     //nolint:errcheck
-	}
+	_ = os.Remove(tapnetSocketPath(netPair.TAPIface.Name))
 	return nil
 }
 

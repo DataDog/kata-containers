@@ -874,6 +874,13 @@ const (
 
 	// VHOSTUSER is a vhost-user port (socket)
 	VHOSTUSER NetDeviceType = "vhostuser"
+
+	// NetDeviceStream is a stream-based networking device using a Unix domain
+	// socket.  Supported from QEMU 7.2+.  Produces:
+	//   -netdev stream,id=<id>,server=on,addr.type=unix,addr.path=<path>
+	// QEMU acts as the server (listens); the proxy dials and calls AcceptQemu.
+	// Uses QEMU's 4-byte big-endian length-prefix framing (QemuProtocol).
+	NetDeviceStream NetDeviceType = "stream"
 )
 
 // QemuNetdevParam converts to the QEMU -netdev parameter notation
@@ -901,6 +908,8 @@ func (n NetDeviceType) QemuNetdevParam(netdev *NetDevice, config *Config) string
 			log.Fatal("vhost-user devices are not supported on IBM Z")
 		}
 		return "vhost-user" // -netdev type=vhost-user (no device)
+	case NetDeviceStream:
+		return "stream"
 	default:
 		return ""
 
@@ -924,6 +933,8 @@ func (n NetDeviceType) QemuDeviceParam(netdev *NetDevice, config *Config) Device
 		device = "virtio-net"
 	case VETHTAP:
 		device = "virtio-net" // -netdev type=tap -device virtio-net-pci
+	case NetDeviceStream:
+		device = "virtio-net"
 	case VFIO:
 		if netdev.Transport == TransportMMIO {
 			log.Fatal("vfio devices are not support with the MMIO transport")
@@ -981,6 +992,10 @@ type NetDevice struct {
 	// This is mostly useful for mq support.
 	FDs      []*os.File
 	VhostFDs []*os.File
+
+	// SocketPath is the Unix socket path for NetDeviceStream.
+	// QEMU creates and listens on this socket (server=on); the proxy dials it.
+	SocketPath string
 
 	// VHost enables virtio device emulation from the host kernel instead of from qemu.
 	VHost bool
@@ -1106,6 +1121,14 @@ func (netdev NetDevice) QemuNetdevParams(config *Config) []string {
 
 	netdevParams = append(netdevParams, netdevType)
 	netdevParams = append(netdevParams, fmt.Sprintf("id=%s", netdev.ID))
+
+	// Stream netdev uses a Unix socket — no fds, vhost, or ifname.
+	if netdev.Type == NetDeviceStream {
+		netdevParams = append(netdevParams, "server=on")
+		netdevParams = append(netdevParams, "addr.type=unix")
+		netdevParams = append(netdevParams, fmt.Sprintf("addr.path=%s", netdev.SocketPath))
+		return netdevParams
+	}
 
 	if netdev.VHost {
 		netdevParams = append(netdevParams, "vhost=on")
