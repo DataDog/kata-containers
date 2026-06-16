@@ -66,6 +66,8 @@ spec:
         # tapnet mode (internetworking_model=tapnet):
         - --tapnet-socket=/run/kata-tapnet/tap0_kata.ctrl
         - --vm-subnet=169.254.1.0/30
+        - --cluster-dns=10.43.0.10:53   # k3s; change to 10.96.0.10 for kubeadm
+        - --upstream-dns=8.8.8.8:53
         # iptables mode (internetworking_model=none) — comment tapnet args above and
         # uncomment below:
         # - --vm-subnet=169.254.1.0/30
