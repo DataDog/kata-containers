@@ -851,7 +851,17 @@ func (s *service) Kill(ctx context.Context, r *taskAPI.KillRequest) (_ *emptypb.
 	}
 
 	if hc := s.hostMgr.Get(c.id); hc != nil {
-		// host sidecars have no in-VM exec processes; signal the container.
+		if r.ExecID != "" {
+			// Kill for a host-sidecar exec: the exec process is managed by runc
+			// exec directly and not tracked separately. If the exec already exited
+			// (normal cleanup kill from containerd), this is a no-op. If it is
+			// still running, killing the container kills it too; that is acceptable
+			// for force-stop scenarios.
+			execs, execErr := c.getExec(r.ExecID)
+			if execErr != nil || execs.status == task.Status_STOPPED {
+				return empty, nil
+			}
+		}
 		return empty, hc.Kill(spanCtx, r.Signal, true)
 	}
 
