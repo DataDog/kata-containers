@@ -139,6 +139,12 @@ func (c *Container) ExitCode() uint32 {
 	return c.exitCode
 }
 
+// watchMaxConsecutiveErrors is the number of consecutive runc-state errors
+// that must occur before watch concludes the container is gone. A single
+// transient error (e.g. lock contention during runc exec) must not be
+// treated as container death.
+const watchMaxConsecutiveErrors = 3
+
 // watch polls the runtime until the container stops (or disappears), then
 // records the exit once.
 func (c *Container) watch() {
@@ -148,9 +154,19 @@ func (c *Container) watch() {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	consecutiveErrors := 0
 	for range ticker.C {
 		st, err := c.rt.State(context.Background(), c.id)
-		if err != nil || st == nil || runcStatusToTask(st.Status) == task.Status_STOPPED {
+		if err != nil || st == nil {
+			consecutiveErrors++
+			if consecutiveErrors >= watchMaxConsecutiveErrors {
+				c.markExited(c.inferExitCode())
+				return
+			}
+			continue
+		}
+		consecutiveErrors = 0
+		if runcStatusToTask(st.Status) == task.Status_STOPPED {
 			c.markExited(c.inferExitCode())
 			return
 		}

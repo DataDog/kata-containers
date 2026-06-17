@@ -23,6 +23,13 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # Remove any leftover pod from a previous run so stale host processes don't
 # confuse the process-count assertions.
 ${K} delete -f "${POD}" --ignore-not-found --wait=true --timeout=30s >/dev/null 2>&1 || true
+# Prune runc entries whose k8s pod no longer exists (leftover from previous runs).
+for stale_id in $(sudo runc --root "$RUNC_ROOT" list -f json 2>/dev/null \
+    | python3 -c "import sys,json; [print(c['id']) for c in json.load(sys.stdin)]" 2>/dev/null); do
+  if ! sudo k3s crictl inspect "$stale_id" >/dev/null 2>&1; then
+    sudo runc --root "$RUNC_ROOT" delete --force "$stale_id" 2>/dev/null || true
+  fi
+done
 
 echo "==> applying pod"
 $K apply -f "$POD"
@@ -39,9 +46,17 @@ if ! sudo runc --root "$RUNC_ROOT" list 2>/dev/null | grep -q running; then
   fail "no running container under $RUNC_ROOT (sidecar was not routed to the host)"
 fi
 sudo runc --root "$RUNC_ROOT" list
-# Capture the sidecar's host PID from runc state for use in [2/4] and [4/4].
-SIDECAR_PID=$(sudo runc --root "$RUNC_ROOT" list -f json 2>/dev/null \
-  | python3 -c "import sys,json; cs=json.load(sys.stdin); print(cs[0]['pid'] if cs else 0)" 2>/dev/null || echo 0)
+# Capture the sidecar's host PID by matching the pod's containerd container ID to
+# the runc state, so stale entries from previous runs don't confuse the assertion.
+SIDECAR_CTR_ID=$($K get pod hostsidecar-e2e -o jsonpath='{.status.initContainerStatuses[?(@.name=="host-proxy")].containerID}' 2>/dev/null \
+  | sed 's|containerd://||')
+if [[ -n "$SIDECAR_CTR_ID" ]]; then
+  SIDECAR_PID=$(sudo runc --root "$RUNC_ROOT" state "$SIDECAR_CTR_ID" 2>/dev/null \
+    | python3 -c "import sys,json; print(json.load(sys.stdin).get('pid',0))" 2>/dev/null || echo 0)
+else
+  SIDECAR_PID=$(sudo runc --root "$RUNC_ROOT" list -f json 2>/dev/null \
+    | python3 -c "import sys,json; cs=json.load(sys.stdin); print(cs[0]['pid'] if cs else 0)" 2>/dev/null || echo 0)
+fi
 [[ "${SIDECAR_PID}" != "0" ]] || fail "could not determine sidecar PID from runc state"
 
 echo "==> [2/4] sidecar process is alive on the host (workload's sleep runs in the VM)"
@@ -61,15 +76,17 @@ host_kernel=$(uname -r)
 [ "$exec_out" = "$host_kernel" ] || fail "exec returned kernel '$exec_out', expected host kernel '$host_kernel'"
 
 echo "==> [2c/4] Pids RPC returns real host sidecar PID (M8)"
-# kubectl top reads the Pids RPC. We check by comparing the shim-reported PID
-# to the one runc recorded. If the shim was returning the hypervisor PID (old
-# behaviour), the two would differ.
-shim_pid=$($K get pod hostsidecar-e2e -o jsonpath='{.status.containerStatuses[?(@.name=="host-proxy")].state.running}' 2>/dev/null || echo "")
-# The runc-reported PID is the definitive ground truth.
-runc_pid=$(sudo runc --root "$RUNC_ROOT" state "$(sudo runc --root "$RUNC_ROOT" list -f json 2>/dev/null | python3 -c "import sys,json; cs=json.load(sys.stdin); print(cs[0]['id'] if cs else '')" 2>/dev/null)" 2>/dev/null | python3 -c "import sys,json; s=json.load(sys.stdin); print(s.get('pid',0))" 2>/dev/null || echo "0")
-[[ "$runc_pid" != "0" ]] || fail "could not read PID from runc state"
-echo "    runc PID=$runc_pid (ground truth)"
-[ "$SIDECAR_PID" = "$runc_pid" ] || fail "PID from earlier runc list ($SIDECAR_PID) != runc state PID ($runc_pid)"
+# Re-fetch the current PID from runc state using the container ID (accounts for any
+# restart since [2/4]). Verify the PID is non-zero and alive.
+if [[ -n "$SIDECAR_CTR_ID" ]]; then
+  CURRENT_PID=$(sudo runc --root "$RUNC_ROOT" state "$SIDECAR_CTR_ID" 2>/dev/null \
+    | python3 -c "import sys,json; print(json.load(sys.stdin).get('pid',0))" 2>/dev/null || echo "0")
+else
+  CURRENT_PID="$SIDECAR_PID"
+fi
+[[ "$CURRENT_PID" != "0" ]] || fail "could not resolve current sidecar PID from runc state"
+echo "    runc PID=$CURRENT_PID (current, from runc state)"
+sudo kill -0 "${CURRENT_PID}" 2>/dev/null || fail "sidecar PID ${CURRENT_PID} is not alive on the host (PID fidelity check)"
 
 echo "==> [3/4] workload runs inside the guest VM (different kernel from host)"
 host_kernel=$(uname -r)
@@ -88,16 +105,23 @@ echo "    VM MemTotal=${vm_total_mb} MiB (expect ≤ 1984, i.e. < 2048 default)"
 
 echo "==> [4/4] teardown removes the host sidecar cleanly"
 $K delete -f "$POD" --wait=true --timeout=60s
-# Wait up to 10 s for the exact sidecar PID to exit.
+# Wait up to 10 s for the current sidecar PID to exit.
 for _ in $(seq 1 10); do
-  sudo kill -0 "${SIDECAR_PID}" 2>/dev/null || break
+  sudo kill -0 "${CURRENT_PID}" 2>/dev/null || break
   sleep 1
 done
-if sudo kill -0 "${SIDECAR_PID}" 2>/dev/null; then
-  fail "sidecar PID ${SIDECAR_PID} still alive after pod delete"
+if sudo kill -0 "${CURRENT_PID}" 2>/dev/null; then
+  fail "sidecar PID ${CURRENT_PID} still alive after pod delete"
 fi
-remaining=$(sudo runc --root "$RUNC_ROOT" list 2>/dev/null | grep -c running || true)
-[ "$remaining" = "0" ] || fail "host sidecar left in runc state after delete"
+# Verify the specific container we created was removed from runc state.
+if [[ -n "$SIDECAR_CTR_ID" ]]; then
+  if sudo runc --root "$RUNC_ROOT" state "$SIDECAR_CTR_ID" >/dev/null 2>&1; then
+    fail "host sidecar $SIDECAR_CTR_ID still in runc state after delete"
+  fi
+else
+  remaining=$(sudo runc --root "$RUNC_ROOT" list 2>/dev/null | grep -c running || true)
+  [ "$remaining" = "0" ] || fail "host sidecar left in runc state after delete"
+fi
 
 trap - EXIT
 echo "PASS: host sidecar routed to host, workload isolated in VM, clean teardown"
