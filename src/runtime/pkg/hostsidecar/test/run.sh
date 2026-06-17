@@ -75,6 +75,13 @@ echo "    host-proxy kernel (via exec): $exec_out"
 host_kernel=$(uname -r)
 [ "$exec_out" = "$host_kernel" ] || fail "exec returned kernel '$exec_out', expected host kernel '$host_kernel'"
 
+echo "==> [2b2/4] kubectl exec -it into host sidecar works (TTY, M8)"
+# Run a one-shot command through a TTY exec to verify the console-socket path.
+exec_tty_out=$($K exec -it hostsidecar-e2e -c host-proxy -- uname -r 2>/dev/null | tr -d "\r\n" || echo "")
+[ -n "$exec_tty_out" ] || fail "kubectl exec -it into host sidecar returned empty output"
+echo "    host-proxy kernel (via TTY exec): $exec_tty_out"
+[ "$exec_tty_out" = "$host_kernel" ] || fail "TTY exec returned kernel '$exec_tty_out', expected host kernel '$host_kernel'"
+
 echo "==> [2c/4] Pids RPC returns real host sidecar PID (M8)"
 # Re-fetch the current PID from runc state using the container ID (accounts for any
 # restart since [2/4]). Verify the PID is non-zero and alive.
@@ -102,6 +109,17 @@ vm_total_kb=$($K exec hostsidecar-e2e -c workload -- grep MemTotal /proc/meminfo
 vm_total_mb=$(( vm_total_kb / 1024 ))
 echo "    VM MemTotal=${vm_total_mb} MiB (expect ≤ 1984, i.e. < 2048 default)"
 [ "$vm_total_mb" -lt 2048 ] || fail "VM MemTotal ${vm_total_mb} MiB >= 2048 MiB default (host-sidecar mem subtraction had no effect)"
+
+echo "==> [3c/4] Stats RPC returns non-nil metrics for host sidecar (M8)"
+# crictl stats queries the shim's Stats RPC. If Stats was still returning
+# ErrNotImplemented, crictl would error out instead of printing a row.
+if command -v sudo k3s crictl >/dev/null 2>&1; then
+  stats_out=$(sudo k3s crictl stats 2>/dev/null | grep host-proxy || echo "")
+  [ -n "$stats_out" ] || fail "crictl stats returned no row for host-proxy (Stats RPC may still be unimplemented)"
+  echo "    crictl stats row: $stats_out"
+else
+  echo "    (crictl not available — skipping stats check)"
+fi
 
 echo "==> [4/4] teardown removes the host sidecar cleanly"
 $K delete -f "$POD" --wait=true --timeout=60s

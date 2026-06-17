@@ -21,6 +21,7 @@ import (
 
 	cgroupsv1 "github.com/containerd/cgroups/stats/v1"
 	cgroupsv2 "github.com/containerd/cgroups/v2/stats"
+	"github.com/containerd/console"
 	eventstypes "github.com/containerd/containerd/api/events"
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v2"
 	"github.com/containerd/containerd/api/types/task"
@@ -158,8 +159,9 @@ func startHostExec(ctx context.Context, s *service, c *container, hc *hostsideca
 	if execs.spec == nil {
 		return nil, fmt.Errorf("host sidecar exec %s/%s: nil process spec", c.id, execID)
 	}
+
 	if execs.tty.terminal {
-		return nil, fmt.Errorf("host sidecar exec %s/%s: TTY exec not yet supported", c.id, execID)
+		return startHostExecTTY(ctx, s, c, hc, execID, execs)
 	}
 
 	pio, err := runc.NewPipeIO(0, 0, func(o *runc.IOOption) {
@@ -198,6 +200,85 @@ func startHostExec(ctx context.Context, s *service, c *container, hc *hostsideca
 
 		// Wait for ioCopy to drain all remaining output before recording exit,
 		// so that State() and Wait() only unblock after the last byte is written.
+		<-execs.exitIOch
+
+		exitCode := uint32(0)
+		var exitErr *runc.ExitError
+		if errors.As(execErr, &exitErr) {
+			exitCode = uint32(exitErr.Status)
+		} else if execErr != nil {
+			exitCode = exitCode255
+		}
+
+		timeStamp := time.Now()
+		s.mu.Lock()
+		execs.status = task.Status_STOPPED
+		execs.exitCode = int32(exitCode)
+		execs.exitTime = timeStamp
+		s.mu.Unlock()
+		execs.exitCh <- exitCode
+
+		go cReap(s, int(exitCode), c.id, execID, timeStamp)
+	}()
+
+	return execs, nil
+}
+
+// startHostExecTTY handles the TTY case for startHostExec. runc exec with a
+// terminal requires a console socket: runc connects to it and sends the PTY
+// master FD via SCM_RIGHTS. Once received, the master is used for bidirectional
+// I/O (stdin+stdout share a single PTY FD) and stored on the exec for ResizePty.
+func startHostExecTTY(ctx context.Context, s *service, c *container, hc *hostsidecar.Container, execID string, execs *exec) (*exec, error) {
+	sock, err := runc.NewTempConsoleSocket()
+	if err != nil {
+		return nil, fmt.Errorf("host sidecar tty exec %s/%s: console socket: %w", c.id, execID, err)
+	}
+
+	// TTY execs have no separate stderr FIFO (console=true in newTtyIO).
+	tty, err := newTtyIO(ctx, s.namespace, execID, execs.tty.stdin, execs.tty.stdout, "", true)
+	if err != nil {
+		_ = sock.Close()
+		return nil, fmt.Errorf("host sidecar tty exec %s/%s: ttyIO: %w", c.id, execID, err)
+	}
+	execs.ttyio = tty
+	execs.status = task.Status_RUNNING
+	execs.id = execID
+
+	// Receive the PTY master once runc sends it, then wire bidirectional I/O.
+	// Must be started before the runc exec goroutine so Accept() is ready.
+	go func() {
+		con, conErr := sock.ReceiveMaster()
+		_ = sock.Close()
+		if conErr != nil {
+			shimLog.WithError(conErr).WithField("exec", execID).Error("host tty exec: receive PTY master failed")
+			close(execs.exitIOch)
+			close(execs.stdinCloser)
+			return
+		}
+		s.mu.Lock()
+		execs.console = con
+		s.mu.Unlock()
+		execs.stdinPipe = con
+
+		if execs.tty.height != 0 || execs.tty.width != 0 {
+			_ = con.Resize(console.WinSize{
+				Width:  uint16(execs.tty.width),
+				Height: uint16(execs.tty.height),
+			})
+		}
+
+		// PTY master is bidirectional: write = stdin to exec, read = stdout from exec.
+		ioCopy(
+			shimLog.WithField("container", c.id).WithField("exec", execID),
+			execs.exitIOch, execs.stdinCloser,
+			tty, con, con, nil,
+		)
+		_ = con.Close()
+	}()
+
+	go func() {
+		execErr := hc.Exec(ctx, *execs.spec, &runc.ExecOpts{ConsoleSocket: sock})
+
 		<-execs.exitIOch
 
 		exitCode := uint32(0)

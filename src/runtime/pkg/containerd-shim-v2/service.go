@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/containerd/console"
 	eventstypes "github.com/containerd/containerd/api/events"
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v2"
 	"github.com/containerd/containerd/api/types/task"
@@ -644,8 +645,24 @@ func (s *service) ResizePty(ctx context.Context, r *taskAPI.ResizePtyRequest) (_
 	}
 
 	if hc := s.hostMgr.Get(c.id); hc != nil {
-		// host sidecars: pty resize not yet supported; no-op.
-		return empty, nil
+		_ = hc // suppress unused warning; container-level resize has no meaning
+		if r.ExecID == "" {
+			return empty, nil
+		}
+		execs, execErr := c.getExec(r.ExecID)
+		if execErr != nil {
+			return nil, execErr
+		}
+		s.mu.Lock()
+		con := execs.console
+		s.mu.Unlock()
+		if con == nil {
+			return empty, nil // non-TTY exec
+		}
+		return empty, con.Resize(console.WinSize{
+			Width:  uint16(r.Width),
+			Height: uint16(r.Height),
+		})
 	}
 
 	processID := c.id

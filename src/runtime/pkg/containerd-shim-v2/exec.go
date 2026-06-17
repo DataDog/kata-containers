@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/containerd/console"
 	"github.com/containerd/containerd/api/types/task"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/typeurl/v2"
@@ -23,8 +24,10 @@ type exec struct {
 	container *container
 	cmds      *types.Cmd
 	spec      *specs.Process
-	tty       *tty
-	ttyio     *ttyIO
+	// console holds the PTY master for TTY host-sidecar execs, used by ResizePty.
+	console console.Console
+	tty     *tty
+	ttyio   *ttyIO
 
 	stdinPipe io.WriteCloser
 
