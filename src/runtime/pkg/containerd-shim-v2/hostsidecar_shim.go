@@ -153,12 +153,12 @@ func startHostExec(ctx context.Context, s *service, c *container, hc *hostsideca
 		return nil, err
 	}
 
+	// All early-return error paths below must NOT send to execs.exitCh —
+	// startExec's defer handles the single send on retErr != nil.
 	if execs.spec == nil {
-		execs.exitCh <- exitCode255
 		return nil, fmt.Errorf("host sidecar exec %s/%s: nil process spec", c.id, execID)
 	}
 	if execs.tty.terminal {
-		execs.exitCh <- exitCode255
 		return nil, fmt.Errorf("host sidecar exec %s/%s: TTY exec not yet supported", c.id, execID)
 	}
 
@@ -166,14 +166,12 @@ func startHostExec(ctx context.Context, s *service, c *container, hc *hostsideca
 		o.OpenStdin = execs.tty.stdin != ""
 	})
 	if err != nil {
-		execs.exitCh <- exitCode255
 		return nil, fmt.Errorf("host sidecar exec %s/%s: pipe io: %w", c.id, execID, err)
 	}
 
 	tty, err := newTtyIO(ctx, s.namespace, execID, execs.tty.stdin, execs.tty.stdout, execs.tty.stderr, false)
 	if err != nil {
 		_ = pio.Close()
-		execs.exitCh <- exitCode255
 		return nil, fmt.Errorf("host sidecar exec %s/%s: ttyIO: %w", c.id, execID, err)
 	}
 	execs.ttyio = tty
@@ -189,7 +187,9 @@ func startHostExec(ctx context.Context, s *service, c *container, hc *hostsideca
 			execs.exitIOch, execs.stdinCloser,
 			tty, pio.Stdin(), pio.Stdout(), pio.Stderr(),
 		)
-		_ = pio.Close()
+		if err := pio.Close(); err != nil {
+			shimLog.WithError(err).WithField("exec", execID).Warn("host exec: close pipe IO failed")
+		}
 	}()
 
 	// Run runc exec; record exit once IO is fully drained.
@@ -213,8 +213,8 @@ func startHostExec(ctx context.Context, s *service, c *container, hc *hostsideca
 		execs.status = task.Status_STOPPED
 		execs.exitCode = int32(exitCode)
 		execs.exitTime = timeStamp
-		execs.exitCh <- exitCode
 		s.mu.Unlock()
+		execs.exitCh <- exitCode
 
 		go cReap(s, int(exitCode), c.id, execID, timeStamp)
 	}()
@@ -359,8 +359,8 @@ func runcStatsToV2(st *runc.Stats) *cgroupsv2.Metrics {
 		},
 		CPU: &cgroupsv2.CPUStat{
 			UsageUsec:     st.Cpu.Usage.Total / 1000,
-			UserUsec:      st.Cpu.Usage.Kernel / 1000,
-			SystemUsec:    st.Cpu.Usage.User / 1000,
+			UserUsec:      st.Cpu.Usage.User / 1000,
+			SystemUsec:    st.Cpu.Usage.Kernel / 1000,
 			NrPeriods:     st.Cpu.Throttling.Periods,
 			NrThrottled:   st.Cpu.Throttling.ThrottledPeriods,
 			ThrottledUsec: st.Cpu.Throttling.ThrottledTime / 1000,

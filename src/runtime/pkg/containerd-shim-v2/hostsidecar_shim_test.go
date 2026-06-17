@@ -201,6 +201,8 @@ func TestRuncStatsToV2(t *testing.T) {
 
 	assert.Equal(t, uint64(5), m.Pids.Current)
 	assert.Equal(t, uint64(2_000_000/1000), m.CPU.UsageUsec)
+	assert.Equal(t, uint64(1_600_000/1000), m.CPU.UserUsec)
+	assert.Equal(t, uint64(400_000/1000), m.CPU.SystemUsec)
 	assert.Equal(t, uint64(20), m.CPU.NrPeriods)
 	assert.Equal(t, uint64(4), m.CPU.NrThrottled)
 	assert.Equal(t, uint64(1<<20), m.Memory.Usage)
