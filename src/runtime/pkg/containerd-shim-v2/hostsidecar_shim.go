@@ -13,21 +13,27 @@ package containerdshim
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path"
 	"time"
 
+	cgroupsv1 "github.com/containerd/cgroups/stats/v1"
+	cgroupsv2 "github.com/containerd/cgroups/v2/stats"
 	eventstypes "github.com/containerd/containerd/api/events"
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v2"
 	"github.com/containerd/containerd/api/types/task"
 	"github.com/containerd/containerd/mount"
+	"github.com/containerd/containerd/protobuf"
 	runc "github.com/containerd/go-runc"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"golang.org/x/sys/unix"
+	anypb "google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/kata-containers/kata-containers/src/runtime/pkg/hostsidecar"
+	resCtrl "github.com/kata-containers/kata-containers/src/runtime/pkg/resourcecontrol"
 )
 
 // hostSidecarDisableEnv disables host-sidecar routing when set, regardless of
@@ -135,6 +141,87 @@ func startHostContainer(ctx context.Context, s *service, c *container, hc *hosts
 	return nil
 }
 
+// startHostExec runs an additional process inside a host sidecar via runc exec.
+// It mirrors startExec for the VM path: creates pipe IO, wires ioCopy goroutines,
+// runs runc exec in a goroutine, and drives the exec's exitCh when done.
+//
+// TTY execs (Terminal: true) are not yet supported — runc exec with a terminal
+// requires a console socket, which is not wired here.
+func startHostExec(ctx context.Context, s *service, c *container, hc *hostsidecar.Container, execID string) (*exec, error) {
+	execs, err := c.getExec(execID)
+	if err != nil {
+		return nil, err
+	}
+
+	if execs.spec == nil {
+		execs.exitCh <- exitCode255
+		return nil, fmt.Errorf("host sidecar exec %s/%s: nil process spec", c.id, execID)
+	}
+	if execs.tty.terminal {
+		execs.exitCh <- exitCode255
+		return nil, fmt.Errorf("host sidecar exec %s/%s: TTY exec not yet supported", c.id, execID)
+	}
+
+	pio, err := runc.NewPipeIO(0, 0, func(o *runc.IOOption) {
+		o.OpenStdin = execs.tty.stdin != ""
+	})
+	if err != nil {
+		execs.exitCh <- exitCode255
+		return nil, fmt.Errorf("host sidecar exec %s/%s: pipe io: %w", c.id, execID, err)
+	}
+
+	tty, err := newTtyIO(ctx, s.namespace, execID, execs.tty.stdin, execs.tty.stdout, execs.tty.stderr, false)
+	if err != nil {
+		_ = pio.Close()
+		execs.exitCh <- exitCode255
+		return nil, fmt.Errorf("host sidecar exec %s/%s: ttyIO: %w", c.id, execID, err)
+	}
+	execs.ttyio = tty
+	execs.stdinPipe = pio.Stdin()
+	execs.status = task.Status_RUNNING
+	execs.id = execID
+
+	// ioCopy bridges containerd FIFOs ↔ the exec process's pipe ends.
+	// It closes exitIOch when all output has been drained.
+	go func() {
+		ioCopy(
+			shimLog.WithField("container", c.id).WithField("exec", execID),
+			execs.exitIOch, execs.stdinCloser,
+			tty, pio.Stdin(), pio.Stdout(), pio.Stderr(),
+		)
+		_ = pio.Close()
+	}()
+
+	// Run runc exec; record exit once IO is fully drained.
+	go func() {
+		execErr := hc.Exec(ctx, *execs.spec, &runc.ExecOpts{IO: pio})
+
+		// Wait for ioCopy to drain all remaining output before recording exit,
+		// so that State() and Wait() only unblock after the last byte is written.
+		<-execs.exitIOch
+
+		exitCode := uint32(0)
+		var exitErr *runc.ExitError
+		if errors.As(execErr, &exitErr) {
+			exitCode = uint32(exitErr.Status)
+		} else if execErr != nil {
+			exitCode = exitCode255
+		}
+
+		timeStamp := time.Now()
+		s.mu.Lock()
+		execs.status = task.Status_STOPPED
+		execs.exitCode = int32(exitCode)
+		execs.exitTime = timeStamp
+		execs.exitCh <- exitCode
+		s.mu.Unlock()
+
+		go cReap(s, int(exitCode), c.id, execID, timeStamp)
+	}()
+
+	return execs, nil
+}
+
 // deleteHostContainer stops and removes a host sidecar and unmounts its rootfs,
 // mirroring deleteContainer for the in-VM path.
 func deleteHostContainer(ctx context.Context, s *service, c *container, hc *hostsidecar.Container) error {
@@ -156,4 +243,191 @@ func deleteHostContainer(ctx context.Context, s *service, c *container, hc *host
 	}
 	delete(s.containers, c.id)
 	return nil
+}
+
+// marshalHostSidecarStats converts runc cgroup statistics for a host sidecar
+// into the same anypb.Any wire format that marshalMetrics produces for in-VM
+// containers, so Stats() returns a consistent type to containerd / cAdvisor.
+func marshalHostSidecarStats(ctx context.Context, hc *hostsidecar.Container) (*anypb.Any, error) {
+	st, err := hc.Stats(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	isCgroupV1, err := resCtrl.IsCgroupV1()
+	if err != nil {
+		return nil, err
+	}
+
+	var metrics interface{}
+	if isCgroupV1 {
+		metrics = runcStatsToV1(st)
+	} else {
+		metrics = runcStatsToV2(st)
+	}
+	return protobuf.MarshalAnyToProto(metrics)
+}
+
+func runcStatsToV1(st *runc.Stats) *cgroupsv1.Metrics {
+	m := &cgroupsv1.Metrics{
+		Pids: &cgroupsv1.PidsStat{
+			Current: st.Pids.Current,
+			Limit:   st.Pids.Limit,
+		},
+		CPU: &cgroupsv1.CPUStat{
+			Usage: &cgroupsv1.CPUUsage{
+				Total:  st.Cpu.Usage.Total,
+				Kernel: st.Cpu.Usage.Kernel,
+				User:   st.Cpu.Usage.User,
+				PerCPU: append([]uint64(nil), st.Cpu.Usage.Percpu...),
+			},
+			Throttling: &cgroupsv1.Throttle{
+				Periods:          st.Cpu.Throttling.Periods,
+				ThrottledPeriods: st.Cpu.Throttling.ThrottledPeriods,
+				ThrottledTime:    st.Cpu.Throttling.ThrottledTime,
+			},
+		},
+		Memory: &cgroupsv1.MemoryStat{
+			Cache: st.Memory.Cache,
+			Usage: &cgroupsv1.MemoryEntry{
+				Limit:   st.Memory.Usage.Limit,
+				Usage:   st.Memory.Usage.Usage,
+				Max:     st.Memory.Usage.Max,
+				Failcnt: st.Memory.Usage.Failcnt,
+			},
+			Swap: &cgroupsv1.MemoryEntry{
+				Limit:   st.Memory.Swap.Limit,
+				Usage:   st.Memory.Swap.Usage,
+				Max:     st.Memory.Swap.Max,
+				Failcnt: st.Memory.Swap.Failcnt,
+			},
+			Kernel: &cgroupsv1.MemoryEntry{
+				Limit:   st.Memory.Kernel.Limit,
+				Usage:   st.Memory.Kernel.Usage,
+				Max:     st.Memory.Kernel.Max,
+				Failcnt: st.Memory.Kernel.Failcnt,
+			},
+			KernelTCP: &cgroupsv1.MemoryEntry{
+				Limit:   st.Memory.KernelTCP.Limit,
+				Usage:   st.Memory.KernelTCP.Usage,
+				Max:     st.Memory.KernelTCP.Max,
+				Failcnt: st.Memory.KernelTCP.Failcnt,
+			},
+			RSS:        st.Memory.Raw["rss"],
+			MappedFile: st.Memory.Raw["mapped_file"],
+		},
+		Blkio: &cgroupsv1.BlkIOStat{
+			IoServiceBytesRecursive: runcBlkioToV1(st.Blkio.IoServiceBytesRecursive),
+			IoServicedRecursive:     runcBlkioToV1(st.Blkio.IoServicedRecursive),
+			IoQueuedRecursive:       runcBlkioToV1(st.Blkio.IoQueuedRecursive),
+			SectorsRecursive:        runcBlkioToV1(st.Blkio.SectorsRecursive),
+			IoServiceTimeRecursive:  runcBlkioToV1(st.Blkio.IoServiceTimeRecursive),
+			IoWaitTimeRecursive:     runcBlkioToV1(st.Blkio.IoWaitTimeRecursive),
+			IoMergedRecursive:       runcBlkioToV1(st.Blkio.IoMergedRecursive),
+			IoTimeRecursive:         runcBlkioToV1(st.Blkio.IoTimeRecursive),
+		},
+	}
+	for k, v := range st.Hugetlb {
+		m.Hugetlb = append(m.Hugetlb, &cgroupsv1.HugetlbStat{
+			Usage:    v.Usage,
+			Max:      v.Max,
+			Failcnt:  v.Failcnt,
+			Pagesize: k,
+		})
+	}
+	return m
+}
+
+func runcBlkioToV1(entries []runc.BlkioEntry) []*cgroupsv1.BlkIOEntry {
+	out := make([]*cgroupsv1.BlkIOEntry, len(entries))
+	for i, e := range entries {
+		out[i] = &cgroupsv1.BlkIOEntry{
+			Op:    e.Op,
+			Major: e.Major,
+			Minor: e.Minor,
+			Value: e.Value,
+		}
+	}
+	return out
+}
+
+func runcStatsToV2(st *runc.Stats) *cgroupsv2.Metrics {
+	m := &cgroupsv2.Metrics{
+		Pids: &cgroupsv2.PidsStat{
+			Current: st.Pids.Current,
+			Limit:   st.Pids.Limit,
+		},
+		CPU: &cgroupsv2.CPUStat{
+			UsageUsec:     st.Cpu.Usage.Total / 1000,
+			UserUsec:      st.Cpu.Usage.Kernel / 1000,
+			SystemUsec:    st.Cpu.Usage.User / 1000,
+			NrPeriods:     st.Cpu.Throttling.Periods,
+			NrThrottled:   st.Cpu.Throttling.ThrottledPeriods,
+			ThrottledUsec: st.Cpu.Throttling.ThrottledTime / 1000,
+		},
+		Memory: &cgroupsv2.MemoryStat{
+			Usage:      st.Memory.Usage.Usage,
+			UsageLimit: st.Memory.Usage.Limit,
+			SwapUsage:  st.Memory.Swap.Usage,
+			SwapLimit:  st.Memory.Swap.Limit,
+		},
+		Io: runcBlkioToV2(st.Blkio.IoServiceBytesRecursive),
+	}
+	raw := st.Memory.Raw
+	setIfPresent := func(dst *uint64, key string) {
+		if v, ok := raw[key]; ok {
+			*dst = v
+		}
+	}
+	setIfPresent(&m.Memory.Anon, "anon")
+	setIfPresent(&m.Memory.File, "file")
+	setIfPresent(&m.Memory.KernelStack, "kernel_stack")
+	setIfPresent(&m.Memory.Slab, "slab")
+	setIfPresent(&m.Memory.Sock, "sock")
+	setIfPresent(&m.Memory.Shmem, "shmem")
+	setIfPresent(&m.Memory.FileMapped, "file_mapped")
+	setIfPresent(&m.Memory.FileDirty, "file_dirty")
+	setIfPresent(&m.Memory.FileWriteback, "file_writeback")
+	setIfPresent(&m.Memory.AnonThp, "anon_thp")
+	setIfPresent(&m.Memory.InactiveAnon, "inactive_anon")
+	setIfPresent(&m.Memory.ActiveAnon, "active_anon")
+	setIfPresent(&m.Memory.InactiveFile, "inactive_file")
+	setIfPresent(&m.Memory.ActiveFile, "active_file")
+	setIfPresent(&m.Memory.Unevictable, "unevictable")
+	setIfPresent(&m.Memory.SlabReclaimable, "slab_reclaimable")
+	setIfPresent(&m.Memory.SlabUnreclaimable, "slab_unreclaimable")
+	setIfPresent(&m.Memory.Pgfault, "pgfault")
+	setIfPresent(&m.Memory.Pgmajfault, "pgmajfault")
+	for k, v := range st.Hugetlb {
+		m.Hugetlb = append(m.Hugetlb, &cgroupsv2.HugeTlbStat{
+			Current:  v.Usage,
+			Max:      v.Max,
+			Pagesize: k,
+		})
+	}
+	return m
+}
+
+func runcBlkioToV2(entries []runc.BlkioEntry) *cgroupsv2.IOStat {
+	stat := &cgroupsv2.IOStat{}
+	if len(entries) == 0 {
+		return stat
+	}
+	item := &cgroupsv2.IOEntry{}
+	for _, e := range entries {
+		item.Major = e.Major
+		item.Minor = e.Minor
+		switch e.Op {
+		case "read":
+			item.Rbytes = e.Value
+		case "write":
+			item.Wbytes = e.Value
+		case "rios":
+			item.Rios = e.Value
+		case "wios":
+			item.Wios = e.Value
+		}
+	}
+	stat.Usage = append(stat.Usage, item)
+	return stat
 }

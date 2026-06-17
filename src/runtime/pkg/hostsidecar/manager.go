@@ -34,8 +34,12 @@ func NewManager(cfg Config) *Manager {
 	return newManagerWithRuntime(cfg, newRuncRuntime(cfg))
 }
 
-// newManagerWithRuntime builds a Manager with an injected runtime, used in
-// tests with a fake OCIRuntime.
+// NewManagerWithRuntime builds a Manager with an injected OCIRuntime. Intended
+// for testing; production code should call NewManager.
+func NewManagerWithRuntime(cfg Config, rt OCIRuntime) *Manager {
+	return newManagerWithRuntime(cfg, rt)
+}
+
 func newManagerWithRuntime(cfg Config, rt OCIRuntime) *Manager {
 	return &Manager{
 		cfg:        cfg.withDefaults(),

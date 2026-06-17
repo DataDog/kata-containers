@@ -9,7 +9,7 @@
 # keyword.
 set -euo pipefail
 
-SRC=/Users/eric.mountain/go/src/github.com/DataDog/kata-containers/src/runtime
+SRC=/Users/eric.mountain/dd/kata-containers/src/runtime
 TMPL=/var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl
 
 echo "==> building shim"

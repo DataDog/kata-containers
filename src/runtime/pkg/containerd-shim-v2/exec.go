@@ -22,6 +22,7 @@ import (
 type exec struct {
 	container *container
 	cmds      *types.Cmd
+	spec      *specs.Process
 	tty       *tty
 	ttyio     *ttyIO
 
@@ -121,6 +122,7 @@ func newExec(c *container, stdin, stdout, stderr string, terminal bool, jspec *a
 	exec := &exec{
 		container:   c,
 		cmds:        cmds,
+		spec:        spec,
 		tty:         tty,
 		exitCode:    exitCode255,
 		exitIOch:    make(chan struct{}),

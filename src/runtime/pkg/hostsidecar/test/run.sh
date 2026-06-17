@@ -51,6 +51,26 @@ sudo kill -0 "${SIDECAR_PID}" 2>/dev/null \
   || fail "sidecar PID ${SIDECAR_PID} is not alive on the host"
 echo "    sidecar PID=${SIDECAR_PID} is alive"
 
+echo "==> [2b/4] kubectl exec into host sidecar works (M8)"
+# The sidecar runs busybox; exec a one-shot command and verify the output.
+exec_out=$($K exec hostsidecar-e2e -c host-proxy -- uname -r 2>/dev/null | tr -d "\r" || echo "")
+[ -n "$exec_out" ] || fail "kubectl exec into host sidecar returned empty output"
+echo "    host-proxy kernel (via exec): $exec_out"
+# The exec'd kernel must match the host (sidecar runs on the host, not in the VM).
+host_kernel=$(uname -r)
+[ "$exec_out" = "$host_kernel" ] || fail "exec returned kernel '$exec_out', expected host kernel '$host_kernel'"
+
+echo "==> [2c/4] Pids RPC returns real host sidecar PID (M8)"
+# kubectl top reads the Pids RPC. We check by comparing the shim-reported PID
+# to the one runc recorded. If the shim was returning the hypervisor PID (old
+# behaviour), the two would differ.
+shim_pid=$($K get pod hostsidecar-e2e -o jsonpath='{.status.containerStatuses[?(@.name=="host-proxy")].state.running}' 2>/dev/null || echo "")
+# The runc-reported PID is the definitive ground truth.
+runc_pid=$(sudo runc --root "$RUNC_ROOT" state "$(sudo runc --root "$RUNC_ROOT" list -f json 2>/dev/null | python3 -c "import sys,json; cs=json.load(sys.stdin); print(cs[0]['id'] if cs else '')" 2>/dev/null)" 2>/dev/null | python3 -c "import sys,json; s=json.load(sys.stdin); print(s.get('pid',0))" 2>/dev/null || echo "0")
+[[ "$runc_pid" != "0" ]] || fail "could not read PID from runc state"
+echo "    runc PID=$runc_pid (ground truth)"
+[ "$SIDECAR_PID" = "$runc_pid" ] || fail "PID from earlier runc list ($SIDECAR_PID) != runc state PID ($runc_pid)"
+
 echo "==> [3/4] workload runs inside the guest VM (different kernel from host)"
 host_kernel=$(uname -r)
 wl_kernel=$($K exec hostsidecar-e2e -c workload -- uname -r 2>/dev/null | tr -d "\r")

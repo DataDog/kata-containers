@@ -603,10 +603,6 @@ func (s *service) Exec(ctx context.Context, r *taskAPI.ExecProcessRequest) (_ *e
 		return nil, err
 	}
 
-	if hc := s.hostMgr.Get(c.id); hc != nil {
-		return nil, errdefs.ToGRPCf(errdefs.ErrNotImplemented, "exec into host sidecar %s not yet supported", r.ID)
-	}
-
 	if e, _ := c.getExec(r.ExecID); e != nil {
 		return nil, errdefs.ToGRPCf(errdefs.ErrAlreadyExists, "id %s", r.ExecID)
 	}
@@ -693,11 +689,16 @@ func (s *service) State(ctx context.Context, r *taskAPI.StateRequest) (_ *taskAP
 		return nil, err
 	}
 
+	containerPid := s.hpid
+	if hc := s.hostMgr.Get(c.id); hc != nil {
+		containerPid = uint32(hc.Pid())
+	}
+
 	if r.ExecID == "" {
 		return &taskAPI.StateResponse{
 			ID:         c.id,
 			Bundle:     c.bundle,
-			Pid:        s.hpid,
+			Pid:        containerPid,
 			Status:     c.status,
 			Stdin:      c.stdin,
 			Stdout:     c.stdout,
@@ -717,7 +718,7 @@ func (s *service) State(ctx context.Context, r *taskAPI.StateRequest) (_ *taskAP
 	return &taskAPI.StateResponse{
 		ID:         execs.id,
 		Bundle:     c.bundle,
-		Pid:        s.hpid,
+		Pid:        containerPid,
 		Status:     execs.status,
 		Stdin:      execs.tty.stdin,
 		Stdout:     execs.tty.stdout,
@@ -911,10 +912,17 @@ func (s *service) Pids(ctx context.Context, r *taskAPI.PidsRequest) (_ *taskAPI.
 		rpcDurationsHistogram.WithLabelValues("pids").Observe(float64(time.Since(start).Nanoseconds() / int64(time.Millisecond)))
 	}()
 
-	pInfo := task.ProcessInfo{
-		Pid: s.hpid,
+	pid := s.hpid
+	s.mu.Lock()
+	c := s.containers[r.ID]
+	s.mu.Unlock()
+	if c != nil {
+		if hc := s.hostMgr.Get(c.id); hc != nil {
+			pid = uint32(hc.Pid())
+		}
 	}
-	processes = append(processes, &pInfo)
+
+	processes = append(processes, &task.ProcessInfo{Pid: pid})
 
 	return &taskAPI.PidsResponse{
 		Processes: processes,
@@ -1075,7 +1083,11 @@ func (s *service) Stats(ctx context.Context, r *taskAPI.StatsRequest) (_ *taskAP
 	}
 
 	if hc := s.hostMgr.Get(c.id); hc != nil {
-		return nil, errdefs.ToGRPCf(errdefs.ErrNotImplemented, "stats for host sidecar %s not yet supported", r.ID)
+		data, err := marshalHostSidecarStats(spanCtx, hc)
+		if err != nil {
+			return nil, errdefs.ToGRPC(err)
+		}
+		return &taskAPI.StatsResponse{Stats: data}, nil
 	}
 
 	data, err := marshalMetrics(spanCtx, s, c.id)
