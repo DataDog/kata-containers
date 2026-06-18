@@ -162,6 +162,11 @@ spec:
             # Blocked: should get NXDOMAIN immediately
             addr=$(nslookup google.com 2>&1 | grep '^Address:' | tail -1 | awk '{print $2}')
             echo "[BLOCKED]     google.com → ${addr:-NXDOMAIN (blocked by policy)}"
+
+            # Blocked at TCP level: 1.1.1.1 was never resolved via our DNS,
+            # so the proxy has no record of it and sends RST immediately.
+            nc -zw 2 1.1.1.1 80 2>&1 && echo "[TCP BLOCKED] 1.1.1.1:80 → CONNECTED (unexpected)" \
+              || echo "[TCP BLOCKED] 1.1.1.1:80 → connection refused/reset (blocked by policy)"
             echo
             sleep 15
           done
