@@ -153,15 +153,23 @@ spec:
             echo "[CLUSTER DNS] kubernetes.default.svc.cluster.local → ${addr:-FAILED}"
 
             # Allowed: should resolve and load successfully
-            addr=$(nslookup example.com 2>&1 | grep '^Address:' | tail -1 | awk '{print $2}')
-            echo "[ALLOWED]     example.com → ${addr:-NXDOMAIN}"
+            if nslookup example.com >/dev/null 2>&1; then
+              addr=$(nslookup example.com 2>&1 | awk '/^Name:/{f=1} f && /^Address:/{print $2; exit}')
+              echo "[ALLOWED]     example.com → ${addr:-resolved}"
+            else
+              echo "[ALLOWED]     example.com → NXDOMAIN (unexpected — check policy)"
+            fi
             title=$(wget -qO- --timeout=5 http://example.com 2>&1 \
               | grep -o '<title>[^<]*</title>' || echo "FAILED")
             echo "[ALLOWED]     http://example.com title: $title"
 
             # Blocked: should get NXDOMAIN immediately
-            addr=$(nslookup google.com 2>&1 | grep '^Address:' | tail -1 | awk '{print $2}')
-            echo "[BLOCKED]     google.com → ${addr:-NXDOMAIN (blocked by policy)}"
+            if nslookup google.com >/dev/null 2>&1; then
+              addr=$(nslookup google.com 2>&1 | awk '/^Name:/{f=1} f && /^Address:/{print $2; exit}')
+              echo "[BLOCKED]     google.com → ${addr:-resolved} (unexpected — check policy)"
+            else
+              echo "[BLOCKED]     google.com → NXDOMAIN (blocked by policy)"
+            fi
 
             # Blocked at TCP level: 1.1.1.1 was never resolved via our DNS,
             # so the proxy has no record of it and sends RST immediately.
