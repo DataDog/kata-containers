@@ -35,13 +35,15 @@ jobs:
           cache: true
           cache-dependency-path: src/runtime/go.sum
 
+      - name: Install build dependencies
+        run: sudo apt-get install -y build-essential
+
       - name: Build containerd-shim-kata-tapnet-v2
         run: |
           cd src/runtime
-          CGO_ENABLED=1 GOARCH=amd64 go build \
-            -ldflags="-s -w" \
-            -o containerd-shim-kata-tapnet-v2 \
-            ./cmd/containerd-shim-kata-v2/
+          # make generates config-settings.go (and other .go.in files) before building
+          make containerd-shim-v2
+          mv containerd-shim-kata-v2 containerd-shim-kata-tapnet-v2
 
       - name: Publish release asset
         env:
