@@ -1,0 +1,61 @@
+name: Build | containerd-shim-kata-tapnet-v2 release asset
+on:
+  push:
+    branches:
+      - em/host-sidecar
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build-shim-amd64
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Read Go version from versions.yaml
+        run: |
+          go_version="$(yq '.languages.golang.version' versions.yaml)"
+          [ -n "$go_version" ]
+          echo "GO_VERSION=${go_version}" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: src/runtime/go.sum
+
+      - name: Build containerd-shim-kata-tapnet-v2
+        run: |
+          cd src/runtime
+          CGO_ENABLED=1 GOARCH=amd64 go build \
+            -ldflags="-s -w" \
+            -o containerd-shim-kata-tapnet-v2 \
+            ./cmd/containerd-shim-kata-v2/
+
+      - name: Publish release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="em-host-sidecar-latest"
+          binary="src/runtime/containerd-shim-kata-tapnet-v2"
+          sha256sum "$binary" > "${binary}.sha256"
+
+          # Delete and recreate the pre-release so the asset stays current.
+          gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$tag" \
+            --prerelease \
+            --title "containerd-shim-kata-tapnet-v2 (staging, em/host-sidecar)" \
+            --notes "Automated build from branch em/host-sidecar. Staging use only." \
+            "$binary" \
+            "${binary}.sha256"
