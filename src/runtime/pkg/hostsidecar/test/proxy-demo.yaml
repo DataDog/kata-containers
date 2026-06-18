@@ -29,24 +29,8 @@
 #
 # Prerequisites
 # -------------
-#   1. Build and load the proxy image into k3s's embedded containerd:
-#
-#        cd ~/go/src/github.com/ddoghq-sandbox/kata-dev-network-proxy
-#        docker build -t kata-dev-network-proxy:latest .
-#        docker save kata-dev-network-proxy:latest | \
-#          limactl shell kata-dev -- bash -c \
-#            "sudo ctr --address /run/k3s/containerd/containerd.sock \
-#               -n k8s.io images import - && \
-#             sudo ctr --address /run/k3s/containerd/containerd.sock \
-#               -n k8s.io images tag \
-#               docker.io/library/kata-dev-network-proxy:latest \
-#               kata-dev-network-proxy:latest"
-#
-#      Note: k3s has its own embedded containerd at /run/k3s/containerd/containerd.sock,
-#      separate from the system containerd. Always use that address when importing
-#      images for k3s pods. imagePullPolicy: Never means k3s will use only what is
-#      already in its containerd — it won't attempt a registry pull.
-#
+#   1. bash load-proxy.sh          (builds image on Mac, loads into k3s containerd)
+#      bash load-proxy.sh --apply  (also applies this file)
 #   2. internetworking_model=tapnet (apply-config.sh, default).
 #   3. Shim from em/host-sidecar deployed (deploy.sh).
 #
