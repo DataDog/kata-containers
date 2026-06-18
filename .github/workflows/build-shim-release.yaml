@@ -45,19 +45,9 @@ jobs:
           make containerd-shim-v2
           mv containerd-shim-kata-v2 containerd-shim-kata-tapnet-v2
 
-      - name: Publish release asset
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          tag="em-host-sidecar-latest"
-          binary="src/runtime/containerd-shim-kata-tapnet-v2"
-          sha256sum "$binary" > "${binary}.sha256"
-
-          # Delete and recreate the pre-release so the asset stays current.
-          gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
-          gh release create "$tag" \
-            --prerelease \
-            --title "containerd-shim-kata-tapnet-v2 (staging, em/host-sidecar)" \
-            --notes "Automated build from branch em/host-sidecar. Staging use only." \
-            "$binary" \
-            "${binary}.sha256"
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: containerd-shim-kata-tapnet-v2-amd64
+          path: src/runtime/containerd-shim-kata-tapnet-v2
+          retention-days: 90
