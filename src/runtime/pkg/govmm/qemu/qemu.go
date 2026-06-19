@@ -874,6 +874,22 @@ const (
 
 	// VHOSTUSER is a vhost-user port (socket)
 	VHOSTUSER NetDeviceType = "vhostuser"
+
+	// NetDeviceStream is a stream-based networking device using a Unix domain
+	// socket.  Supported from QEMU 7.2+.  Produces:
+	//   -netdev stream,id=<id>,server=on,addr.type=unix,addr.path=<path>
+	// QEMU acts as the server (listens); the proxy dials and calls AcceptQemu.
+	// Uses QEMU's 4-byte big-endian length-prefix framing (QemuProtocol).
+	NetDeviceStream NetDeviceType = "stream"
+
+	// NetDeviceSocketFd is a socket-based networking device using a pre-existing
+	// file descriptor (from a Unix socketpair).  Produces:
+	//   -netdev socket,id=<id>,fd=<N>
+	// Both ends of the socketpair are connected at QEMU launch, so the
+	// virtio-net device always has a live backend — no race between VM boot
+	// and proxy startup.  The shim holds the proxy end and hands it off via
+	// SCM_RIGHTS on a control socket once the proxy container connects.
+	NetDeviceSocketFd NetDeviceType = "socketfd"
 )
 
 // QemuNetdevParam converts to the QEMU -netdev parameter notation
@@ -901,6 +917,10 @@ func (n NetDeviceType) QemuNetdevParam(netdev *NetDevice, config *Config) string
 			log.Fatal("vhost-user devices are not supported on IBM Z")
 		}
 		return "vhost-user" // -netdev type=vhost-user (no device)
+	case NetDeviceStream:
+		return "stream"
+	case NetDeviceSocketFd:
+		return "socket"
 	default:
 		return ""
 
@@ -924,6 +944,10 @@ func (n NetDeviceType) QemuDeviceParam(netdev *NetDevice, config *Config) Device
 		device = "virtio-net"
 	case VETHTAP:
 		device = "virtio-net" // -netdev type=tap -device virtio-net-pci
+	case NetDeviceStream:
+		device = "virtio-net"
+	case NetDeviceSocketFd:
+		device = "virtio-net"
 	case VFIO:
 		if netdev.Transport == TransportMMIO {
 			log.Fatal("vfio devices are not support with the MMIO transport")
@@ -982,6 +1006,10 @@ type NetDevice struct {
 	FDs      []*os.File
 	VhostFDs []*os.File
 
+	// SocketPath is the Unix socket path for NetDeviceStream.
+	// QEMU creates and listens on this socket (server=on); the proxy dials it.
+	SocketPath string
+
 	// VHost enables virtio device emulation from the host kernel instead of from qemu.
 	VHost bool
 
@@ -1011,15 +1039,19 @@ var VirtioNetTransport = map[VirtioTransport]string{
 
 // Valid returns true if the NetDevice structure is valid and complete.
 func (netdev NetDevice) Valid() bool {
-	if netdev.ID == "" || netdev.IFName == "" {
+	if netdev.ID == "" {
 		return false
 	}
 
 	switch netdev.Type {
 	case TAP:
-		return true
+		return netdev.IFName != ""
 	case MACVTAP:
-		return true
+		return netdev.IFName != ""
+	case NetDeviceStream:
+		return netdev.SocketPath != ""
+	case NetDeviceSocketFd:
+		return len(netdev.FDs) > 0
 	default:
 		return false
 	}
@@ -1076,8 +1108,8 @@ func (netdev NetDevice) QemuDeviceParams(config *Config) []string {
 		deviceParams = append(deviceParams, s)
 	}
 
-	if len(netdev.FDs) > 0 {
-		// Note: We are appending to the device params here
+	// mq is only valid for tap-based netdevs; socket/stream use single-queue.
+	if len(netdev.FDs) > 0 && netdev.Type != NetDeviceSocketFd {
 		deviceParams = append(deviceParams, netdev.mqParameter(config))
 	}
 
@@ -1106,6 +1138,23 @@ func (netdev NetDevice) QemuNetdevParams(config *Config) []string {
 
 	netdevParams = append(netdevParams, netdevType)
 	netdevParams = append(netdevParams, fmt.Sprintf("id=%s", netdev.ID))
+
+	// Stream netdev uses a Unix socket — no fds, vhost, or ifname.
+	if netdev.Type == NetDeviceStream {
+		netdevParams = append(netdevParams, "server=on")
+		netdevParams = append(netdevParams, "addr.type=unix")
+		netdevParams = append(netdevParams, fmt.Sprintf("addr.path=%s", netdev.SocketPath))
+		return netdevParams
+	}
+
+	// SocketFd netdev uses a pre-connected socketpair fd.
+	if netdev.Type == NetDeviceSocketFd {
+		if len(netdev.FDs) > 0 {
+			qemuFDs := config.appendFDs(netdev.FDs)
+			netdevParams = append(netdevParams, fmt.Sprintf("fd=%d", qemuFDs[0]))
+		}
+		return netdevParams
+	}
 
 	if netdev.VHost {
 		netdevParams = append(netdevParams, "vhost=on")

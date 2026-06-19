@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/containerd/console"
 	eventstypes "github.com/containerd/containerd/api/events"
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v2"
 	"github.com/containerd/containerd/api/types/task"
@@ -24,6 +25,7 @@ import (
 	cdruntime "github.com/containerd/containerd/runtime"
 	cdshim "github.com/containerd/containerd/runtime/v2/shim"
 	"github.com/containerd/typeurl/v2"
+	"github.com/kata-containers/kata-containers/src/runtime/pkg/hostsidecar"
 	"github.com/kata-containers/kata-containers/src/runtime/pkg/katautils"
 	"github.com/kata-containers/kata-containers/src/runtime/pkg/katautils/katatrace"
 	"github.com/kata-containers/kata-containers/src/runtime/pkg/oci"
@@ -97,6 +99,7 @@ func New(ctx context.Context, id string, publisher cdshim.Publisher, shutdown fu
 		pid:        uint32(os.Getpid()),
 		ctx:        ctx,
 		containers: make(map[string]*container),
+		hostMgr:    newHostSidecarManager(),
 		events:     make(chan interface{}, chSize),
 		ec:         make(chan exit, bufferSize),
 		cancel:     shutdown,
@@ -128,6 +131,10 @@ type service struct {
 	rootSpan otelTrace.Span
 
 	containers map[string]*container
+
+	// hostMgr routes annotated "host sidecar" containers to an OCI runtime on
+	// the host instead of into the VM (see pkg/hostsidecar).
+	hostMgr *hostsidecar.Manager
 
 	config *oci.RuntimeConfig
 
@@ -488,7 +495,11 @@ func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (_ *taskAP
 
 	//start a container
 	if r.ExecID == "" {
-		err = startContainer(spanCtx, s, c)
+		if hc := s.hostMgr.Get(c.id); hc != nil {
+			err = startHostContainer(spanCtx, s, c, hc)
+		} else {
+			err = startContainer(spanCtx, s, c)
+		}
 		if err != nil {
 			return nil, errdefs.ToGRPC(err)
 		}
@@ -536,7 +547,11 @@ func (s *service) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (_ *task
 	}
 
 	if r.ExecID == "" {
-		if err = deleteContainer(spanCtx, s, c); err != nil {
+		if hc := s.hostMgr.Get(c.id); hc != nil {
+			if err = deleteHostContainer(spanCtx, s, c, hc); err != nil {
+				return nil, err
+			}
+		} else if err = deleteContainer(spanCtx, s, c); err != nil {
 			return nil, err
 		}
 
@@ -629,6 +644,27 @@ func (s *service) ResizePty(ctx context.Context, r *taskAPI.ResizePtyRequest) (_
 		return nil, err
 	}
 
+	if hc := s.hostMgr.Get(c.id); hc != nil {
+		_ = hc // suppress unused warning; container-level resize has no meaning
+		if r.ExecID == "" {
+			return empty, nil
+		}
+		execs, execErr := c.getExec(r.ExecID)
+		if execErr != nil {
+			return nil, execErr
+		}
+		s.mu.Lock()
+		con := execs.console
+		s.mu.Unlock()
+		if con == nil {
+			return empty, nil // non-TTY exec
+		}
+		return empty, con.Resize(console.WinSize{
+			Width:  uint16(r.Width),
+			Height: uint16(r.Height),
+		})
+	}
+
 	processID := c.id
 	if r.ExecID != "" {
 		execs, err := c.getExec(r.ExecID)
@@ -670,11 +706,16 @@ func (s *service) State(ctx context.Context, r *taskAPI.StateRequest) (_ *taskAP
 		return nil, err
 	}
 
+	containerPid := s.hpid
+	if hc := s.hostMgr.Get(c.id); hc != nil {
+		containerPid = uint32(hc.Pid())
+	}
+
 	if r.ExecID == "" {
 		return &taskAPI.StateResponse{
 			ID:         c.id,
 			Bundle:     c.bundle,
-			Pid:        s.hpid,
+			Pid:        containerPid,
 			Status:     c.status,
 			Stdin:      c.stdin,
 			Stdout:     c.stdout,
@@ -694,7 +735,7 @@ func (s *service) State(ctx context.Context, r *taskAPI.StateRequest) (_ *taskAP
 	return &taskAPI.StateResponse{
 		ID:         execs.id,
 		Bundle:     c.bundle,
-		Pid:        s.hpid,
+		Pid:        containerPid,
 		Status:     execs.status,
 		Stdin:      execs.tty.stdin,
 		Stdout:     execs.tty.stdout,
@@ -724,6 +765,15 @@ func (s *service) Pause(ctx context.Context, r *taskAPI.PauseRequest) (_ *emptyp
 	c, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
+	}
+
+	if hc := s.hostMgr.Get(c.id); hc != nil {
+		if err := hc.Pause(spanCtx); err != nil {
+			return nil, err
+		}
+		c.status = task.Status_PAUSED
+		s.send(&eventstypes.TaskPaused{ContainerID: c.id})
+		return empty, nil
 	}
 
 	c.status = task.Status_PAUSING
@@ -767,6 +817,15 @@ func (s *service) Resume(ctx context.Context, r *taskAPI.ResumeRequest) (_ *empt
 		return nil, err
 	}
 
+	if hc := s.hostMgr.Get(c.id); hc != nil {
+		if err := hc.Resume(spanCtx); err != nil {
+			return nil, err
+		}
+		c.status = task.Status_RUNNING
+		s.send(&eventstypes.TaskResumed{ContainerID: c.id})
+		return empty, nil
+	}
+
 	err = s.sandbox.ResumeContainer(spanCtx, c.id)
 	if err == nil {
 		c.status = task.Status_RUNNING
@@ -806,6 +865,21 @@ func (s *service) Kill(ctx context.Context, r *taskAPI.KillRequest) (_ *emptypb.
 	c, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
+	}
+
+	if hc := s.hostMgr.Get(c.id); hc != nil {
+		if r.ExecID != "" {
+			// Kill for a host-sidecar exec: the exec process is managed by runc
+			// exec directly and not tracked separately. If the exec already exited
+			// (normal cleanup kill from containerd), this is a no-op. If it is
+			// still running, killing the container kills it too; that is acceptable
+			// for force-stop scenarios.
+			execs, execErr := c.getExec(r.ExecID)
+			if execErr != nil || execs.status == task.Status_STOPPED {
+				return empty, nil
+			}
+		}
+		return empty, hc.Kill(spanCtx, r.Signal, true)
 	}
 
 	processStatus := c.status
@@ -865,10 +939,17 @@ func (s *service) Pids(ctx context.Context, r *taskAPI.PidsRequest) (_ *taskAPI.
 		rpcDurationsHistogram.WithLabelValues("pids").Observe(float64(time.Since(start).Nanoseconds() / int64(time.Millisecond)))
 	}()
 
-	pInfo := task.ProcessInfo{
-		Pid: s.hpid,
+	pid := s.hpid
+	s.mu.Lock()
+	c := s.containers[r.ID]
+	s.mu.Unlock()
+	if c != nil {
+		if hc := s.hostMgr.Get(c.id); hc != nil {
+			pid = uint32(hc.Pid())
+		}
 	}
-	processes = append(processes, &pInfo)
+
+	processes = append(processes, &task.ProcessInfo{Pid: pid})
 
 	return &taskAPI.PidsResponse{
 		Processes: processes,
@@ -894,6 +975,11 @@ func (s *service) CloseIO(ctx context.Context, r *taskAPI.CloseIORequest) (_ *em
 	c, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
+	}
+
+	if s.hostMgr.Get(c.id) != nil {
+		// host sidecars have no IO streams; stdinCloser was pre-closed, nothing to close.
+		return empty, nil
 	}
 
 	stdin := c.stdinPipe
@@ -1023,6 +1109,14 @@ func (s *service) Stats(ctx context.Context, r *taskAPI.StatsRequest) (_ *taskAP
 		return nil, err
 	}
 
+	if hc := s.hostMgr.Get(c.id); hc != nil {
+		data, err := marshalHostSidecarStats(spanCtx, hc)
+		if err != nil {
+			return nil, errdefs.ToGRPC(err)
+		}
+		return &taskAPI.StatsResponse{Stats: data}, nil
+	}
+
 	data, err := marshalMetrics(spanCtx, s, c.id)
 	if err != nil {
 		return nil, err
@@ -1057,6 +1151,10 @@ func (s *service) Update(ctx context.Context, r *taskAPI.UpdateTaskRequest) (_ *
 	resources, ok := v.(*specs.LinuxResources)
 	if !ok {
 		return nil, errdefs.ToGRPCf(errdefs.ErrInvalidArgument, "Invalid resources type for %s", s.id)
+	}
+
+	if hc := s.hostMgr.Get(r.ID); hc != nil {
+		return empty, hc.Update(spanCtx, resources)
 	}
 
 	err = s.sandbox.UpdateContainer(spanCtx, r.ID, *resources)

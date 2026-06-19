@@ -133,6 +133,10 @@ func startExec(ctx context.Context, s *service, containerID, execID string) (e *
 		}
 	}()
 
+	if hc := s.hostMgr.Get(containerID); hc != nil {
+		return startHostExec(ctx, s, c, hc, execID)
+	}
+
 	_, proc, err := s.sandbox.EnterContainer(ctx, containerID, *execs.cmds)
 	if err != nil {
 		err := fmt.Errorf("cannot enter container %s, with err %s", containerID, err)

@@ -1,0 +1,181 @@
+# M7 demo: kata-dev-network-proxy (tapnet mode) with L7 allowlist filtering.
+#
+# Architecture
+# ------------
+#
+#   pod netns
+#   ┌────────────────────────────────────────────────────────────────────┐
+#   │                                                                    │
+#   │   Kata VM  ──tap0_kata──► gvisor-tap-vsock (user-space TCP/IP)    │
+#   │   (workload)  169.254.1.2   net-proxy / pkg/tapnet                │
+#   │                             gateway 169.254.1.1    │              │
+#   │                                                   eth0            │
+#   └────────────────────────────────────────────────────┼─────────────-┘
+#                                                        ▼
+#                                                 external network
+#
+# The proxy owns the tap fd directly; the kernel never forwards VM frames.
+# Kill-9 proof: tap fd closes on proxy exit, VM network goes dark immediately.
+# No iptables rules are installed.
+#
+# L7 allowlist filtering (new in this revision)
+# ----------------------------------------------
+# The ConfigMap below lists domains that the workload is allowed to reach.
+# Anything not on the list gets:
+#   DNS:  NXDOMAIN  (immediate resolution failure)
+#   TCP:  RST       (immediate connection failure, no silent drop)
+#
+# To update the allowlist, edit the ConfigMap and redeploy the pod.
+#
+# Prerequisites
+# -------------
+#   1. bash load-proxy.sh          (builds image on Mac, loads into k3s containerd)
+#      bash load-proxy.sh --apply  (also applies this file)
+#   2. internetworking_model=tapnet (apply-config.sh, default).
+#   3. Shim from em/host-sidecar deployed (deploy.sh).
+#
+# Apply
+# -----
+#   sudo k3s kubectl apply -f proxy-demo.yaml
+#   sudo k3s kubectl wait --for=condition=Ready pod/proxy-demo --timeout=180s
+#
+# Verify allowlist
+# ----------------
+#   # Allowed — should succeed:
+#   sudo k3s kubectl exec proxy-demo -c workload -- wget -qO- http://example.com
+#
+#   # Blocked — should fail immediately with "bad address" (NXDOMAIN):
+#   sudo k3s kubectl exec proxy-demo -c workload -- wget -qO- http://google.com
+#
+#   # Proxy logs show which connections were allowed vs blocked:
+#   sudo k3s kubectl logs proxy-demo -c net-proxy | grep -E 'blocked|tcp proxy|dns query'
+#
+# Update the allowlist without rebuilding the image
+# -------------------------------------------------
+#   sudo k3s kubectl edit configmap proxy-allowlist
+#   # Add "google.com" under allowlist.txt, save, then restart the pod:
+#   sudo k3s kubectl delete pod proxy-demo && sudo k3s kubectl apply -f proxy-demo.yaml
+#
+# Demonstrate kill-9 isolation
+# ----------------------------
+#   sudo k3s kubectl exec proxy-demo -c net-proxy -- kill -9 1
+#   # VM immediately loses network (tap fd closed); KEP-753 restarts proxy after ~1s
+#
+# Clean up
+# --------
+#   sudo k3s kubectl delete -f proxy-demo.yaml
+---
+# ConfigMap holds the L7 allowlist. Edit this to control which external
+# destinations the VM workload may reach. Cluster-local names
+# (*.cluster.local) are always allowed and do not need to be listed.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: proxy-allowlist
+data:
+  allowlist.txt: |
+    # Allowed external domains (subdomains are matched automatically).
+    # To allow a domain, add it here and redeploy the pod.
+    example.com
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: proxy-demo
+  annotations:
+    # Route the net-proxy sidecar to runc on the host.
+    io.katacontainers.host-sidecar-containers: "net-proxy"
+    # 64 MiB reserved for the proxy sidecar; shim subtracts from VM.
+    io.katacontainers.host-sidecar-mem-bytes: "67108864"
+spec:
+  runtimeClassName: kata
+  initContainers:
+    # KEP-753 native sidecar: starts before the workload, runs for the pod's
+    # lifetime.  The shim routes it to runc on the host.
+    - name: net-proxy
+      # Build from ddoghq-sandbox/kata-dev-network-proxy and import into the VM's
+      # containerd: `ctr -n k8s.io images import proxy.tar`
+      image: kata-dev-network-proxy:latest
+      imagePullPolicy: Never
+      restartPolicy: Always
+      args:
+        # tapnet mode (internetworking_model=tapnet):
+        - --tapnet-socket=/run/kata-tapnet/tap0_kata.ctrl
+        - --vm-subnet=169.254.1.0/30
+        - --cluster-dns=10.43.0.10:53   # k3s; change to 10.96.0.10 for kubeadm
+        - --upstream-dns=8.8.8.8:53
+        # L7 allowlist: only destinations listed in the ConfigMap are reachable.
+        # Anything not listed gets NXDOMAIN (DNS) or TCP RST (connection).
+        - --allow-file=/etc/proxy/allowlist.txt
+        # Alternatively, specify domains directly without a file:
+        # - --allow=example.com
+        # - --allow=api.internal
+        #
+        # iptables mode (internetworking_model=none) — comment tapnet args above and
+        # uncomment below:
+        # - --vm-subnet=169.254.1.0/30
+        # - --cluster-dns=10.43.0.10:53
+        # - --upstream-dns=8.8.8.8:53
+        # - --proxy-port=12345
+        - --log-level=debug
+      securityContext:
+        runAsUser: 0
+        capabilities:
+          add:
+            - NET_ADMIN   # iptables (iptables mode); no capabilities needed for tapnet
+      volumeMounts:
+        # tapnet: QEMU creates /run/kata-tapnet/tap0_kata.ctrl on the host;
+        # this mount makes it accessible inside the container.
+        - name: tapnet-socket-dir
+          mountPath: /run/kata-tapnet
+        # ConfigMap volume: allowlist.txt is mounted at /etc/proxy/allowlist.txt
+        - name: allowlist
+          mountPath: /etc/proxy
+  volumes:
+    - name: tapnet-socket-dir
+      hostPath:
+        path: /run/kata-tapnet
+        type: DirectoryOrCreate
+    - name: allowlist
+      configMap:
+        name: proxy-allowlist
+  containers:
+    - name: workload
+      image: busybox:1.36
+      command:
+        - sh
+        - -c
+        - |
+          while true; do
+            echo "--- $(date -u +%H:%M:%S) ---"
+            result=$(nslookup kubernetes.default.svc.cluster.local 2>&1)
+            addr=$(echo "$result" | grep -A1 'Name:' | grep 'Address:' | awk '{print $2}')
+            echo "[CLUSTER DNS] kubernetes.default.svc.cluster.local → ${addr:-FAILED}"
+
+            # Allowed: should resolve and load successfully
+            if nslookup example.com >/dev/null 2>&1; then
+              addr=$(nslookup example.com 2>&1 | awk '/^Name:/{f=1} f && /^Address:/{print $2; exit}')
+              echo "[ALLOWED]     example.com → ${addr:-resolved}"
+            else
+              echo "[ALLOWED]     example.com → NXDOMAIN (unexpected — check policy)"
+            fi
+            title=$(wget -qO- --timeout=5 http://example.com 2>&1 \
+              | grep -o '<title>[^<]*</title>' || echo "FAILED")
+            echo "[ALLOWED]     http://example.com title: $title"
+
+            # Blocked: should get NXDOMAIN immediately
+            if nslookup google.com >/dev/null 2>&1; then
+              addr=$(nslookup google.com 2>&1 | awk '/^Name:/{f=1} f && /^Address:/{print $2; exit}')
+              echo "[BLOCKED]     google.com → ${addr:-resolved} (unexpected — check policy)"
+            else
+              echo "[BLOCKED]     google.com → NXDOMAIN (blocked by policy)"
+            fi
+
+            # Blocked at TCP level: 1.1.1.1 was never resolved via our DNS,
+            # so the proxy has no record of it and sends RST immediately.
+            nc -zw 2 1.1.1.1 80 2>&1 && echo "[TCP BLOCKED] 1.1.1.1:80 → CONNECTED (unexpected)" \
+              || echo "[TCP BLOCKED] 1.1.1.1:80 → connection refused/reset (blocked by policy)"
+            echo
+            sleep 15
+          done
+  terminationGracePeriodSeconds: 5

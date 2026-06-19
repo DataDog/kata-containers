@@ -1,0 +1,56 @@
+name: Build | containerd-shim-kata-tapnet-v2 release asset
+on:
+  push:
+    branches:
+      - em/host-sidecar
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build-shim-amd64
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Read Go version from versions.yaml
+        run: |
+          go_version="$(yq '.languages.golang.version' versions.yaml)"
+          [ -n "$go_version" ]
+          echo "GO_VERSION=${go_version}" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: src/runtime/go.sum
+
+      - name: Install build dependencies
+        run: sudo apt-get install -y build-essential
+
+      - name: Build containerd-shim-kata-tapnet-v2
+        run: |
+          cd src/runtime
+          # make generates config-settings.go (and other .go.in files) before building
+          make containerd-shim-v2
+          mv containerd-shim-kata-v2 containerd-shim-kata-tapnet-v2
+
+      - name: Upload release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Upload to the pre-existing em-host-sidecar-latest release (created once by a human).
+          # gh release upload does not create a ref, so it is not blocked by the org ruleset.
+          gh release upload em-host-sidecar-latest \
+            src/runtime/containerd-shim-kata-tapnet-v2 \
+            --clobber
