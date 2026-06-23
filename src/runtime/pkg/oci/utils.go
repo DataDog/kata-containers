@@ -1565,6 +1565,15 @@ func CalculateSandboxSizing(spec *specs.Spec) (numCPU float32, memSizeMB uint32)
 		}
 	}
 
+	annotation, ok = spec.Annotations[ctrAnnotations.SandboxCPUShares]
+	if ok {
+		shares, err = strconv.ParseUint(annotation, 10, 64)
+		if err != nil {
+			ociLog.Warningf("sandbox-sizing: failure to parse SandboxCPUShares: %s", annotation)
+			shares = 0
+		}
+	}
+
 	annotation, ok = spec.Annotations[ctrAnnotations.SandboxMem]
 	if ok {
 		memory, err = strconv.ParseInt(annotation, 10, 64)
@@ -1605,20 +1614,25 @@ func CalculateContainerSizing(spec *specs.Spec) (numCPU float32, memSizeMB uint3
 
 	resources := spec.Linux.Resources
 
-	if resources.CPU != nil && resources.CPU.Quota != nil && resources.CPU.Period != nil {
-		quota = *resources.CPU.Quota
-		period = *resources.CPU.Period
+	if resources.CPU != nil {
+		if resources.CPU.Quota != nil && resources.CPU.Period != nil {
+			quota = *resources.CPU.Quota
+			period = *resources.CPU.Period
+		}
+		if resources.CPU.Shares != nil {
+			shares = *resources.CPU.Shares
+		}
 	}
 
 	if resources.Memory != nil && resources.Memory.Limit != nil {
 		memory = *resources.Memory.Limit
 	}
 
-	return calculateVMResources(period, quota, memory)
+	return calculateVMResources(period, quota, shares, memory)
 }
 
-func calculateVMResources(period uint64, quota int64, memory int64) (numCPU float32, memSizeMB uint32) {
-	numCPU = vcutils.CalculateCPUsF(quota, period)
+func calculateVMResources(period uint64, quota int64, shares uint64, memory int64) (numCPU float32, memSizeMB uint32) {
+	numCPU = vcutils.CalculateCPUsF(quota, period, shares)
 
 	if memory < 0 {
 		// While spec allows for a negative value to indicate unconstrained, we don't
