@@ -1,0 +1,132 @@
+From ddcfa1b17091e24e9e352acb71b575efd5d667a7 Mon Sep 17 00:00:00 2001
+From: Mateo Lelong <mateo.lelong@datadoghq.com>
+Date: Mon, 13 Apr 2026 17:52:55 +0200
+Subject: [PATCH] [datadog] runtime-rs: store netkit mode from InfoData and use
+ it for L3 detection
+
+Signed-off-by: Mateo Lelong <mateo.lelong@datadoghq.com>
+---
+ .../src/network/network_with_netns.rs         | 18 ++++++++++--
+ .../src/network/utils/link/manager.rs         | 28 ++++++++++++++++---
+ .../resource/src/network/utils/link/mod.rs    |  3 +-
+ 3 files changed, 41 insertions(+), 8 deletions(-)
+
+diff --git a/src/runtime-rs/crates/resource/src/network/network_with_netns.rs b/src/runtime-rs/crates/resource/src/network/network_with_netns.rs
+index be88c48d0..2eed69fce 100644
+--- a/src/runtime-rs/crates/resource/src/network/network_with_netns.rs
++++ b/src/runtime-rs/crates/resource/src/network/network_with_netns.rs
+@@ -314,10 +314,22 @@ async fn create_endpoint(
+                 Arc::new(ret)
+             }
+             "netkit" => {
+-                // L3 mode netkit devices have no MAC address and are not supported.
+-                if attrs.hardware_addr.is_empty() {
++                let is_l3 = link
++                    .as_any()
++                    .downcast_ref::<link::Netkit>()
++                    .and_then(|n| n.mode)
++                    .map_or_else(
++                        || {
++                            attrs.hardware_addr.is_empty()
++                            // L3 devices have no MAC address, so check for all-zero.
++                            // https://github.com/torvalds/linux/blob/master/drivers/net/netkit.c
++                                || attrs.hardware_addr.iter().all(|&b| b == 0)
++                        },
++                        |m| m == netlink_packet_route::link::NetkitMode::L3,
++                    );
++                if is_l3 {
+                     return Err(anyhow!(
+-                        "netkit device {} has no MAC address (L3 mode not supported - use L2 mode or veth)",
++                        "netkit device {} is in L3 mode (not supported - use L2 mode or veth)",
+                         attrs.name
+                     ));
+                 }
+diff --git a/src/runtime-rs/crates/resource/src/network/utils/link/manager.rs b/src/runtime-rs/crates/resource/src/network/utils/link/manager.rs
+index ea885f9d4..88cdf4828 100644
+--- a/src/runtime-rs/crates/resource/src/network/utils/link/manager.rs
++++ b/src/runtime-rs/crates/resource/src/network/utils/link/manager.rs
+@@ -5,7 +5,7 @@
+ //
+ 
+ use netlink_packet_route::link::{
+-    InfoBridge, InfoData, InfoKind, LinkAttribute, LinkInfo, LinkMessage,
++    InfoBridge, InfoData, InfoKind, InfoNetkit, LinkAttribute, LinkInfo, LinkMessage, NetkitMode,
+ };
+ 
+ use super::{Link, LinkAttrs};
+@@ -150,8 +150,8 @@ fn link_info(mut infos: Vec<LinkInfo>) -> Box<dyn Link> {
+                 InfoData::Bridge(ibs) => {
+                     link = Some(Box::new(parse_bridge(ibs)));
+                 }
+-                InfoData::Netkit(_) => {
+-                    link = Some(Box::new(Netkit::default()));
++                InfoData::Netkit(nks) => {
++                    link = Some(Box::new(parse_netkit(nks)));
+                 }
+                 _ => {
+                     link = Some(Box::new(Device::default()));
+@@ -173,6 +173,17 @@ fn link_info(mut infos: Vec<LinkInfo>) -> Box<dyn Link> {
+     link.unwrap()
+ }
+ 
++fn parse_netkit(infos: Vec<InfoNetkit>) -> Netkit {
++    let mut netkit = Netkit::default();
++    for info in infos {
++        if let InfoNetkit::Mode(mode) = info {
++            netkit.mode = Some(mode);
++            break;
++        }
++    }
++    netkit
++}
++
+ fn parse_bridge(mut ibs: Vec<InfoBridge>) -> Bridge {
+     let mut bridge = Bridge::default();
+     while let Some(ib) = ibs.pop() {
+@@ -204,6 +215,9 @@ macro_rules! impl_network_dev {
+             fn r#type(&self) -> &'static str {
+                 $r_type
+             }
++            fn as_any(&self) -> &dyn std::any::Any {
++                self
++            }
+         }
+     };
+ }
+@@ -222,7 +236,13 @@ macro_rules! define_and_impl_network_dev {
+ define_and_impl_network_dev!("device", Device);
+ define_and_impl_network_dev!("tuntap", Tuntap);
+ define_and_impl_network_dev!("veth", Veth);
+-define_and_impl_network_dev!("netkit", Netkit);
++#[derive(Debug, PartialEq, Eq, Clone, Default)]
++pub struct Netkit {
++    attrs: Option<LinkAttrs>,
++    pub mode: Option<NetkitMode>,
++}
++
++impl_network_dev!("netkit", Netkit);
+ define_and_impl_network_dev!("ipvlan", IpVlan);
+ define_and_impl_network_dev!("macvlan", MacVlan);
+ define_and_impl_network_dev!("vlan", Vlan);
+diff --git a/src/runtime-rs/crates/resource/src/network/utils/link/mod.rs b/src/runtime-rs/crates/resource/src/network/utils/link/mod.rs
+index 86027f2fe..5e02dc14c 100644
+--- a/src/runtime-rs/crates/resource/src/network/utils/link/mod.rs
++++ b/src/runtime-rs/crates/resource/src/network/utils/link/mod.rs
+@@ -10,7 +10,7 @@ mod driver_info;
+ pub use driver_info::get_driver_info;
+ mod macros;
+ mod manager;
+-pub use manager::get_link_from_message;
++pub use manager::{get_link_from_message, Netkit};
+ 
+ use std::os::unix::io::RawFd;
+ 
+@@ -145,4 +145,5 @@ pub trait Link: Send + Sync {
+     fn attrs(&self) -> &LinkAttrs;
+     fn set_attrs(&mut self, attr: LinkAttrs);
+     fn r#type(&self) -> &str;
++    fn as_any(&self) -> &dyn std::any::Any;
+ }
+-- 
+2.54.0
+

@@ -1,0 +1,668 @@
+From a0d46db99e2e54fa9a8dfc55022e0cccd4ef1166 Mon Sep 17 00:00:00 2001
+From: Mateo Lelong <mateo.lelong@datadoghq.com>
+Date: Mon, 11 May 2026 13:45:24 +0200
+Subject: [PATCH] [datadog] runtime: Add support for netkit endpoints
+
+Add support for [`netkit`](https://git.kernel.org/pub/scm/linux/kernel/git/bpf/bpf-next.git/commit/?id=22360fad5889cbefe1eca695b0cc0273ab280b56) network devices similarly to how `veth` devices are currently handled.
+
+Signed-off-by: Hadrien Patte <hadrien.patte@datadoghq.com>
+---
+ src/runtime/virtcontainers/endpoint.go        |   8 +
+ src/runtime/virtcontainers/endpoint_test.go   |   9 +
+ src/runtime/virtcontainers/netkit_endpoint.go | 216 +++++++++++++++++
+ .../virtcontainers/netkit_endpoint_test.go    | 228 ++++++++++++++++++
+ src/runtime/virtcontainers/network_linux.go   |  19 +-
+ .../virtcontainers/persist/api/network.go     |   5 +
+ src/runtime/virtcontainers/qemu.go            |   2 +-
+ src/runtime/virtcontainers/qemu_arch_base.go  |   2 +-
+ 8 files changed, 483 insertions(+), 6 deletions(-)
+ create mode 100644 src/runtime/virtcontainers/netkit_endpoint.go
+ create mode 100644 src/runtime/virtcontainers/netkit_endpoint_test.go
+
+diff --git a/src/runtime/virtcontainers/endpoint.go b/src/runtime/virtcontainers/endpoint.go
+index f04fdae30..2157078e7 100644
+--- a/src/runtime/virtcontainers/endpoint.go
++++ b/src/runtime/virtcontainers/endpoint.go
+@@ -50,6 +50,9 @@ const (
+ 	// VethEndpointType is the virtual network interface.
+ 	VethEndpointType EndpointType = "virtual"
+ 
++	// NetkitEndpointType is the netkit network interface.
++	NetkitEndpointType EndpointType = "netkit"
++
+ 	// VhostUserEndpointType is the vhostuser network interface.
+ 	VhostUserEndpointType EndpointType = "vhost-user"
+ 
+@@ -85,6 +88,9 @@ func (endpointType *EndpointType) Set(value string) error {
+ 	case "virtual":
+ 		*endpointType = VethEndpointType
+ 		return nil
++	case "netkit":
++		*endpointType = NetkitEndpointType
++		return nil
+ 	case "vhost-user":
+ 		*endpointType = VhostUserEndpointType
+ 		return nil
+@@ -118,6 +124,8 @@ func (endpointType *EndpointType) String() string {
+ 		return string(PhysicalEndpointType)
+ 	case VethEndpointType:
+ 		return string(VethEndpointType)
++	case NetkitEndpointType:
++		return string(NetkitEndpointType)
+ 	case VhostUserEndpointType:
+ 		return string(VhostUserEndpointType)
+ 	case MacvlanEndpointType:
+diff --git a/src/runtime/virtcontainers/endpoint_test.go b/src/runtime/virtcontainers/endpoint_test.go
+index f9f814825..a15aedf57 100644
+--- a/src/runtime/virtcontainers/endpoint_test.go
++++ b/src/runtime/virtcontainers/endpoint_test.go
+@@ -46,6 +46,10 @@ func TestVfioEndpointTypeSet(t *testing.T) {
+ 	testEndpointTypeSet(t, "vfio", VfioEndpointType)
+ }
+ 
++func TestNetkitEndpointTypeSet(t *testing.T) {
++	testEndpointTypeSet(t, "netkit", NetkitEndpointType)
++}
++
+ func TestEndpointTypeSetFailure(t *testing.T) {
+ 	var endpointType EndpointType
+ 
+@@ -82,6 +86,11 @@ func TestMacvtapEndpointTypeString(t *testing.T) {
+ 	testEndpointTypeString(t, &endpointType, string(MacvtapEndpointType))
+ }
+ 
++func TestNetkitEndpointTypeString(t *testing.T) {
++	endpointType := NetkitEndpointType
++	testEndpointTypeString(t, &endpointType, string(NetkitEndpointType))
++}
++
+ func TestIncorrectEndpointTypeString(t *testing.T) {
+ 	var endpointType EndpointType
+ 	testEndpointTypeString(t, &endpointType, "")
+diff --git a/src/runtime/virtcontainers/netkit_endpoint.go b/src/runtime/virtcontainers/netkit_endpoint.go
+new file mode 100644
+index 000000000..9a78aa33a
+--- /dev/null
++++ b/src/runtime/virtcontainers/netkit_endpoint.go
+@@ -0,0 +1,216 @@
++//go:build linux
++
++// Copyright (c) 2025 Datadog, Inc
++//
++// SPDX-License-Identifier: Apache-2.0
++//
++
++package virtcontainers
++
++import (
++	"context"
++	"fmt"
++
++	"github.com/containernetworking/plugins/pkg/ns"
++	persistapi "github.com/kata-containers/kata-containers/src/runtime/virtcontainers/persist/api"
++	vcTypes "github.com/kata-containers/kata-containers/src/runtime/virtcontainers/types"
++)
++
++var netkitTrace = getNetworkTrace(NetkitEndpointType)
++
++// NetkitEndpoint gathers a network pair and its properties.
++type NetkitEndpoint struct {
++	EndpointType       EndpointType
++	PCIPath            vcTypes.PciPath
++	CCWDevice          *vcTypes.CcwDevice
++	EndpointProperties NetworkInfo
++	NetPair            NetworkInterfacePair
++	RxRateLimiter      bool
++	TxRateLimiter      bool
++}
++
++func createNetkitNetworkEndpoint(idx int, ifName string, interworkingModel NetInterworkingModel) (*NetkitEndpoint, error) {
++	if idx < 0 {
++		return &NetkitEndpoint{}, fmt.Errorf("invalid network endpoint index: %d", idx)
++	}
++
++	netPair, err := createNetworkInterfacePair(idx, ifName, interworkingModel)
++	if err != nil {
++		return nil, err
++	}
++
++	endpoint := &NetkitEndpoint{
++		// TODO This is too specific. We may need to create multiple
++		// end point types here and then decide how to connect them
++		// at the time of hypervisor attach and not here
++		NetPair:      netPair,
++		EndpointType: NetkitEndpointType,
++	}
++	if ifName != "" {
++		endpoint.NetPair.VirtIface.Name = ifName
++	}
++
++	return endpoint, nil
++}
++
++// Properties returns properties for the netkit interface in the network pair.
++func (endpoint *NetkitEndpoint) Properties() NetworkInfo {
++	return endpoint.EndpointProperties
++}
++
++// Name returns name of the netkit interface in the network pair.
++func (endpoint *NetkitEndpoint) Name() string {
++	return endpoint.NetPair.VirtIface.Name
++}
++
++// HardwareAddr returns the mac address that is assigned to the tap interface
++// in th network pair.
++func (endpoint *NetkitEndpoint) HardwareAddr() string {
++	return endpoint.NetPair.TAPIface.HardAddr
++}
++
++// Type identifies the endpoint as a netkit endpoint.
++func (endpoint *NetkitEndpoint) Type() EndpointType {
++	return endpoint.EndpointType
++}
++
++// PciPath returns the PCI path of the endpoint.
++func (endpoint *NetkitEndpoint) PciPath() vcTypes.PciPath {
++	return endpoint.PCIPath
++}
++
++// SetPciPath sets the PCI path of the endpoint.
++func (endpoint *NetkitEndpoint) SetPciPath(pciPath vcTypes.PciPath) {
++	endpoint.PCIPath = pciPath
++}
++
++// CcwDevice returns the CCW device of the endpoint.
++func (endpoint *NetkitEndpoint) CcwDevice() *vcTypes.CcwDevice {
++	return endpoint.CCWDevice
++}
++
++// SetCcwDevice sets the CCW device of the endpoint.
++func (endpoint *NetkitEndpoint) SetCcwDevice(ccwDev vcTypes.CcwDevice) {
++	endpoint.CCWDevice = &ccwDev
++}
++
++// NetworkPair returns the network pair of the endpoint.
++func (endpoint *NetkitEndpoint) NetworkPair() *NetworkInterfacePair {
++	return &endpoint.NetPair
++}
++
++// SetProperties sets the properties for the endpoint.
++func (endpoint *NetkitEndpoint) SetProperties(properties NetworkInfo) {
++	endpoint.EndpointProperties = properties
++}
++
++// Attach for netkit endpoint bridges the network pair and adds the
++// tap interface of the network pair to the hypervisor.
++func (endpoint *NetkitEndpoint) Attach(ctx context.Context, s *Sandbox) error {
++	span, ctx := netkitTrace(ctx, "Attach", endpoint)
++	defer span.End()
++
++	h := s.hypervisor
++	if err := xConnectVMNetwork(ctx, endpoint, h); err != nil {
++		networkLogger().WithError(err).Error("Error bridging netkit endpoint")
++		return err
++	}
++
++	return h.AddDevice(ctx, endpoint, NetDev)
++}
++
++// Detach for the netkit endpoint tears down the tap and bridge
++// created for the netkit interface.
++func (endpoint *NetkitEndpoint) Detach(ctx context.Context, netNsCreated bool, netNsPath string) error {
++	// The network namespace would have been deleted at this point
++	// if it has not been created by virtcontainers.
++	if !netNsCreated {
++		return nil
++	}
++
++	span, ctx := netkitTrace(ctx, "Detach", endpoint)
++	defer span.End()
++
++	return doNetNS(netNsPath, func(_ ns.NetNS) error {
++		return xDisconnectVMNetwork(ctx, endpoint)
++	})
++}
++
++// HotAttach for the netkit endpoint uses hot plug device
++func (endpoint *NetkitEndpoint) HotAttach(ctx context.Context, s *Sandbox) error {
++	span, ctx := netkitTrace(ctx, "HotAttach", endpoint)
++	defer span.End()
++
++	h := s.hypervisor
++	if err := xConnectVMNetwork(ctx, endpoint, h); err != nil {
++		networkLogger().WithError(err).Error("Error bridging netkit ep")
++		return err
++	}
++
++	if _, err := h.HotplugAddDevice(ctx, endpoint, NetDev); err != nil {
++		networkLogger().WithError(err).Error("Error attach netkit ep")
++		return err
++	}
++	return nil
++}
++
++// HotDetach for the netkit endpoint uses hot pull device
++func (endpoint *NetkitEndpoint) HotDetach(ctx context.Context, s *Sandbox, netNsCreated bool, netNsPath string) error {
++	if !netNsCreated {
++		return nil
++	}
++
++	span, ctx := netkitTrace(ctx, "HotDetach", endpoint)
++	defer span.End()
++
++	if err := doNetNS(netNsPath, func(_ ns.NetNS) error {
++		return xDisconnectVMNetwork(ctx, endpoint)
++	}); err != nil {
++		networkLogger().WithError(err).Warn("Error un-bridging netkit ep")
++	}
++
++	h := s.hypervisor
++	if _, err := h.HotplugRemoveDevice(ctx, endpoint, NetDev); err != nil {
++		networkLogger().WithError(err).Error("Error detach netkit ep")
++		return err
++	}
++	return nil
++}
++
++func (endpoint *NetkitEndpoint) save() persistapi.NetworkEndpoint {
++	netpair := saveNetIfPair(&endpoint.NetPair)
++
++	return persistapi.NetworkEndpoint{
++		Type: string(endpoint.Type()),
++		Netkit: &persistapi.NetkitEndpoint{
++			NetPair: *netpair,
++		},
++	}
++}
++
++func (endpoint *NetkitEndpoint) load(s persistapi.NetworkEndpoint) {
++	endpoint.EndpointType = NetkitEndpointType
++
++	if s.Netkit != nil {
++		netpair := loadNetIfPair(&s.Netkit.NetPair)
++		endpoint.NetPair = *netpair
++	}
++}
++
++func (endpoint *NetkitEndpoint) GetRxRateLimiter() bool {
++	return endpoint.RxRateLimiter
++}
++
++func (endpoint *NetkitEndpoint) SetRxRateLimiter() error {
++	endpoint.RxRateLimiter = true
++	return nil
++}
++
++func (endpoint *NetkitEndpoint) GetTxRateLimiter() bool {
++	return endpoint.TxRateLimiter
++}
++
++func (endpoint *NetkitEndpoint) SetTxRateLimiter() error {
++	endpoint.TxRateLimiter = true
++	return nil
++}
+diff --git a/src/runtime/virtcontainers/netkit_endpoint_test.go b/src/runtime/virtcontainers/netkit_endpoint_test.go
+new file mode 100644
+index 000000000..260fb73f0
+--- /dev/null
++++ b/src/runtime/virtcontainers/netkit_endpoint_test.go
+@@ -0,0 +1,228 @@
++//go:build linux
++
++// Copyright (c) 2025 Datadog, Inc
++//
++// SPDX-License-Identifier: Apache-2.0
++//
++
++package virtcontainers
++
++import (
++	"net"
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/vishvananda/netlink"
++
++	vcTypes "github.com/kata-containers/kata-containers/src/runtime/virtcontainers/types"
++)
++
++func TestCreateNetkitNetworkEndpoint(t *testing.T) {
++	assert := assert.New(t)
++	macAddr := net.HardwareAddr{0x02, 0x00, 0xCA, 0xFE, 0x00, 0x04}
++
++	expected := &NetkitEndpoint{
++		NetPair: NetworkInterfacePair{
++			TapInterface: TapInterface{
++				ID:   "uniqueTestID-4",
++				Name: "br4_kata",
++				TAPIface: NetworkInterface{
++					Name: "tap4_kata",
++				},
++			},
++			VirtIface: NetworkInterface{
++				Name:     "eth4",
++				HardAddr: macAddr.String(),
++			},
++			NetInterworkingModel: DefaultNetInterworkingModel,
++		},
++		EndpointType: NetkitEndpointType,
++	}
++
++	result, err := createNetkitNetworkEndpoint(4, "", DefaultNetInterworkingModel)
++	assert.NoError(err)
++
++	// the resulting ID  will be random - so let's overwrite to test the rest of the flow
++	result.NetPair.ID = "uniqueTestID-4"
++
++	// the resulting mac address will be random - so lets overwrite it
++	result.NetPair.VirtIface.HardAddr = macAddr.String()
++
++	assert.Exactly(result, expected)
++}
++
++func TestCreateNetkitNetworkEndpointChooseIfaceName(t *testing.T) {
++	assert := assert.New(t)
++	macAddr := net.HardwareAddr{0x02, 0x00, 0xCA, 0xFE, 0x00, 0x04}
++
++	expected := &NetkitEndpoint{
++		NetPair: NetworkInterfacePair{
++			TapInterface: TapInterface{
++				ID:   "uniqueTestID-4",
++				Name: "br4_kata",
++				TAPIface: NetworkInterface{
++					Name: "tap4_kata",
++				},
++			},
++			VirtIface: NetworkInterface{
++				Name:     "eth1",
++				HardAddr: macAddr.String(),
++			},
++			NetInterworkingModel: DefaultNetInterworkingModel,
++		},
++		EndpointType: NetkitEndpointType,
++	}
++
++	result, err := createNetkitNetworkEndpoint(4, "eth1", DefaultNetInterworkingModel)
++	assert.NoError(err)
++
++	// the resulting ID will be random - so let's overwrite to test the rest of the flow
++	result.NetPair.ID = "uniqueTestID-4"
++
++	// the resulting mac address will be random - so lets overwrite it
++	result.NetPair.VirtIface.HardAddr = macAddr.String()
++
++	assert.Exactly(result, expected)
++}
++
++func TestCreateNetkitNetworkEndpointInvalidArgs(t *testing.T) {
++	// nolint: govet
++	type endpointValues struct {
++		idx    int
++		ifName string
++	}
++
++	assert := assert.New(t)
++
++	// all elements are expected to result in failure
++	failingValues := []endpointValues{
++		{-1, "bar"},
++		{-1, ""},
++	}
++
++	for _, d := range failingValues {
++		_, err := createNetkitNetworkEndpoint(d.idx, d.ifName, DefaultNetInterworkingModel)
++		assert.Error(err)
++	}
++}
++
++func TestNetkitEndpointProperties(t *testing.T) {
++	assert := assert.New(t)
++
++	endpoint, err := createNetkitNetworkEndpoint(0, "", DefaultNetInterworkingModel)
++	assert.NoError(err)
++
++	// Test Properties
++	properties := NetworkInfo{
++		Iface: NetlinkIface{
++			LinkAttrs: netlink.LinkAttrs{
++				Name: "test-netkit",
++			},
++			Type: "netkit",
++		},
++	}
++	endpoint.SetProperties(properties)
++	assert.Equal(properties, endpoint.Properties())
++
++	// Test Name
++	assert.Equal(endpoint.NetPair.VirtIface.Name, endpoint.Name())
++
++	// Test HardwareAddr
++	assert.Equal(endpoint.NetPair.TAPIface.HardAddr, endpoint.HardwareAddr())
++
++	// Test Type
++	assert.Equal(NetkitEndpointType, endpoint.Type())
++
++	// Test NetworkPair
++	netPair := endpoint.NetworkPair()
++	assert.NotNil(netPair)
++	assert.Equal(&endpoint.NetPair, netPair)
++}
++
++func TestNetkitEndpointPciPath(t *testing.T) {
++	assert := assert.New(t)
++
++	endpoint, err := createNetkitNetworkEndpoint(0, "", DefaultNetInterworkingModel)
++	assert.NoError(err)
++
++	// Test PciPath get/set
++	testPciPath := vcTypes.PciPath{Bus: "0x01", Device: "0x02", Function: "0x03"}
++	endpoint.SetPciPath(testPciPath)
++	assert.Equal(testPciPath, endpoint.PciPath())
++}
++
++func TestNetkitEndpointCcwDevice(t *testing.T) {
++	assert := assert.New(t)
++
++	endpoint, err := createNetkitNetworkEndpoint(0, "", DefaultNetInterworkingModel)
++	assert.NoError(err)
++
++	// Test CcwDevice get/set
++	testCcwDev := vcTypes.CcwDevice{DevNo: "fe.0.0001"}
++	endpoint.SetCcwDevice(testCcwDev)
++	ccwDevice := endpoint.CcwDevice()
++	assert.NotNil(ccwDevice)
++	assert.Equal(testCcwDev, *ccwDevice)
++}
++
++func TestNetkitEndpointRateLimiters(t *testing.T) {
++	assert := assert.New(t)
++
++	endpoint, err := createNetkitNetworkEndpoint(0, "", DefaultNetInterworkingModel)
++	assert.NoError(err)
++
++	// Test RxRateLimiter
++	assert.False(endpoint.GetRxRateLimiter())
++	err = endpoint.SetRxRateLimiter()
++	assert.NoError(err)
++	assert.True(endpoint.GetRxRateLimiter())
++
++	// Test TxRateLimiter
++	assert.False(endpoint.GetTxRateLimiter())
++	err = endpoint.SetTxRateLimiter()
++	assert.NoError(err)
++	assert.True(endpoint.GetTxRateLimiter())
++}
++
++func TestNetkitEndpointSaveLoad(t *testing.T) {
++	assert := assert.New(t)
++	macAddr := net.HardwareAddr{0x02, 0x00, 0xCA, 0xFE, 0x00, 0x05}
++
++	endpoint := &NetkitEndpoint{
++		NetPair: NetworkInterfacePair{
++			TapInterface: TapInterface{
++				ID:   "test-netkit-id",
++				Name: "br5_kata",
++				TAPIface: NetworkInterface{
++					Name:     "tap5_kata",
++					HardAddr: macAddr.String(),
++				},
++			},
++			VirtIface: NetworkInterface{
++				Name:     "eth5",
++				HardAddr: macAddr.String(),
++			},
++			NetInterworkingModel: NetXConnectTCFilterModel,
++		},
++		EndpointType: NetkitEndpointType,
++	}
++
++	// Save the endpoint
++	saved := endpoint.save()
++	assert.Equal(string(NetkitEndpointType), saved.Type)
++	assert.NotNil(saved.Netkit)
++	assert.Equal("test-netkit-id", saved.Netkit.NetPair.TapInterface.ID)
++	assert.Equal("br5_kata", saved.Netkit.NetPair.TapInterface.Name)
++	assert.Equal("eth5", saved.Netkit.NetPair.VirtIface.Name)
++
++	// Load into a new endpoint
++	newEndpoint := &NetkitEndpoint{}
++	newEndpoint.load(saved)
++
++	assert.Equal(NetkitEndpointType, newEndpoint.EndpointType)
++	assert.Equal(endpoint.NetPair.ID, newEndpoint.NetPair.ID)
++	assert.Equal(endpoint.NetPair.Name, newEndpoint.NetPair.Name)
++	assert.Equal(endpoint.NetPair.TAPIface.Name, newEndpoint.NetPair.TAPIface.Name)
++	assert.Equal(endpoint.NetPair.VirtIface.Name, newEndpoint.NetPair.VirtIface.Name)
++	assert.Equal(endpoint.NetPair.NetInterworkingModel, newEndpoint.NetPair.NetInterworkingModel)
++}
+diff --git a/src/runtime/virtcontainers/network_linux.go b/src/runtime/virtcontainers/network_linux.go
+index 9bee440a0..8308daa0a 100644
+--- a/src/runtime/virtcontainers/network_linux.go
++++ b/src/runtime/virtcontainers/network_linux.go
+@@ -100,6 +100,8 @@ func LoadNetwork(netInfo persistapi.NetworkInfo) Network {
+ 			ep = &PhysicalEndpoint{}
+ 		case VethEndpointType:
+ 			ep = &VethEndpoint{}
++		case NetkitEndpointType:
++			ep = &NetkitEndpoint{}
+ 		case VhostUserEndpointType:
+ 			ep = &VhostUserEndpoint{}
+ 		case MacvlanEndpointType:
+@@ -203,6 +205,9 @@ func (n *LinuxNetwork) addSingleEndpoint(ctx context.Context, s *Sandbox, netInf
+ 		} else if netInfo.Iface.Type == "veth" {
+ 			networkLogger().Info("veth interface found")
+ 			endpoint, err = createVethNetworkEndpoint(idx, netInfo.Iface.Name, n.interworkingModel)
++		} else if netInfo.Iface.Type == "netkit" {
++			networkLogger().Info("netkit interface found")
++			endpoint, err = createNetkitNetworkEndpoint(idx, netInfo.Iface.Name, n.interworkingModel)
+ 		} else if netInfo.Iface.Type == "ipvlan" {
+ 			networkLogger().Info("ipvlan interface found")
+ 			endpoint, err = createIPVlanNetworkEndpoint(idx, netInfo.Iface.Name)
+@@ -808,6 +813,8 @@ func getLinkForEndpoint(endpoint Endpoint, netHandle *netlink.Handle) (netlink.L
+ 		return getLinkByName(netHandle, name, &netlink.IPVlan{})
+ 	case *TuntapEndpoint:
+ 		return getLinkByName(netHandle, name, &netlink.Tuntap{})
++	case *NetkitEndpoint:
++		return getLinkByName(netHandle, name, &netlink.Netkit{})
+ 	default:
+ 		return nil, fmt.Errorf("Unexpected endpointType %s", endpoint.Type())
+ 	}
+@@ -828,6 +835,10 @@ func getLinkByName(netHandle *netlink.Handle, name string, expectedLink netlink.
+ 		if l, ok := link.(*netlink.Veth); ok {
+ 			return l, nil
+ 		}
++	case (&netlink.Netkit{}).Type():
++		if l, ok := link.(*netlink.Netkit); ok {
++			return l, nil
++		}
+ 	case (&netlink.Macvtap{}).Type():
+ 		if l, ok := link.(*netlink.Macvtap); ok {
+ 			return l, nil
+@@ -1449,7 +1460,7 @@ func networkInfoFromLink(handle *netlink.Handle, link netlink.Link) (NetworkInfo
+ func addRxRateLimiter(endpoint Endpoint, maxRate uint64) error {
+ 	var linkName string
+ 	switch ep := endpoint.(type) {
+-	case *VethEndpoint, *IPVlanEndpoint, *TuntapEndpoint, *MacvlanEndpoint:
++	case *VethEndpoint, *NetkitEndpoint, *IPVlanEndpoint, *TuntapEndpoint, *MacvlanEndpoint:
+ 		netPair := endpoint.NetworkPair()
+ 		linkName = netPair.TAPIface.Name
+ 	case *MacvtapEndpoint, *TapEndpoint:
+@@ -1606,7 +1617,7 @@ func addTxRateLimiter(endpoint Endpoint, maxRate uint64) error {
+ 	var netPair *NetworkInterfacePair
+ 	var linkName string
+ 	switch ep := endpoint.(type) {
+-	case *VethEndpoint, *IPVlanEndpoint, *TuntapEndpoint, *MacvlanEndpoint:
++	case *VethEndpoint, *NetkitEndpoint, *IPVlanEndpoint, *TuntapEndpoint, *MacvlanEndpoint:
+ 		netPair = endpoint.NetworkPair()
+ 		switch netPair.NetInterworkingModel {
+ 		// For those endpoints we've already used tcfilter as their inter-networking model,
+@@ -1679,7 +1690,7 @@ func removeHTBQdisc(linkName string) error {
+ func removeRxRateLimiter(endpoint Endpoint, networkNSPath string) error {
+ 	var linkName string
+ 	switch ep := endpoint.(type) {
+-	case *VethEndpoint, *IPVlanEndpoint, *TuntapEndpoint, *MacvlanEndpoint:
++	case *VethEndpoint, *NetkitEndpoint, *IPVlanEndpoint, *TuntapEndpoint, *MacvlanEndpoint:
+ 		netPair := endpoint.NetworkPair()
+ 		linkName = netPair.TAPIface.Name
+ 	case *MacvtapEndpoint, *TapEndpoint:
+@@ -1700,7 +1711,7 @@ func removeRxRateLimiter(endpoint Endpoint, networkNSPath string) error {
+ func removeTxRateLimiter(endpoint Endpoint, networkNSPath string) error {
+ 	var linkName string
+ 	switch ep := endpoint.(type) {
+-	case *VethEndpoint, *IPVlanEndpoint, *TuntapEndpoint, *MacvlanEndpoint:
++	case *VethEndpoint, *NetkitEndpoint, *IPVlanEndpoint, *TuntapEndpoint, *MacvlanEndpoint:
+ 		netPair := endpoint.NetworkPair()
+ 		switch netPair.NetInterworkingModel {
+ 		case NetXConnectTCFilterModel:
+diff --git a/src/runtime/virtcontainers/persist/api/network.go b/src/runtime/virtcontainers/persist/api/network.go
+index 256ce807b..9dc484d8e 100644
+--- a/src/runtime/virtcontainers/persist/api/network.go
++++ b/src/runtime/virtcontainers/persist/api/network.go
+@@ -68,6 +68,10 @@ type VethEndpoint struct {
+ 	NetPair NetworkInterfacePair
+ }
+ 
++type NetkitEndpoint struct {
++	NetPair NetworkInterfacePair
++}
++
+ type IPVlanEndpoint struct {
+ 	NetPair NetworkInterfacePair
+ }
+@@ -88,6 +92,7 @@ type NetworkEndpoint struct {
+ 	// One and only one of these below are not nil according to Type.
+ 	Physical  *PhysicalEndpoint  `json:",omitempty"`
+ 	Veth      *VethEndpoint      `json:",omitempty"`
++	Netkit    *NetkitEndpoint    `json:",omitempty"`
+ 	VhostUser *VhostUserEndpoint `json:",omitempty"`
+ 	Macvlan   *MacvlanEndpoint   `json:",omitempty"`
+ 	Macvtap   *MacvtapEndpoint   `json:",omitempty"`
+diff --git a/src/runtime/virtcontainers/qemu.go b/src/runtime/virtcontainers/qemu.go
+index 4066c85e4..f53382f8e 100644
+--- a/src/runtime/virtcontainers/qemu.go
++++ b/src/runtime/virtcontainers/qemu.go
+@@ -1991,7 +1991,7 @@ func (q *qemu) hotplugNetDevice(ctx context.Context, endpoint Endpoint, op Opera
+ 	var tap TapInterface
+ 
+ 	switch endpoint.Type() {
+-	case VethEndpointType, IPVlanEndpointType, MacvlanEndpointType, TuntapEndpointType:
++	case VethEndpointType, NetkitEndpointType, IPVlanEndpointType, MacvlanEndpointType, TuntapEndpointType:
+ 		tap = endpoint.NetworkPair().TapInterface
+ 	case TapEndpointType:
+ 		drive := endpoint.(*TapEndpoint)
+diff --git a/src/runtime/virtcontainers/qemu_arch_base.go b/src/runtime/virtcontainers/qemu_arch_base.go
+index aacb97b7c..cc2ef7875 100644
+--- a/src/runtime/virtcontainers/qemu_arch_base.go
++++ b/src/runtime/virtcontainers/qemu_arch_base.go
+@@ -583,7 +583,7 @@ func networkModelToQemuType(model NetInterworkingModel) govmmQemu.NetDeviceType
+ func genericNetwork(endpoint Endpoint, vhost, nestedRun bool, index int) (govmmQemu.NetDevice, error) {
+ 	var d govmmQemu.NetDevice
+ 	switch ep := endpoint.(type) {
+-	case *VethEndpoint, *MacvlanEndpoint, *IPVlanEndpoint:
++	case *VethEndpoint, *NetkitEndpoint, *MacvlanEndpoint, *IPVlanEndpoint:
+ 		netPair := ep.NetworkPair()
+ 		d = govmmQemu.NetDevice{
+ 			Type:          networkModelToQemuType(netPair.NetInterworkingModel),
+-- 
+2.54.0
+

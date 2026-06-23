@@ -1,0 +1,210 @@
+From 482592b5213862df41daef1c9e50a18f0d421e7b Mon Sep 17 00:00:00 2001
+From: Mateo Lelong <mateo.lelong@datadoghq.com>
+Date: Fri, 22 May 2026 11:51:15 +0200
+Subject: [PATCH] [datadog] kernel: add datadog kernel modules
+
+---
+ .gitlab-ci.yml                                |  1 +
+ tools/packaging/kernel/build-kernel.sh        |  9 +++++
+ .../configs/fragments/common/network.conf     |  3 +-
+ .../configs/fragments/datadog/ebpf.conf       | 35 +++++++++++++++++++
+ .../kernel/configs/fragments/datadog/fs.conf  |  7 ++++
+ .../fragments/datadog/module_signing.conf     | 28 +++++++++++++++
+ .../configs/fragments/datadog/network.conf    |  9 +++++
+ .../configs/fragments/datadog/storage.conf    | 13 +++++++
+ .../kernel/configs/fragments/debug/debug.conf |  1 -
+ 9 files changed, 104 insertions(+), 2 deletions(-)
+ create mode 100644 tools/packaging/kernel/configs/fragments/datadog/ebpf.conf
+ create mode 100644 tools/packaging/kernel/configs/fragments/datadog/fs.conf
+ create mode 100644 tools/packaging/kernel/configs/fragments/datadog/module_signing.conf
+ create mode 100644 tools/packaging/kernel/configs/fragments/datadog/network.conf
+ create mode 100644 tools/packaging/kernel/configs/fragments/datadog/storage.conf
+
+diff --git a/.gitlab-ci.yml b/.gitlab-ci.yml
+index 68513f146..bf51a8947 100644
+--- a/.gitlab-ci.yml
++++ b/.gitlab-ci.yml
+@@ -7,6 +7,7 @@ variables:
+   KUBERNETES_MEMORY_REQUEST: "20Gi"
+   KUBERNETES_MEMORY_LIMIT: "40Gi"
+   KERNEL_DEBUG_ENABLED: "yes"
++  KERNEL_DATADOG_ENABLED: "yes"
+ 
+ stages:
+   - ci-image
+diff --git a/tools/packaging/kernel/build-kernel.sh b/tools/packaging/kernel/build-kernel.sh
+index b82cc393a..764dfb3ff 100755
+--- a/tools/packaging/kernel/build-kernel.sh
++++ b/tools/packaging/kernel/build-kernel.sh
+@@ -35,6 +35,7 @@ readonly VENDOR_INTEL="intel"
+ readonly VENDOR_NVIDIA="nvidia"
+ readonly KBUILD_SIGN_PIN=${KBUILD_SIGN_PIN:-""}
+ readonly KERNEL_DEBUG_ENABLED=${KERNEL_DEBUG_ENABLED:-"no"}
++readonly KERNEL_DATADOG_ENABLED=${KERNEL_DATADOG_ENABLED:-"no"}
+ 
+ #Path to kernel directory
+ kernel_path=""
+@@ -329,6 +330,14 @@ get_kernel_frag_path() {
+ 		all_configs="${all_configs} ${debug_configs}"
+ 	fi
+ 
++	if [[ ${KERNEL_DATADOG_ENABLED} == "yes" ]]; then
++		info "Enable Datadog kernel config"
++		local datadog_path="${arch_path}/../datadog"
++		local datadog_configs
++		datadog_configs="$(find "${datadog_path}" -name '*.conf')"
++		all_configs="${all_configs} ${datadog_configs}"
++	fi
++
+ 	if [[ "${force_setup_generate_config}" == "true" ]]; then
+ 		info "Remove existing config ${config_path} due to '-f'"
+ 		[[ -f "${config_path}" ]] && rm -f "${config_path}"
+diff --git a/tools/packaging/kernel/configs/fragments/common/network.conf b/tools/packaging/kernel/configs/fragments/common/network.conf
+index 8ce90bf8c..29f76a58c 100644
+--- a/tools/packaging/kernel/configs/fragments/common/network.conf
++++ b/tools/packaging/kernel/configs/fragments/common/network.conf
+@@ -80,7 +80,8 @@ CONFIG_MACVLAN=y
+ CONFIG_MACVTAP=y
+ CONFIG_BRIDGE_NETFILTER=y
+ CONFIG_VXLAN=y
+-CONFIG_INET_ESP=y
++# IPsec ESP is not required by default Kata workloads. Keep it disabled.
++# CONFIG_INET_ESP is not set
+ 
+ 
+ # Need netfilter support for iptables
+diff --git a/tools/packaging/kernel/configs/fragments/datadog/ebpf.conf b/tools/packaging/kernel/configs/fragments/datadog/ebpf.conf
+new file mode 100644
+index 000000000..82ccf5448
+--- /dev/null
++++ b/tools/packaging/kernel/configs/fragments/datadog/ebpf.conf
+@@ -0,0 +1,35 @@
++# Datadog-specific eBPF and tracing enhancements for system probe.
++# Extends debug/ebpf.conf — only include this fragment alongside it.
++
++# Loadable modules — BPF JIT requires MODULES; also needed for kmod-based tooling
++CONFIG_MODULES=y
++CONFIG_MODULE_COMPRESS_NONE=y
++
++# OID registry — required for ASN.1/X.509 parsing used by module verification
++CONFIG_OID_REGISTRY=y
++
++# Always JIT-compile BPF programs for consistent and predictable performance
++CONFIG_BPF_JIT_ALWAYS_ON=y
++CONFIG_BPF_JIT_DEFAULT_ON=y
++
++# Kernel return probes — required for uretprobes used by system probe
++CONFIG_KRETPROBES=y
++
++# Core tracing infrastructure — required by perf events and BPF_EVENTS
++CONFIG_TRACEPOINTS=y
++CONFIG_TRACING=y
++CONFIG_EVENT_TRACING=y
++CONFIG_GENERIC_TRACER=y
++CONFIG_RING_BUFFER=y
++
++# Dynamic events and probe infrastructure — required for kprobe/uprobe event creation
++CONFIG_DYNAMIC_EVENTS=y
++CONFIG_PROBE_EVENTS=y
++
++# Disable branch profiling overhead (not needed, avoids sampling noise)
++CONFIG_BRANCH_PROFILE_NONE=y
++
++# ftrace extensions — direct call patching and call graph tracing for system probe
++CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS=y
++CONFIG_DYNAMIC_FTRACE_WITH_ARGS=y
++CONFIG_FUNCTION_GRAPH_TRACER=y
+diff --git a/tools/packaging/kernel/configs/fragments/datadog/fs.conf b/tools/packaging/kernel/configs/fragments/datadog/fs.conf
+new file mode 100644
+index 000000000..b87c8d101
+--- /dev/null
++++ b/tools/packaging/kernel/configs/fragments/datadog/fs.conf
+@@ -0,0 +1,7 @@
++# FAT/VFAT — required to mount EFI and Windows-formatted volumes from the agent
++CONFIG_FAT_FS=y
++CONFIG_VFAT_FS=y
++
++# National Language Support codepages required by VFAT for filename encoding
++CONFIG_NLS_CODEPAGE_437=y
++CONFIG_NLS_ISO8859_1=y
+diff --git a/tools/packaging/kernel/configs/fragments/datadog/module_signing.conf b/tools/packaging/kernel/configs/fragments/datadog/module_signing.conf
+new file mode 100644
+index 000000000..cf6cfdf8d
+--- /dev/null
++++ b/tools/packaging/kernel/configs/fragments/datadog/module_signing.conf
+@@ -0,0 +1,28 @@
++# Datadog module signing — SHA256 + RSA key, overrides SHA512 in signing/module_signing.conf
++
++# Master switch — enables module signature verification
++CONFIG_MODULE_SIG=y
++CONFIG_MODULE_SIG_ALL=y
++
++# Use SHA256 instead of SHA512 to match the Datadog signing infrastructure
++CONFIG_MODULE_SIG_SHA256=y
++CONFIG_MODULE_SIG_HASH="sha256"
++
++# RSA signing key used to sign Datadog out-of-tree modules
++CONFIG_MODULE_SIG_KEY="certs/signing_key.pem"
++CONFIG_MODULE_SIG_KEY_TYPE_RSA=y
++
++# Asymmetric key infrastructure — required by MODULE_SIG and MODULE_SIG_KEY_TYPE_RSA
++CONFIG_CRYPTO_AKCIPHER=y
++CONFIG_ASYMMETRIC_KEY_TYPE=y
++CONFIG_ASYMMETRIC_PUBLIC_KEY_SUBTYPE=y
++CONFIG_X509_CERTIFICATE_PARSER=y
++CONFIG_PKCS7_MESSAGE_PARSER=y
++
++# Trusted keyring — required for verifying module signatures at load time
++CONFIG_SYSTEM_TRUSTED_KEYRING=y
++CONFIG_SYSTEM_TRUSTED_KEYS=""
++
++# Big-integer math library — required by the RSA implementation
++CONFIG_CLZ_TAB=y
++CONFIG_MPILIB=y
+diff --git a/tools/packaging/kernel/configs/fragments/datadog/network.conf b/tools/packaging/kernel/configs/fragments/datadog/network.conf
+new file mode 100644
+index 000000000..974ae2d6c
+--- /dev/null
++++ b/tools/packaging/kernel/configs/fragments/datadog/network.conf
+@@ -0,0 +1,9 @@
++# Netkit virtual devices — used by system probe for eBPF-based network visibility
++CONFIG_NETKIT=y
++
++# vhost vsock — guest-side of the virtio socket device, needed for system probe
++# communication inside the microVM
++CONFIG_VHOST_VSOCK=y
++
++# emissary dummy interface
++CONFIG_DUMMY=y
+diff --git a/tools/packaging/kernel/configs/fragments/datadog/storage.conf b/tools/packaging/kernel/configs/fragments/datadog/storage.conf
+new file mode 100644
+index 000000000..ab2481ada
+--- /dev/null
++++ b/tools/packaging/kernel/configs/fragments/datadog/storage.conf
+@@ -0,0 +1,13 @@
++# Network block device — used to attach remote volumes to the agent sandbox
++CONFIG_BLK_DEV_NBD=y
++
++# MD (RAID) and device-mapper — required by container runtimes using devicemapper storage
++CONFIG_MD=y
++CONFIG_BLK_DEV_DM_BUILTIN=y
++CONFIG_BLK_DEV_DM=y
++
++# Btrfs — required for container image layers using btrfs storage driver
++CONFIG_BTRFS_FS=y
++
++# F2FS — flash-optimized filesystem, needed for agent storage on SSD-backed volumes
++CONFIG_F2FS_FS=y
+diff --git a/tools/packaging/kernel/configs/fragments/debug/debug.conf b/tools/packaging/kernel/configs/fragments/debug/debug.conf
+index 1ebc115df..960d1ba76 100644
+--- a/tools/packaging/kernel/configs/fragments/debug/debug.conf
++++ b/tools/packaging/kernel/configs/fragments/debug/debug.conf
+@@ -8,5 +8,4 @@ CONFIG_IKCONFIG_PROC=y
+ # Enable debugging features for the kernel
+ CONFIG_DEBUG_INFO=y
+ CONFIG_DEBUG_KERNEL=y
+-CONFIG_DEBUG_FS=y
+ CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT=y
+-- 
+2.54.0
+

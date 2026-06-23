@@ -1,0 +1,46 @@
+From 7002b47d17e8a035ddcbcea222863851b30b8f4a Mon Sep 17 00:00:00 2001
+From: Eric Mountain <eric.mountain@datadoghq.com>
+Date: Thu, 21 Aug 2025 18:11:23 +0200
+Subject: [PATCH] [datadog] runtime: fixes early closed stdout/err on exec w/o
+ stdin option (#26)
+
+An early call to closing the stdin channel made the stdout & stderr also closed.
+This waits for stdout & stderr to be properly finished by reading the whole buffer before closing everything.
+On the other, this also fixes a race condition where it was impossible to run multiple execs until the other one was over.
+This moves the lock only where it is necessary without locking exec processes.
+
+Fixes #10387
+
+Signed-off-by: Maxime Bertin <mbertin@luccasoftware.com>
+Co-authored-by: Maxime Bertin <mbertin@luccasoftware.com>
+---
+ src/runtime/virtcontainers/iostream.go | 8 --------
+ 1 file changed, 8 deletions(-)
+
+diff --git a/src/runtime/virtcontainers/iostream.go b/src/runtime/virtcontainers/iostream.go
+index 691467009..0345009f3 100644
+--- a/src/runtime/virtcontainers/iostream.go
++++ b/src/runtime/virtcontainers/iostream.go
+@@ -78,19 +78,11 @@ func (s *stdinStream) Close() error {
+ }
+ 
+ func (s *stdoutStream) Read(data []byte) (n int, err error) {
+-	if s.closed {
+-		return 0, errors.New("stream closed")
+-	}
+-
+ 	// can not pass context to Read(), so use background context
+ 	return s.sandbox.agent.readProcessStdout(context.Background(), s.container, s.process, data)
+ }
+ 
+ func (s *stderrStream) Read(data []byte) (n int, err error) {
+-	if s.closed {
+-		return 0, errors.New("stream closed")
+-	}
+-
+ 	// can not pass context to Read(), so use background context
+ 	return s.sandbox.agent.readProcessStderr(context.Background(), s.container, s.process, data)
+ }
+-- 
+2.54.0
+

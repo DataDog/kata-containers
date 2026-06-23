@@ -1,0 +1,340 @@
+From b132a08ea1fce2e2b667dac0d066fd37b70706bd Mon Sep 17 00:00:00 2001
+From: Mateo Lelong <mateo.lelong@datadoghq.com>
+Date: Fri, 22 May 2026 11:28:44 +0200
+Subject: [PATCH] [datadog] shim: sandbox size based on cpu shares
+
+---
+ src/libs/kata-types/src/annotations/mod.rs    | 13 +++-
+ .../crates/resource/src/cpu_mem/cpu.rs        | 17 +++++
+ .../resource/src/cpu_mem/initial_size.rs      | 76 ++++++++++++++++++-
+ src/runtime/pkg/oci/utils.go                  | 32 +++++---
+ src/runtime/virtcontainers/sandbox.go         |  2 +-
+ src/runtime/virtcontainers/utils/utils.go     |  8 +-
+ .../virtcontainers/utils/utils_test.go        | 16 +++-
+ 7 files changed, 143 insertions(+), 21 deletions(-)
+
+diff --git a/src/libs/kata-types/src/annotations/mod.rs b/src/libs/kata-types/src/annotations/mod.rs
+index 271872d78..7579cd981 100644
+--- a/src/libs/kata-types/src/annotations/mod.rs
++++ b/src/libs/kata-types/src/annotations/mod.rs
+@@ -17,8 +17,9 @@ use crate::config::TomlConfig;
+ use crate::initdata::add_hypervisor_initdata_overrides;
+ use crate::sl;
+ 
+-use self::cri_containerd::{SANDBOX_CPU_PERIOD_KEY, SANDBOX_CPU_QUOTA_KEY, SANDBOX_MEM_KEY};
+-
++use self::cri_containerd::{
++    SANDBOX_CPU_PERIOD_KEY, SANDBOX_CPU_QUOTA_KEY, SANDBOX_CPU_SHARE_KEY, SANDBOX_MEM_KEY,
++};
+ /// CRI-containerd specific annotations.
+ pub mod cri_containerd;
+ 
+@@ -461,6 +462,14 @@ impl Annotation {
+         value.unwrap_or(0)
+     }
+ 
++    /// Get the annotation of CPU shares for sandbox
++    pub fn get_sandbox_cpu_shares(&self) -> u64 {
++        let value = self
++            .get_value::<u64>(SANDBOX_CPU_SHARE_KEY)
++            .unwrap_or(Some(0));
++        value.unwrap_or(0)
++    }
++
+     /// Get the annotation of memory for sandbox
+     pub fn get_sandbox_mem(&self) -> i64 {
+         let value = self.get_value::<i64>(SANDBOX_MEM_KEY).unwrap_or(Some(0));
+diff --git a/src/runtime-rs/crates/resource/src/cpu_mem/cpu.rs b/src/runtime-rs/crates/resource/src/cpu_mem/cpu.rs
+index 73c8f499f..0e3dec1a3 100644
+--- a/src/runtime-rs/crates/resource/src/cpu_mem/cpu.rs
++++ b/src/runtime-rs/crates/resource/src/cpu_mem/cpu.rs
+@@ -168,6 +168,23 @@ impl CpuResource {
+             return Ok(cpuset_vcpu.len() as f32);
+         }
+ 
++        // Fallback to CPU shares when quota and cpuset are both absent.
++        // This handles pods with no resource limits but with CPU shares set.
++        if total_quota == 0.0 && cpuset_vcpu.is_empty() {
++            let total_shares: u64 = resources
++                .values()
++                .map(|cpu_resource| cpu_resource.shares())
++                .sum();
++            if total_shares > 0 {
++                let shares_vcpu = total_shares as f32 / 1024.0;
++                info!(
++                    sl!(),
++                    "(from cpu_shares) get vcpus # {}", shares_vcpu
++                );
++                return Ok(shares_vcpu.max(1.0));
++            }
++        }
++
+         // When quota is set: calculate vCPUs as quota/period after normalization
+         if total_quota > 0.0 && max_period > 0.0 {
+             let quota_vcpu = total_quota / max_period;
+diff --git a/src/runtime-rs/crates/resource/src/cpu_mem/initial_size.rs b/src/runtime-rs/crates/resource/src/cpu_mem/initial_size.rs
+index 4c35bc09f..5bd08419f 100644
+--- a/src/runtime-rs/crates/resource/src/cpu_mem/initial_size.rs
++++ b/src/runtime-rs/crates/resource/src/cpu_mem/initial_size.rs
+@@ -32,7 +32,7 @@ impl TryFrom<&HashMap<String, String>> for InitialSize {
+ 
+         let annotation = Annotation::new(an.clone());
+         let (period, quota, memory) =
+-            get_sizing_info(annotation).context("failed to get sizing info")?;
++            get_sizing_info(&annotation).context("failed to get sizing info")?;
+         let mut cpu = oci::LinuxCpu::default();
+         cpu.set_period(Some(period));
+         cpu.set_quota(Some(quota));
+@@ -42,6 +42,13 @@ impl TryFrom<&HashMap<String, String>> for InitialSize {
+         if let Ok(cpu_resource) = LinuxContainerCpuResources::try_from(&cpu) {
+             vcpu = get_nr_vcpu(&cpu_resource);
+         }
++
++        // When neither quota/period nor cpuset constrain CPU, fall back to CPU shares annotation
++        let shares = annotation.get_sandbox_cpu_shares();
++        if vcpu == 0.0 && shares > 0 {
++            vcpu = shares as f32 / 1024.0;
++        }
++
+         let mem_mb = convert_memory_to_mb(memory);
+ 
+         Ok(Self {
+@@ -193,7 +200,7 @@ fn convert_memory_to_mb(memory_in_byte: i64) -> u32 {
+ 
+ // from the upper layer runtime's annotation (e.g. crio, k8s), get the *cpu quota,
+ // cpu period and memory limit* for a sandbox/container
+-fn get_sizing_info(annotation: Annotation) -> Result<(u64, i64, i64)> {
++fn get_sizing_info(annotation: &Annotation) -> Result<(u64, i64, i64)> {
+     // since we are *adding* our result to the config, a value of 0 will cause no change
+     // and if the annotation is not assigned (but static resource management is), we will
+     // log a *warning* to fill that with zero value
+@@ -269,6 +276,71 @@ mod tests {
+         .to_vec()
+     }
+ 
++    // Test that sandbox CPU-shares annotation is used as vcpu fallback when
++    // quota and period are absent.
++    #[test]
++    fn test_initial_size_sandbox_cpu_shares_fallback() {
++        let cases: &[(&str, u64, f32)] = &[
++            ("1024 shares = 1.0 vcpu", 1024, 1.0),
++            ("2048 shares = 2.0 vcpu", 2048, 2.0),
++            ("512 shares = 0.5 vcpu", 512, 0.5),
++            ("0 shares = 0.0 vcpu (no fallback)", 0, 0.0),
++        ];
++
++        for (desc, shares, expected_vcpu) in cases {
++            let annotations = HashMap::from([
++                (
++                    cri_containerd::CONTAINER_TYPE_LABEL_KEY.to_string(),
++                    cri_containerd::SANDBOX.to_string(),
++                ),
++                (
++                    cri_containerd::SANDBOX_CPU_SHARE_KEY.to_string(),
++                    format!("{}", shares),
++                ),
++            ]);
++
++            let initial_size = InitialSize::try_from(&annotations).unwrap();
++            assert_eq!(
++                initial_size.vcpu, *expected_vcpu,
++                "{}: got vcpu={}, expected {}",
++                desc, initial_size.vcpu, expected_vcpu
++            );
++        }
++    }
++
++    // Verify quota/period take precedence over shares when both are present.
++    #[test]
++    fn test_initial_size_sandbox_quota_wins_over_shares() {
++        let annotations = HashMap::from([
++            (
++                cri_containerd::CONTAINER_TYPE_LABEL_KEY.to_string(),
++                cri_containerd::SANDBOX.to_string(),
++            ),
++            (
++                cri_containerd::SANDBOX_CPU_PERIOD_KEY.to_string(),
++                "100000".to_string(),
++            ),
++            (
++                cri_containerd::SANDBOX_CPU_QUOTA_KEY.to_string(),
++                "220000".to_string(),
++            ),
++            // shares set too - quota should win
++            (
++                cri_containerd::SANDBOX_CPU_SHARE_KEY.to_string(),
++                "4096".to_string(), // would be 4.0 if shares were used
++            ),
++        ]);
++
++        let initial_size = InitialSize::try_from(&annotations).unwrap();
++        // 220_000/100_000 = 2.2 -> ceil = 3.0, not 4.0 from shares
++        assert_eq!(
++            initial_size.vcpu.ceil(),
++            3.0,
++            "quota should take precedence over shares, got vcpu={}",
++            initial_size.vcpu
++        );
++    }
++
+     #[test]
+     fn test_initial_size_sandbox() {
+         let tests = get_test_data();
+diff --git a/src/runtime/pkg/oci/utils.go b/src/runtime/pkg/oci/utils.go
+index b09a97e99..835265e16 100644
+--- a/src/runtime/pkg/oci/utils.go
++++ b/src/runtime/pkg/oci/utils.go
+@@ -1457,7 +1457,7 @@ func (a *annotationConfiguration) setFloat32WithCheck(f func(float32) error) err
+ // be added to the VM if sandbox annotations are provided with this sizing details
+ func CalculateSandboxSizing(spec *specs.Spec) (numCPU float32, memSizeMB uint32) {
+ 	var memory, quota int64
+-	var period uint64
++	var period, shares uint64
+ 	var err error
+ 
+ 	if spec == nil || spec.Annotations == nil {
+@@ -1488,6 +1488,15 @@ func CalculateSandboxSizing(spec *specs.Spec) (numCPU float32, memSizeMB uint32)
+ 		}
+ 	}
+ 
++	annotation, ok = spec.Annotations[ctrAnnotations.SandboxCPUShares]
++	if ok {
++		shares, err = strconv.ParseUint(annotation, 10, 64)
++		if err != nil {
++			ociLog.Warningf("sandbox-sizing: failure to parse SandboxCPUShares: %s", annotation)
++			shares = 0
++		}
++	}
++
+ 	annotation, ok = spec.Annotations[ctrAnnotations.SandboxMem]
+ 	if ok {
+ 		memory, err = strconv.ParseInt(annotation, 10, 64)
+@@ -1497,14 +1506,14 @@ func CalculateSandboxSizing(spec *specs.Spec) (numCPU float32, memSizeMB uint32)
+ 		}
+ 	}
+ 
+-	return calculateVMResources(period, quota, memory)
++	return calculateVMResources(period, quota, shares, memory)
+ }
+ 
+ // CalculateContainerSizing will calculate the number of CPUs and amount of memory that is needed
+ // based on the provided LinuxResources
+ func CalculateContainerSizing(spec *specs.Spec) (numCPU float32, memSizeMB uint32) {
+ 	var memory, quota int64
+-	var period uint64
++	var period, shares uint64
+ 
+ 	if spec == nil || spec.Linux == nil || spec.Linux.Resources == nil {
+ 		return 0, 0
+@@ -1512,20 +1521,25 @@ func CalculateContainerSizing(spec *specs.Spec) (numCPU float32, memSizeMB uint3
+ 
+ 	resources := spec.Linux.Resources
+ 
+-	if resources.CPU != nil && resources.CPU.Quota != nil && resources.CPU.Period != nil {
+-		quota = *resources.CPU.Quota
+-		period = *resources.CPU.Period
++	if resources.CPU != nil {
++		if resources.CPU.Quota != nil && resources.CPU.Period != nil {
++			quota = *resources.CPU.Quota
++			period = *resources.CPU.Period
++		}
++		if resources.CPU.Shares != nil {
++			shares = *resources.CPU.Shares
++		}
+ 	}
+ 
+ 	if resources.Memory != nil && resources.Memory.Limit != nil {
+ 		memory = *resources.Memory.Limit
+ 	}
+ 
+-	return calculateVMResources(period, quota, memory)
++	return calculateVMResources(period, quota, shares, memory)
+ }
+ 
+-func calculateVMResources(period uint64, quota int64, memory int64) (numCPU float32, memSizeMB uint32) {
+-	numCPU = vcutils.CalculateCPUsF(quota, period)
++func calculateVMResources(period uint64, quota int64, shares uint64, memory int64) (numCPU float32, memSizeMB uint32) {
++	numCPU = vcutils.CalculateCPUsF(quota, period, shares)
+ 
+ 	if memory < 0 {
+ 		// While spec allows for a negative value to indicate unconstrained, we don't
+diff --git a/src/runtime/virtcontainers/sandbox.go b/src/runtime/virtcontainers/sandbox.go
+index 6ceae42de..b2ad06013 100644
+--- a/src/runtime/virtcontainers/sandbox.go
++++ b/src/runtime/virtcontainers/sandbox.go
+@@ -2637,7 +2637,7 @@ func (s *Sandbox) calculateSandboxCPUs() (float32, error) {
+ 
+ 		if cpu := c.Resources.CPU; cpu != nil {
+ 			if cpu.Period != nil && cpu.Quota != nil {
+-				floatCPU += utils.CalculateCPUsF(*cpu.Quota, *cpu.Period)
++				floatCPU += utils.CalculateCPUsF(*cpu.Quota, *cpu.Period, 0)
+ 			}
+ 
+ 			set, err := cpuset.Parse(cpu.Cpus)
+diff --git a/src/runtime/virtcontainers/utils/utils.go b/src/runtime/virtcontainers/utils/utils.go
+index 39bcfde8f..4258a298e 100644
+--- a/src/runtime/virtcontainers/utils/utils.go
++++ b/src/runtime/virtcontainers/utils/utils.go
+@@ -125,8 +125,8 @@ func WriteToFile(path string, data []byte) error {
+ 	return nil
+ }
+ 
+-// CalculateCPUsF converts CPU quota and period to a fraction number
+-func CalculateCPUsF(quota int64, period uint64) float32 {
++// CalculateCPUsF converts CPU quota and period to a fraction number, or default to the CPU shares
++func CalculateCPUsF(quota int64, period, shares uint64) float32 {
+ 	// If quota is -1, it means the CPU resource request is
+ 	// unconstrained.  In that case, we don't currently assign
+ 	// additional CPUs.
+@@ -134,7 +134,9 @@ func CalculateCPUsF(quota int64, period uint64) float32 {
+ 		return float32(quota) / float32(period)
+ 	}
+ 
+-	return 0
++	// If CPU limit is not set (or no CPU limit is enforced),
++	// Default to the CPU requests (i.e. CPU shares)
++	return float32(shares) / 1024.0
+ }
+ 
+ // GetVirtDriveName returns the disk name format for virtio-blk
+diff --git a/src/runtime/virtcontainers/utils/utils_test.go b/src/runtime/virtcontainers/utils/utils_test.go
+index 8361caa1e..06cf10c06 100644
+--- a/src/runtime/virtcontainers/utils/utils_test.go
++++ b/src/runtime/virtcontainers/utils/utils_test.go
+@@ -150,21 +150,29 @@ func TestWriteToFile(t *testing.T) {
+ func TestCalculateCPUsF(t *testing.T) {
+ 	assert := assert.New(t)
+ 
+-	n := CalculateCPUsF(1, 1)
++	n := CalculateCPUsF(1, 1, 0)
+ 	expected := float32(1)
+ 	assert.Equal(n, expected)
+ 
+-	n = CalculateCPUsF(1, 0)
++	n = CalculateCPUsF(1, 0, 0)
+ 	expected = float32(0)
+ 	assert.Equal(n, expected)
+ 
+-	n = CalculateCPUsF(-1, 1)
++	n = CalculateCPUsF(-1, 1, 0)
+ 	expected = float32(0)
+ 	assert.Equal(n, expected)
+ 
+-	n = CalculateCPUsF(500, 1000)
++	n = CalculateCPUsF(500, 1000, 0)
+ 	expected = float32(0.5)
+ 	assert.Equal(n, expected)
++
++	n = CalculateCPUsF(500, 1000, 1024)
++	expected = float32(0.5)
++	assert.Equal(n, expected)
++
++	n = CalculateCPUsF(0, 0, 1024)
++	expected = float32(1)
++	assert.Equal(n, expected)
+ }
+ 
+ func TestGetVirtDriveNameInvalidIndex(t *testing.T) {
+-- 
+2.54.0
+

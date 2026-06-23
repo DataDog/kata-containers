@@ -1,0 +1,16 @@
+From 791ab9064cb79037bf7f9e48ae18f32ef5d1c9d2 Mon Sep 17 00:00:00 2001
+From: Mateo Lelong <mateo.lelong@datadoghq.com>
+Date: Fri, 22 May 2026 11:05:15 +0200
+Subject: [PATCH] [datadog] chore: no_patch 6.8.x
+
+---
+ tools/packaging/kernel/patches/6.8.x/no_patches.txt | 0
+ 1 file changed, 0 insertions(+), 0 deletions(-)
+ create mode 100644 tools/packaging/kernel/patches/6.8.x/no_patches.txt
+
+diff --git a/tools/packaging/kernel/patches/6.8.x/no_patches.txt b/tools/packaging/kernel/patches/6.8.x/no_patches.txt
+new file mode 100644
+index 000000000..e69de29bb
+-- 
+2.54.0
+

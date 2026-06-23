@@ -1,0 +1,258 @@
+From a3d26fbc84c7247693bb4dcad36cf7377c37cfe7 Mon Sep 17 00:00:00 2001
+From: Mateo Lelong <mateo.lelong@datadoghq.com>
+Date: Thu, 9 Apr 2026 17:12:25 +0200
+Subject: [PATCH] [datadog] runtime-rs: add netkit endpoint support
+
+Port the Go runtime netkit endpoint to runtime-rs. Add NetkitEndpoint
+modeled after VethEndpoint with L3-mode detection. Handle InfoKind::Netkit
+and InfoData::Netkit in link_info() to avoid "unsupported link type: device"
+errors on netkit interfaces (kernel sends [Kind, Data] in LIFO order via
+pop(), Data arm must be handled before Kind fires).
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+---
+ .../src/network/endpoint/endpoint_persist.rs  |   7 ++
+ .../resource/src/network/endpoint/mod.rs      |   2 +
+ .../src/network/endpoint/netkit_endpoint.rs   | 115 ++++++++++++++++++
+ .../src/network/network_with_netns.rs         |  23 +++-
+ .../src/network/utils/link/manager.rs         |   9 ++
+ 5 files changed, 155 insertions(+), 1 deletion(-)
+ create mode 100644 src/runtime-rs/crates/resource/src/network/endpoint/netkit_endpoint.rs
+
+diff --git a/src/runtime-rs/crates/resource/src/network/endpoint/endpoint_persist.rs b/src/runtime-rs/crates/resource/src/network/endpoint/endpoint_persist.rs
+index 31507c209..3783827a0 100644
+--- a/src/runtime-rs/crates/resource/src/network/endpoint/endpoint_persist.rs
++++ b/src/runtime-rs/crates/resource/src/network/endpoint/endpoint_persist.rs
+@@ -33,6 +33,12 @@ pub struct VethEndpointState {
+     pub network_qos: bool,
+ }
+ 
++#[derive(Serialize, Deserialize, Clone, Default)]
++pub struct NetkitEndpointState {
++    pub if_name: String,
++    pub network_qos: bool,
++}
++
+ #[derive(Serialize, Deserialize, Clone, Default)]
+ pub struct IpVlanEndpointState {
+     pub if_name: String,
+@@ -54,6 +60,7 @@ pub struct VhostUserEndpointState {
+ pub struct EndpointState {
+     pub physical_endpoint: Option<PhysicalEndpointState>,
+     pub veth_endpoint: Option<VethEndpointState>,
++    pub netkit_endpoint: Option<NetkitEndpointState>,
+     pub ipvlan_endpoint: Option<IpVlanEndpointState>,
+     pub macvlan_endpoint: Option<MacvlanEndpointState>,
+     pub vlan_endpoint: Option<VlanEndpointState>,
+diff --git a/src/runtime-rs/crates/resource/src/network/endpoint/mod.rs b/src/runtime-rs/crates/resource/src/network/endpoint/mod.rs
+index 2277dfb7e..9a91f7622 100644
+--- a/src/runtime-rs/crates/resource/src/network/endpoint/mod.rs
++++ b/src/runtime-rs/crates/resource/src/network/endpoint/mod.rs
+@@ -8,6 +8,8 @@ mod physical_endpoint;
+ pub use physical_endpoint::PhysicalEndpoint;
+ mod veth_endpoint;
+ pub use veth_endpoint::VethEndpoint;
++mod netkit_endpoint;
++pub use netkit_endpoint::NetkitEndpoint;
+ mod ipvlan_endpoint;
+ pub use ipvlan_endpoint::IPVlanEndpoint;
+ mod vlan_endpoint;
+diff --git a/src/runtime-rs/crates/resource/src/network/endpoint/netkit_endpoint.rs b/src/runtime-rs/crates/resource/src/network/endpoint/netkit_endpoint.rs
+new file mode 100644
+index 000000000..74d29421b
+--- /dev/null
++++ b/src/runtime-rs/crates/resource/src/network/endpoint/netkit_endpoint.rs
+@@ -0,0 +1,115 @@
++// Copyright (c) 2019-2022 Alibaba Cloud
++// Copyright (c) 2019-2022 Ant Group
++//
++// SPDX-License-Identifier: Apache-2.0
++//
++
++use std::io::{self, Error};
++use std::sync::Arc;
++
++use anyhow::{Context, Result};
++use async_trait::async_trait;
++use hypervisor::device::device_manager::{do_handle_device, DeviceManager};
++use hypervisor::device::driver::NetworkConfig;
++use hypervisor::device::{DeviceConfig, DeviceType};
++use hypervisor::{Hypervisor, NetworkDevice};
++use tokio::sync::RwLock;
++
++use super::endpoint_persist::{EndpointState, NetkitEndpointState};
++use super::Endpoint;
++use crate::network::{utils, NetworkPair};
++
++#[derive(Debug)]
++pub struct NetkitEndpoint {
++    pub(crate) net_pair: NetworkPair,
++    pub(crate) d: Arc<RwLock<DeviceManager>>,
++}
++
++impl NetkitEndpoint {
++    pub async fn new(
++        d: &Arc<RwLock<DeviceManager>>,
++        handle: &rtnetlink::Handle,
++        name: &str,
++        idx: u32,
++        model: &str,
++        queues: usize,
++    ) -> Result<Self> {
++        let net_pair = NetworkPair::new(handle, idx, name, model, queues)
++            .await
++            .context("new network interface pair failed.")?;
++
++        Ok(NetkitEndpoint {
++            net_pair,
++            d: d.clone(),
++        })
++    }
++
++    fn get_network_config(&self) -> Result<NetworkConfig> {
++        let iface = &self.net_pair.tap.tap_iface;
++        let guest_mac = utils::parse_mac(&iface.hard_addr).ok_or_else(|| {
++            Error::new(
++                io::ErrorKind::InvalidData,
++                format!("hard_addr {}", &iface.hard_addr),
++            )
++        })?;
++
++        Ok(NetworkConfig {
++            host_dev_name: iface.name.clone(),
++            virt_iface_name: self.net_pair.virt_iface.name.clone(),
++            guest_mac: Some(guest_mac),
++            ..Default::default()
++        })
++    }
++}
++
++#[async_trait]
++impl Endpoint for NetkitEndpoint {
++    async fn name(&self) -> String {
++        self.net_pair.virt_iface.name.clone()
++    }
++
++    async fn hardware_addr(&self) -> String {
++        self.net_pair.tap.tap_iface.hard_addr.clone()
++    }
++
++    async fn attach(&self) -> Result<()> {
++        self.net_pair
++            .add_network_model()
++            .await
++            .context("add network model")?;
++
++        let config = self.get_network_config().context("get network config")?;
++        do_handle_device(&self.d, &DeviceConfig::NetworkCfg(config))
++            .await
++            .context("do handle network netkit endpoint device failed.")?;
++
++        Ok(())
++    }
++
++    async fn detach(&self, h: &dyn Hypervisor) -> Result<()> {
++        self.net_pair
++            .del_network_model()
++            .await
++            .context("del network model failed.")?;
++
++        let config = self.get_network_config().context("get network config")?;
++        h.remove_device(DeviceType::Network(NetworkDevice {
++            config,
++            ..Default::default()
++        }))
++        .await
++        .context("remove netkit endpoint device by hypervisor failed.")?;
++
++        Ok(())
++    }
++
++    async fn save(&self) -> Option<EndpointState> {
++        Some(EndpointState {
++            netkit_endpoint: Some(NetkitEndpointState {
++                if_name: self.net_pair.virt_iface.name.clone(),
++                network_qos: self.net_pair.network_qos,
++            }),
++            ..Default::default()
++        })
++    }
++}
+diff --git a/src/runtime-rs/crates/resource/src/network/network_with_netns.rs b/src/runtime-rs/crates/resource/src/network/network_with_netns.rs
+index 817387196..be88c48d0 100644
+--- a/src/runtime-rs/crates/resource/src/network/network_with_netns.rs
++++ b/src/runtime-rs/crates/resource/src/network/network_with_netns.rs
+@@ -24,7 +24,8 @@ use tokio::sync::RwLock;
+ 
+ use super::{
+     endpoint::{
+-        Endpoint, IPVlanEndpoint, MacVlanEndpoint, PhysicalEndpoint, VethEndpoint, VlanEndpoint,
++        Endpoint, IPVlanEndpoint, MacVlanEndpoint, NetkitEndpoint, PhysicalEndpoint, VethEndpoint,
++        VlanEndpoint,
+     },
+     network_entity::NetworkEntity,
+     network_info::network_info_from_link::{handle_addresses, NetworkInfoFromLink},
+@@ -312,6 +313,26 @@ async fn create_endpoint(
+                 .context("macvlan endpoint")?;
+                 Arc::new(ret)
+             }
++            "netkit" => {
++                // L3 mode netkit devices have no MAC address and are not supported.
++                if attrs.hardware_addr.is_empty() {
++                    return Err(anyhow!(
++                        "netkit device {} has no MAC address (L3 mode not supported - use L2 mode or veth)",
++                        attrs.name
++                    ));
++                }
++                let ret = NetkitEndpoint::new(
++                    &d,
++                    handle,
++                    &attrs.name,
++                    idx,
++                    &config.network_model,
++                    config.queues,
++                )
++                .await
++                .context("netkit endpoint")?;
++                Arc::new(ret)
++            }
+             _ => return Err(anyhow!("unsupported link type: {}", link_type)),
+         }
+     };
+diff --git a/src/runtime-rs/crates/resource/src/network/utils/link/manager.rs b/src/runtime-rs/crates/resource/src/network/utils/link/manager.rs
+index fb0365877..ea885f9d4 100644
+--- a/src/runtime-rs/crates/resource/src/network/utils/link/manager.rs
++++ b/src/runtime-rs/crates/resource/src/network/utils/link/manager.rs
+@@ -120,6 +120,11 @@ fn link_info(mut infos: Vec<LinkInfo>) -> Box<dyn Link> {
+                         link = Some(Box::new(Bridge::default()));
+                     }
+                 }
++                InfoKind::Netkit => {
++                    if link.is_none() {
++                        link = Some(Box::new(Netkit::default()));
++                    }
++                }
+                 _ => {
+                     if link.is_none() {
+                         link = Some(Box::new(Device::default()));
+@@ -145,6 +150,9 @@ fn link_info(mut infos: Vec<LinkInfo>) -> Box<dyn Link> {
+                 InfoData::Bridge(ibs) => {
+                     link = Some(Box::new(parse_bridge(ibs)));
+                 }
++                InfoData::Netkit(_) => {
++                    link = Some(Box::new(Netkit::default()));
++                }
+                 _ => {
+                     link = Some(Box::new(Device::default()));
+                 }
+@@ -214,6 +222,7 @@ macro_rules! define_and_impl_network_dev {
+ define_and_impl_network_dev!("device", Device);
+ define_and_impl_network_dev!("tuntap", Tuntap);
+ define_and_impl_network_dev!("veth", Veth);
++define_and_impl_network_dev!("netkit", Netkit);
+ define_and_impl_network_dev!("ipvlan", IpVlan);
+ define_and_impl_network_dev!("macvlan", MacVlan);
+ define_and_impl_network_dev!("vlan", Vlan);
+-- 
+2.54.0
+

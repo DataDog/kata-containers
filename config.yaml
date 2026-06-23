@@ -1,0 +1,9 @@
+upstream:  https://github.com/kata-containers/kata-containers
+repo:  https://github.com/DataDog/kata-containers
+patchFolders:
+  - patches/global
+tagLimit: 3
+tagMatchers:
+  - "3.*.*"
+branchTemplate: "{{ .Tag }}-mj"
+conflictPR: true

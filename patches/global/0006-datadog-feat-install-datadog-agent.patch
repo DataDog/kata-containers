@@ -1,0 +1,150 @@
+From e2e59e2a47516c327846998b510a3746fbbe54f7 Mon Sep 17 00:00:00 2001
+From: Mateo Lelong <mateo.lelong@datadoghq.com>
+Date: Fri, 22 May 2026 11:29:59 +0200
+Subject: [PATCH] [datadog] feat: install datadog agent
+
+---
+ .../osbuilder/hooks/setup_datadog_keyring.sh  |  7 +++++++
+ .../etc/datadog-agent/system-probe.env        | 15 +++++++++++++++
+ .../system-probe.service                      |  1 +
+ .../etc/systemd/system/system-probe.service   | 19 +++++++++++++++++++
+ .../usr/local/bin/start-system-probe          | 17 +++++++++++++++++
+ .../osbuilder/rootfs-builder/ubuntu/config.sh |  4 ++++
+ .../rootfs-builder/ubuntu/rootfs_lib.sh       |  6 +++++-
+ 7 files changed, 68 insertions(+), 1 deletion(-)
+ create mode 100755 tools/osbuilder/hooks/setup_datadog_keyring.sh
+ create mode 100644 tools/osbuilder/rootfs-builder/datadog-files/etc/datadog-agent/system-probe.env
+ create mode 120000 tools/osbuilder/rootfs-builder/datadog-files/etc/systemd/system/kata-containers.target.wants/system-probe.service
+ create mode 100644 tools/osbuilder/rootfs-builder/datadog-files/etc/systemd/system/system-probe.service
+ create mode 100755 tools/osbuilder/rootfs-builder/datadog-files/usr/local/bin/start-system-probe
+
+diff --git a/tools/osbuilder/hooks/setup_datadog_keyring.sh b/tools/osbuilder/hooks/setup_datadog_keyring.sh
+new file mode 100755
+index 000000000..db1f97bad
+--- /dev/null
++++ b/tools/osbuilder/hooks/setup_datadog_keyring.sh
+@@ -0,0 +1,7 @@
++#!/bin/sh
++# Fetch the Datadog APT signing key
++
++set -e
++
++curl -fsSL https://keys.datadoghq.com/DATADOG_APT_KEY_CURRENT.public \
++    | gpg --dearmor > /tmp/datadog-archive-keyring.gpg
+diff --git a/tools/osbuilder/rootfs-builder/datadog-files/etc/datadog-agent/system-probe.env b/tools/osbuilder/rootfs-builder/datadog-files/etc/datadog-agent/system-probe.env
+new file mode 100644
+index 000000000..e7ba990c7
+--- /dev/null
++++ b/tools/osbuilder/rootfs-builder/datadog-files/etc/datadog-agent/system-probe.env
+@@ -0,0 +1,15 @@
++DD_RUNTIME_SECURITY_CONFIG_EVENT_GRPC_SERVER=security-agent
++DD_RUNTIME_SECURITY_CONFIG_CMD_SOCKET=/tmp/wp-cmd.sock
++DD_VSOCK_ADDR=host
++DD_SYSTEM_PROBE_CONFIG_LOG_FILE=/tmp/system-probe.log
++DD_RUNTIME_SECURITY_CONFIG_ENABLED=true
++DD_SYSTEM_PROBE_CONFIG_SYSPROBE_SOCKET=/tmp/sysprobe.sock
++DD_SYSPROBE_SOCKET=/tmp/sysprobe.sock
++DD_EVENT_MONITORING_CONFIG_SOCKET=/tmp/evt.sock
++DD_RUNTIME_SECURITY_CONFIG_SOCKET=vsock:5020
++DD_RUNTIME_SECURITY_CONFIG_ACTIVITY_DUMP_ENABLED=false
++DD_RUNTIME_SECURITY_CONFIG_SECURITY_PROFILE_ENABLED=false
++DD_RUNTIME_SECURITY_CONFIG_ACTIVITY_DUMP_LOCAL_STORAGE_OUTPUT_DIRECTORY=/tmp
++DD_REMOTE_AGENT_REGISTRY_ENABLED=false
++DD_SYSTEM_PROBE_ORIGIN=kata-containers
++DD_RUNTIME_SECURITY_CONFIG_ENV_AS_TAGS="DD_SYSTEM_PROBE_ORIGIN"
+diff --git a/tools/osbuilder/rootfs-builder/datadog-files/etc/systemd/system/kata-containers.target.wants/system-probe.service b/tools/osbuilder/rootfs-builder/datadog-files/etc/systemd/system/kata-containers.target.wants/system-probe.service
+new file mode 120000
+index 000000000..334e2129e
+--- /dev/null
++++ b/tools/osbuilder/rootfs-builder/datadog-files/etc/systemd/system/kata-containers.target.wants/system-probe.service
+@@ -0,0 +1 @@
++/etc/systemd/system/system-probe.service
+\ No newline at end of file
+diff --git a/tools/osbuilder/rootfs-builder/datadog-files/etc/systemd/system/system-probe.service b/tools/osbuilder/rootfs-builder/datadog-files/etc/systemd/system/system-probe.service
+new file mode 100644
+index 000000000..3489e581f
+--- /dev/null
++++ b/tools/osbuilder/rootfs-builder/datadog-files/etc/systemd/system/system-probe.service
+@@ -0,0 +1,19 @@
++[Unit]
++Description=Datadog System Probe
++Requires=sys-kernel-debug.mount
++After=sys-kernel-debug.mount
++
++[Service]
++Type=simple
++PIDFile=/tmp/system-probe.pid
++Restart=always
++RestartSec=10
++ExecStart=/usr/local/bin/start-system-probe run --pid=/tmp/system-probe.pid
++ExecReload=/bin/kill -HUP $MAINPID
++StartLimitInterval=10
++StartLimitBurst=5
++
++EnvironmentFile=/etc/datadog-agent/system-probe.env
++
++[Install]
++WantedBy=kata-containers.target
+diff --git a/tools/osbuilder/rootfs-builder/datadog-files/usr/local/bin/start-system-probe b/tools/osbuilder/rootfs-builder/datadog-files/usr/local/bin/start-system-probe
+new file mode 100755
+index 000000000..cbf020386
+--- /dev/null
++++ b/tools/osbuilder/rootfs-builder/datadog-files/usr/local/bin/start-system-probe
+@@ -0,0 +1,17 @@
++#!/bin/sh
++
++# Fetch datadog-agent token
++token_path=$(ls /run/kata-containers/shared/containers/*/datadog-agent/auth/token 2>/dev/null | head -n 1)
++[ -n "${token_path}" ] && export DD_AUTH_TOKEN_FILE_PATH="${token_path}"
++
++# Get DD_SITE from container env variables
++for config_path in /run/kata-containers/*/config.json /run/kata-containers/*/*/config.json; do
++    [ -f "${config_path}" ] || continue
++    dd_site=$(grep -oE '"DD_SITE=[^"]+"' "${config_path}" | head -n 1 | sed -e 's/^"DD_SITE=//' -e 's/"$//')
++    if [ -n "${dd_site}" ]; then
++        export DD_SITE="${dd_site}"
++        break
++    fi
++done
++
++exec /opt/datadog-agent/embedded/bin/system-probe "$@"
+diff --git a/tools/osbuilder/rootfs-builder/ubuntu/config.sh b/tools/osbuilder/rootfs-builder/ubuntu/config.sh
+index 9a5f9db9f..ceb1b4fc2 100644
+--- a/tools/osbuilder/rootfs-builder/ubuntu/config.sh
++++ b/tools/osbuilder/rootfs-builder/ubuntu/config.sh
+@@ -31,6 +31,10 @@ case "${ARCH}" in
+ esac
+ REPO_URL=${REPO_URL:-http://ports.ubuntu.com}
+ 
++# [DATADOG] Packages installed from the Datadog APT repo. Repo + keyring are
++# wired into mmdebstrap in rootfs_lib.sh. Append more packages here as needed.
++EXTRA_PKGS="${EXTRA_PKGS:+${EXTRA_PKGS} }datadog-agent"
++
+ if [[ "$(uname -m)" != "${ARCH}" ]]; then
+ 	case "${ARCH}" in
+ 		ppc64le) cc_arch=powerpc64le;;
+diff --git a/tools/osbuilder/rootfs-builder/ubuntu/rootfs_lib.sh b/tools/osbuilder/rootfs-builder/ubuntu/rootfs_lib.sh
+index e8d29688f..29a44733a 100644
+--- a/tools/osbuilder/rootfs-builder/ubuntu/rootfs_lib.sh
++++ b/tools/osbuilder/rootfs-builder/ubuntu/rootfs_lib.sh
+@@ -20,12 +20,16 @@ build_rootfs() {
+ 	# shellcheck disable=SC2154
+ 	if ! mmdebstrap --mode auto --arch "${DEB_ARCH}" --variant required \
+ 			--components="${REPO_COMPONENTS}" \
++			--setup-hook "/kata-containers/tools/osbuilder/hooks/setup_datadog_keyring.sh" \
+ 			--customize-hook "/kata-containers/tools/osbuilder/hooks/download_generate_sbom.sh" \
+-			--include "${PACKAGES},${EXTRA_PKGS}" "${OS_VERSION}" "${rootfs_dir}" "${REPO_URL}"; then
++			--include "${PACKAGES},${EXTRA_PKGS}" "${OS_VERSION}" "${rootfs_dir}" \
++			"${REPO_URL}" \
++			"deb [signed-by=/tmp/datadog-archive-keyring.gpg] https://apt.datadoghq.com/ stable 7"; then
+ 		echo "ERROR: mmdebstrap failed, cannot proceed" && exit 1
+ 	else
+ 		echo "INFO: mmdebstrap succeeded"
+ 	fi
++	rm -f "/tmp/datadog-archive-keyring.gpg"
+ 	rm -rf "${rootfs_dir}/var/run"
+ 	ln -s /run "${rootfs_dir}/var/run"
+ 	cp --remove-destination /etc/resolv.conf "${rootfs_dir}/etc"
+-- 
+2.54.0
+
