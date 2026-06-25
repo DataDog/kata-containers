@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
@@ -895,8 +896,11 @@ func xConnectVMNetwork(ctx context.Context, endpoint Endpoint, h Hypervisor) err
 		networkLogger().Info("connect TCFilter to VM network")
 		err = setupTCFiltering(ctx, endpoint, queues, disableVhostNet)
 	case NetXConnectNoneModel:
-		networkLogger().Info("connect none model to VM network (proxy-managed)")
+		networkLogger().Info("connect none model to VM network (iptables proxy)")
 		err = setupNoneNetworking(ctx, endpoint, queues, disableVhostNet)
+	case NetXConnectNoneTapnetModel:
+		networkLogger().Info("connect none model to VM network (tapnet proxy)")
+		err = setupTapnetNetworking(ctx, endpoint, queues, disableVhostNet)
 	default:
 		err = fmt.Errorf("Invalid internetworking model")
 	}
@@ -923,6 +927,8 @@ func xDisconnectVMNetwork(ctx context.Context, endpoint Endpoint) error {
 		err = removeTCFiltering(ctx, endpoint)
 	case NetXConnectNoneModel:
 		err = removeNoneNetworking(ctx, endpoint)
+	case NetXConnectNoneTapnetModel:
+		err = removeTapnetNetworking(ctx, endpoint)
 	default:
 		err = fmt.Errorf("Invalid internetworking model")
 	}
@@ -1212,6 +1218,12 @@ const (
 	proxyPodVethName  = "kata-pvp"
 )
 
+const tapnetSocketDir = "/run/kata-tapnet"
+
+func tapnetCtrlPath(tapName string) string {
+	return filepath.Join(tapnetSocketDir, tapName+".ctrl")
+}
+
 // jailNetnsName returns the /var/run/netns name for the jail netns created by
 // setupNoneNetworking so that removeNoneNetworking can look it up by name.
 func jailNetnsName(tapName string) string {
@@ -1413,6 +1425,147 @@ func setupNoneNetworking(ctx context.Context, endpoint Endpoint, queues int, dis
 	endpoint.SetProperties(props)
 
 	return nil
+}
+
+// setupTapnetNetworking prepares the pod netns for the QEMU socketpair
+// tapnet model (internetworking_model=tapnet).
+//
+// A Unix socketpair is created.  The VM end (fd_vm) is passed to QEMU via
+// VMFds as -netdev socket,fd=<N>.  Because both ends of the socketpair are
+// connected at launch, the virtio-net device always has a live backend and
+// the VM boots reliably without racing against the proxy container startup.
+//
+// The proxy end (fd_ctrl) is held by a shim goroutine (serveTapnetCtrl) that
+// drains VM TX frames and waits for the proxy container to connect to the
+// control socket at /run/kata-tapnet/<tap>.ctrl.  When the proxy connects,
+// fd_ctrl is handed off via SCM_RIGHTS.
+//
+// Note: after the proxy is killed, fd_ctrl closes and QEMU marks the
+// virtio-net link down.  Reconnection requires restarting the pod (QEMU
+// holds a fixed fd and cannot accept a new socketpair end).
+func setupTapnetNetworking(ctx context.Context, endpoint Endpoint, queues int, disableVhostNet bool) error {
+	span, _ := networkTrace(ctx, "setupTapnetNetworking", endpoint)
+	defer span.End()
+
+	netPair := endpoint.NetworkPair()
+
+	podHandle, err := netlink.NewHandle()
+	if err != nil {
+		return err
+	}
+	defer podHandle.Close()
+
+	// Read the pod veth MAC so QEMU can set the correct MAC on the virtio-net device.
+	link, err := getLinkForEndpoint(endpoint, podHandle)
+	if err != nil {
+		return err
+	}
+	netPair.TAPIface.HardAddr = link.Attrs().HardwareAddr.String()
+
+	// Create a Unix socketpair.  fds[0] (VM end) goes to QEMU; fds[1] (ctrl
+	// end) is held by the shim until the proxy container connects.
+	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("tapnet socketpair: %w", err)
+	}
+	vmFile := os.NewFile(uintptr(fds[0]), "tapnet-vm")
+	ctrlFile := os.NewFile(uintptr(fds[1]), "tapnet-ctrl")
+
+	netPair.VMFds = []*os.File{vmFile}
+
+	// Ensure socket directory exists and launch the control socket goroutine.
+	if err := os.MkdirAll(tapnetSocketDir, 0o700); err != nil {
+		vmFile.Close()
+		ctrlFile.Close()
+		return fmt.Errorf("create tapnet socket dir: %w", err)
+	}
+	go serveTapnetCtrl(tapnetCtrlPath(netPair.TAPIface.Name), ctrlFile)
+
+	// Tell kata-agent to configure the VM with 169.254.1.2/30 and a default
+	// route via 169.254.1.1 (where the gvisor-tap-vsock proxy acts as gateway).
+	vmAddr, err := netlink.ParseAddr(proxyTapVMCIDR)
+	if err != nil {
+		return fmt.Errorf("parse tap VM addr: %w", err)
+	}
+	tapHostAddr, err := netlink.ParseAddr(proxyTapHostCIDR)
+	if err != nil {
+		return fmt.Errorf("parse tap host addr: %w", err)
+	}
+	_, tapNet, _ := net.ParseCIDR(proxyTapHostCIDR)
+
+	props := endpoint.Properties()
+	props.Addrs = []netlink.Addr{*vmAddr}
+	props.Routes = []netlink.Route{
+		{Dst: tapNet, Gw: nil, Scope: netlink.SCOPE_LINK},
+		{Dst: nil, Gw: tapHostAddr.IP},
+	}
+	endpoint.SetProperties(props)
+
+	return nil
+}
+
+// removeTapnetNetworking cleans up after setupTapnetNetworking.
+func removeTapnetNetworking(ctx context.Context, endpoint Endpoint) error {
+	span, _ := networkTrace(ctx, "removeTapnetNetworking", endpoint)
+	defer span.End()
+	netPair := endpoint.NetworkPair()
+	_ = os.Remove(tapnetCtrlPath(netPair.TAPIface.Name))
+	return nil
+}
+
+// serveTapnetCtrl is the shim-side goroutine for tapnet fd handoff.
+// It drains ctrlFile (VM TX frames) to prevent the socketpair buffer from
+// filling, then listens on ctrlPath for the proxy container to connect.
+// When the proxy connects, ctrlFile is sent via SCM_RIGHTS and the goroutine
+// exits.
+func serveTapnetCtrl(ctrlPath string, ctrlFile *os.File) {
+	defer ctrlFile.Close()
+
+	// Drain VM TX frames from ctrlFile until handoff or error.
+	go drainFile(ctrlFile)
+
+	// Remove any stale ctrl socket from a previous run.
+	_ = os.Remove(ctrlPath)
+
+	ln, err := net.Listen("unix", ctrlPath)
+	if err != nil {
+		networkLogger().WithError(err).Error("tapnet ctrl: listen failed")
+		return
+	}
+	defer ln.Close()
+
+	conn, err := ln.Accept()
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	// Send ctrlFile to the proxy via SCM_RIGHTS.
+	uc, ok := conn.(*net.UnixConn)
+	if !ok {
+		return
+	}
+	cf, err := uc.File()
+	if err != nil {
+		return
+	}
+	defer cf.Close()
+
+	rights := unix.UnixRights(int(ctrlFile.Fd()))
+	if _, err := unix.SendmsgN(int(cf.Fd()), []byte{0}, rights, nil, 0); err != nil {
+		networkLogger().WithError(err).Error("tapnet ctrl: SCM_RIGHTS send failed")
+	}
+	// ctrlFile.Close() is called by the defer above; the drain goroutine exits on EOF/EBADF.
+}
+
+// drainFile reads and discards all data from f until it returns an error.
+func drainFile(f *os.File) {
+	buf := make([]byte, 4096)
+	for {
+		if _, err := f.Read(buf); err != nil {
+			return
+		}
+	}
 }
 
 // removeNoneNetworking tears down the jail netns and veth pair created by
@@ -1938,7 +2091,7 @@ func addTxRateLimiter(endpoint Endpoint, maxRate uint64) error {
 				return err
 			}
 			return addHTBQdisc(link.Attrs().Index, maxRate)
-		case NetXConnectMacVtapModel, NetXConnectNoneModel:
+		case NetXConnectMacVtapModel, NetXConnectNoneModel, NetXConnectNoneTapnetModel:
 			linkName = netPair.TAPIface.Name
 		default:
 			return fmt.Errorf("Unsupported inter-networking model %v for adding tx rate limiter", netPair.NetInterworkingModel)
@@ -2031,7 +2184,7 @@ func removeTxRateLimiter(endpoint Endpoint, networkNSPath string) error {
 				return err
 			}
 			return nil
-		case NetXConnectMacVtapModel, NetXConnectNoneModel:
+		case NetXConnectMacVtapModel, NetXConnectNoneModel, NetXConnectNoneTapnetModel:
 			linkName = netPair.TAPIface.Name
 		}
 	case *MacvtapEndpoint, *TapEndpoint:
