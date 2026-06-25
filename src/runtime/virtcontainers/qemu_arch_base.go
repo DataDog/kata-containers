@@ -574,6 +574,8 @@ func networkModelToQemuType(model NetInterworkingModel) govmmQemu.NetDeviceType 
 	switch model {
 	case NetXConnectMacVtapModel:
 		return govmmQemu.MACVTAP
+	case NetXConnectNoneTapnetModel:
+		return govmmQemu.NetDeviceSocketFd
 	default:
 		//TAP should work for most other cases
 		return govmmQemu.TAP
@@ -585,6 +587,20 @@ func genericNetwork(endpoint Endpoint, vhost, nestedRun bool, index int) (govmmQ
 	switch ep := endpoint.(type) {
 	case *VethEndpoint, *MacvlanEndpoint, *IPVlanEndpoint:
 		netPair := ep.NetworkPair()
+		if netPair.NetInterworkingModel == NetXConnectNoneTapnetModel {
+			// tapnet mode: QEMU gets one end of a pre-connected Unix socketpair
+			// (fd set by setupTapnetNetworking).  The virtio-net device always
+			// has a live backend so the VM boots without racing the proxy startup.
+			d = govmmQemu.NetDevice{
+				Type:          govmmQemu.NetDeviceSocketFd,
+				Driver:        govmmQemu.VirtioNet,
+				ID:            fmt.Sprintf("network-%d", index),
+				MACAddress:    netPair.TAPIface.HardAddr,
+				DisableModern: nestedRun,
+				FDs:           netPair.VMFds,
+			}
+			break
+		}
 		d = govmmQemu.NetDevice{
 			Type:          networkModelToQemuType(netPair.NetInterworkingModel),
 			Driver:        govmmQemu.VirtioNet,

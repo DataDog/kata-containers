@@ -124,6 +124,13 @@ const (
 	// NetXConnectNoneModel can be used when the VM is in the host network namespace
 	NetXConnectNoneModel
 
+	// NetXConnectNoneTapnetModel is like NetXConnectNoneModel but the tap is
+	// created directly in the pod network namespace (no jail netns, no veth).
+	// The host-sidecar proxy opens the tap fd and drives a gvisor-tap-vsock
+	// user-space network stack; no iptables rules are installed by the shim.
+	// Corresponds to internetworking_model=tapnet in configuration.toml.
+	NetXConnectNoneTapnetModel
+
 	// NetXConnectInvalidModel is the last item to Check valid values by IsValid()
 	NetXConnectInvalidModel
 )
@@ -154,6 +161,8 @@ func (n *NetInterworkingModel) GetModel() string {
 		return tcFilterNetModelStr
 	case NetXConnectNoneModel:
 		return noneNetModelStr
+	case NetXConnectNoneTapnetModel:
+		return "tapnet"
 	}
 	return "unknown"
 }
@@ -172,6 +181,9 @@ func (n *NetInterworkingModel) SetModel(modelName string) error {
 		return nil
 	case noneNetModelStr:
 		*n = NetXConnectNoneModel
+		return nil
+	case "tapnet":
+		*n = NetXConnectNoneTapnetModel
 		return nil
 	}
 	return fmt.Errorf("Unknown type %s", modelName)
