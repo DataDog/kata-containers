@@ -122,12 +122,12 @@ func (endpoint *NetkitEndpoint) Attach(ctx context.Context, s *Sandbox) error {
 // Detach for the netkit endpoint tears down the tap and bridge
 // created for the netkit interface.
 func (endpoint *NetkitEndpoint) Detach(ctx context.Context, netNsCreated bool, netNsPath string) error {
-	// The network namespace would have been deleted at this point
-	// if it has not been created by virtcontainers.
-	if !netNsCreated {
-		return nil
-	}
-
+	// Unlike most endpoint types, we must always clean up even when we did not
+	// create the netns (netNsCreated=false). The reason: in multiruntime
+	// (sandboxer=shim) mode the pod netns is managed by containerd, so
+	// netNsCreated is false, yet we added a TC ingress qdisc and redirect
+	// filter to the netkit interface. If we skip cleanup on failure the qdisc
+	// persists, causing EEXIST on every subsequent container retry.
 	span, ctx := netkitTrace(ctx, "Detach", endpoint)
 	defer span.End()
 

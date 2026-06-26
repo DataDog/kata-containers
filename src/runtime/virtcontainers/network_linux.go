@@ -1646,6 +1646,16 @@ func addQdiscIngress(index int) error {
 		if err == nil {
 			return nil
 		}
+		if errors.Is(err, syscall.EEXIST) {
+			// Stale qdisc from a previous failed attempt (e.g. Detach was
+			// skipped because netNsCreated=false in multiruntime mode). Remove
+			// it and re-add so we start with a clean filter set.
+			link, lerr := netlink.LinkByIndex(index)
+			if lerr == nil {
+				_ = removeQdiscIngress(link)
+			}
+			continue
+		}
 		if !errors.Is(err, syscall.EBUSY) {
 			break // non-retryable error
 		}
