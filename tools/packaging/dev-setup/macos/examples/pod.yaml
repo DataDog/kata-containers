@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kata-test
+spec:
+  runtimeClassName: kata
+  restartPolicy: Never
+  containers:
+  - name: test
+    image: alpine
+    command: ["uname", "-r"]

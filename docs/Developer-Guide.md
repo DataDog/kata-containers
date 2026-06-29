@@ -23,6 +23,9 @@ Alternatively, you can perform a
 or continue with [the instructions below](#requirements-to-build-individual-components)
 to build the Kata Containers components from source.
 
+On MacOS / Apple Silicon you can set up a local Lima-based installation with nested
+KVM: see the [macOS dev environment how-to](how-to/how-to-setup-kata-dev-env-on-macos.md).
+
 # Requirements to build individual components
 
 > **Note:**

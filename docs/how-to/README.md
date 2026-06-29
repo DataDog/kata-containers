@@ -21,6 +21,10 @@
    steps:
    - [Setup Kata containers with `firecracker`](how-to-use-kata-containers-with-firecracker.md)
 
+## Developer Environment
+
+- [Set up a Kata Containers dev environment on macOS](how-to-setup-kata-dev-env-on-macos.md)
+
 ## Confidential Containers Policy
 
 - [How to auto-generate policy](../../src/tools/genpolicy/README.md)
