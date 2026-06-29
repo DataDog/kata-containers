@@ -58,11 +58,12 @@ jobs:
           else
             cp tools/packaging/kernel/kata-linux-*/arch/arm64/boot/Image.gz /tmp/vmlinux
           fi
+          cp tools/packaging/kernel/kata-linux-*/.config /tmp/kernel-config
           cp tools/osbuilder/kata-containers-image-ubuntu.img /tmp/kata-containers-image-ubuntu.img
           cp sbom.cdx.gz /tmp/sbom.cdx.gz
           cp src/runtime/containerd-shim-kata-v2 /tmp/containerd-shim-kata-v2
           mkdir -p /tmp/artifacts
-          zip -j /tmp/artifacts/artifacts-${{ matrix.arch }}.zip /tmp/vmlinux /tmp/kata-containers-image-ubuntu.img /tmp/sbom.cdx.gz /tmp/containerd-shim-kata-v2 /tmp/containerd-shim-kata-v2-rs
+          zip -j /tmp/artifacts/artifacts-${{ matrix.arch }}.zip /tmp/vmlinux /tmp/kernel-config /tmp/kata-containers-image-ubuntu.img /tmp/sbom.cdx.gz /tmp/containerd-shim-kata-v2 /tmp/containerd-shim-kata-v2-rs
           cd /tmp/artifacts
           sha256sum artifacts-${{ matrix.arch }}.zip > checksum-${{ matrix.arch }}.sha256
       - name: Upload Artifact
