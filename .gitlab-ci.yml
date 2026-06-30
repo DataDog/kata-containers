@@ -18,9 +18,12 @@ stages:
 ci-image:
   stage: ci-image
   extends: .build-docker-image
-  when: manual
-  only:
-    - branches
+  # NOTE: .build-docker-image (compute-delivery/v3 template) defines `rules`,
+  # which cannot be mixed with `only`. Express the branches-only-manual intent
+  # via `rules` to keep the merged job config valid.
+  rules:
+    - if: $CI_COMMIT_BRANCH
+      when: manual
   variables:
     IMAGE_NAME: "$CI_PROJECT_NAME/ci"
     IMAGE_TAG: $CI_IMAGE
