@@ -124,10 +124,11 @@ const (
 	// NetXConnectNoneModel can be used when the VM is in the host network namespace
 	NetXConnectNoneModel
 
-	// NetXConnectNoneTapnetModel is like NetXConnectNoneModel but the tap is
-	// created directly in the pod network namespace (no jail netns, no veth).
-	// The host-sidecar proxy opens the tap fd and drives a gvisor-tap-vsock
-	// user-space network stack; no iptables rules are installed by the shim.
+	// NetXConnectNoneTapnetModel replaces the kernel tap device entirely: the
+	// VM's virtio-net device is backed by a Unix socketpair, one end owned by
+	// QEMU and the other handed off (via SCM_RIGHTS) to a host-sidecar proxy
+	// that drives a gvisor-tap-vsock user-space network stack. No tap device,
+	// jail netns, veth, or iptables rule is created by the shim.
 	// Corresponds to internetworking_model=tapnet in configuration.toml.
 	NetXConnectNoneTapnetModel
 

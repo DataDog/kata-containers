@@ -22,6 +22,8 @@ func TestNetInterworkingModelIsValid(t *testing.T) {
 		{"Default Model", NetXConnectDefaultModel, true},
 		{"TC Filter Model", NetXConnectTCFilterModel, true},
 		{"Macvtap Model", NetXConnectMacVtapModel, true},
+		{"None Model", NetXConnectNoneModel, true},
+		{"Tapnet Model", NetXConnectNoneTapnetModel, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -44,6 +46,7 @@ func TestNetInterworkingModelSetModel(t *testing.T) {
 		{"macvtap Model", macvtapNetModelStr, false},
 		{"tcfilter Model", tcFilterNetModelStr, false},
 		{"none Model", noneNetModelStr, false},
+		{"tapnet Model", "tapnet", false},
 	}
 
 	for _, tt := range tests {
