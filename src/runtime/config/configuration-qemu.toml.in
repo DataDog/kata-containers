@@ -599,7 +599,18 @@ enable_debug = false
 #     macvtap.
 #
 #   - none
-#     Used when customize network. Only creates a tap device. No veth pair.
+#     For host-side proxy setups. Creates the VM's tap device inside an
+#     isolated jail network namespace, bridged to the pod netns via a veth
+#     pair. A host-side proxy container installs iptables REDIRECT rules to
+#     intercept VM egress; only TCP and UDP/53 are redirected, everything
+#     else is dropped. See docs/how-to/how-to-use-host-side-proxy-networking.md.
+#
+#   - tapnet
+#     For host-side proxy setups. The VM's virtio-net device is backed by a
+#     Unix socketpair instead of a kernel tap device; a host-side proxy
+#     container owns the far end and handles all VM traffic (TCP/UDP/ICMP)
+#     in a user-space network stack. The kernel never sees VM frames.
+#     See docs/how-to/how-to-use-host-side-proxy-networking.md.
 #
 #   - tcfilter
 #     Uses tc filter rules to redirect traffic from the network interface
