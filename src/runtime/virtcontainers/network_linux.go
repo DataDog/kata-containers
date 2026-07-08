@@ -132,6 +132,12 @@ func (n *LinuxNetwork) trace(ctx context.Context, name string) (otelTrace.Span, 
 
 func (n *LinuxNetwork) addSingleEndpoint(ctx context.Context, s *Sandbox, netInfo NetworkInfo, hotplug bool) (Endpoint, error) {
 	var endpoint Endpoint
+	// idx identifies this endpoint within the sandbox (e.g. for naming
+	// br0_kata/tap0_kata); -1 for the physical-interface branch, which
+	// never uses it. Declared here (rather than inside the else block
+	// below) so it also survives to the sandbox-ID assignment after the
+	// shared err check.
+	idx := -1
 	// TODO: This is the incoming interface
 	// based on the incoming interface we should create
 	// an appropriate EndPoint based on interface type
@@ -154,7 +160,7 @@ func (n *LinuxNetwork) addSingleEndpoint(ctx context.Context, s *Sandbox, netInf
 		endpoint, err = createPhysicalEndpoint(netInfo)
 	} else {
 		var socketPath string
-		idx := len(n.eps)
+		idx = len(n.eps)
 
 		// Avoid endpoint naming conflicts
 		// When creating a new endpoint, we check existing endpoint names and automatically adjust the naming of the new endpoint to ensure uniqueness.
@@ -231,6 +237,18 @@ func (n *LinuxNetwork) addSingleEndpoint(ctx context.Context, s *Sandbox, netInf
 
 	if err != nil {
 		return nil, err
+	}
+
+	// Give none/tapnet a host-global-safe, externally-discoverable ID to
+	// name their host-global resources (jail netns, tapnet control socket)
+	// by: replace the fresh random UUID createNetworkInterfacePair generated
+	// with one derived from the sandbox ID, which callers outside the shim
+	// (e.g. a host-side proxy sidecar) already know from the CRI/OCI sandbox
+	// ID, unlike a UUID minted deep inside virtcontainers. Still unique
+	// across sandboxes (sandbox ID) and across a sandbox's own interfaces
+	// (idx), so this doesn't reintroduce the collision the UUID switch fixed.
+	if netPair := endpoint.NetworkPair(); netPair != nil {
+		netPair.ID = fmt.Sprintf("%s-%d", s.ID(), idx)
 	}
 
 	endpoint.SetProperties(netInfo)
@@ -1435,10 +1453,11 @@ const (
 // jailNetnsName returns the /run/netns name for the jail netns created by
 // setupNoneNetworking so that removeNoneNetworking can look it up by name.
 //
-// id must be unique per sandbox (netPair.ID, a UUID) rather than the tap
-// interface name (netPair.TAPIface.Name, e.g. "tap0_kata") — the jail netns
-// is a host-global resource, unlike the tap device itself which is scoped to
-// the sandbox's own pod netns, so reusing the per-sandbox tap name here would
+// id must be globally unique (netPair.ID, set in addSingleEndpoint to
+// "<sandbox ID>-<interface index>") rather than the tap interface name
+// (netPair.TAPIface.Name, e.g. "tap0_kata") — the jail netns is a
+// host-global resource, unlike the tap device itself which is scoped to the
+// sandbox's own pod netns, so reusing the per-sandbox tap name here would
 // collide across sandboxes that both happen to be on their first interface.
 func jailNetnsName(id string) string {
 	return "kata-jail-" + id
@@ -1741,10 +1760,13 @@ func removeNoneNetworking(ctx context.Context, endpoint Endpoint) error {
 const tapnetSocketDir = "/run/kata-tapnet"
 
 // tapnetCtrlPath returns the control socket path for a sandbox's tapnet
-// endpoint. id must be unique per sandbox (netPair.ID, a UUID) — the socket
-// lives in a host-global directory, so using the per-sandbox tap interface
-// name here (e.g. "tap0_kata") would collide across sandboxes that both
-// happen to be on their first interface.
+// endpoint. id must be globally unique (netPair.ID, set in addSingleEndpoint
+// to "<sandbox ID>-<interface index>") — the socket lives in a host-global
+// directory, so using the per-sandbox tap interface name here (e.g.
+// "tap0_kata") would collide across sandboxes that both happen to be on
+// their first interface. Deriving it from the sandbox ID (rather than a
+// fresh random UUID) also makes the path predictable to a proxy sidecar
+// that already knows its own CRI sandbox ID.
 func tapnetCtrlPath(id string) string {
 	return filepath.Join(tapnetSocketDir, id+".ctrl")
 }

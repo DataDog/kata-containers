@@ -206,25 +206,19 @@ delivered to the guest the same way.
 
 ## Discovery
 
-**Current limitation**: the `<id>` component of both the jail netns name
-(`kata-jail-<id>`) and the tapnet control socket path (`/run/kata-tapnet/<id>.ctrl`) is a
-fresh random UUID generated internally by the shim for each network interface
-(`NetworkInterfacePair.ID`, set in `createNetworkInterfacePair`) — it is **not** derived from
-the sandbox/pod ID and cannot be predicted or computed by an external proxy ahead of time.
-This was a deliberate fix for a cross-sandbox collision bug (an earlier version used the
-per-sandbox-but-not-globally-unique tap interface name, e.g. `tap0_kata`, which collided
-between sandboxes), but it means a proxy needs its own way to find the right path:
+The `<id>` component of both the jail netns name (`kata-jail-<id>`) and the tapnet control
+socket path (`/run/kata-tapnet/<id>.ctrl`) is `<sandbox ID>-<interface index>` — set in
+`addSingleEndpoint` from the sandbox's CRI/OCI ID (the same one visible via `crictl pods`),
+not a randomly generated value. This keeps the name globally unique (fixing an earlier bug
+where both were keyed on the per-sandbox-but-not-globally-unique tap interface name, e.g.
+`tap0_kata`, which collided between sandboxes) while staying computable by anything that
+already knows the pod's sandbox ID — in particular, whatever orchestrates the proxy sidecar
+can pass it the sandbox ID (e.g. via the Kubernetes downward API) and it can compute
+`/run/kata-tapnet/<sandboxID>-0.ctrl` directly, without needing to glob the directory.
 
-- For `tapnet`, a proxy sidecar can glob `/run/kata-tapnet/*.ctrl` if that directory is
-  bind-mounted read-only into the pod (there will typically be exactly one entry per pod
-  unless multiple Kata sandboxes share a host mount).
-- For `none`, the proxy already needs to be running inside the pod's own network namespace
-  to install iptables rules, so it does not need to locate the jail netns by name — only
-  Kata itself does (`removeNoneNetworking`'s teardown path).
-
-If your deployment needs a deterministic path (e.g. to avoid globbing), that would require
-plumbing the sandbox ID down through `xConnectVMNetwork`/`setupTapnetNetworking` — the
-`Endpoint` interface does not currently expose it at that call site.
+`-0` is the index of the pod's first (and for a typical single-NIC pod, only) network
+interface; a second interface on the same sandbox would be `-1`, and so on, matching the
+order interfaces are attached in.
 
 ## Limitations
 
