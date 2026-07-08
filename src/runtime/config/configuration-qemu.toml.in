@@ -599,6 +599,9 @@ enable_debug = false
 #     macvtap.
 #
 #   - none
+#     Used when customize network. Only creates a tap device. No veth pair.
+#
+#   - jailnet
 #     For host-side proxy setups. Creates the VM's tap device inside an
 #     isolated jail network namespace, bridged to the pod netns via a veth
 #     pair. A host-side proxy container installs iptables REDIRECT rules to

@@ -2076,8 +2076,9 @@ func checkPCIeConfig(coldPlug config.PCIePort, hotPlug config.PCIePort, machineT
 func checkNetNsConfig(config oci.RuntimeConfig) error {
 	if config.DisableNewNetNs {
 		if config.InterNetworkModel != vc.NetXConnectNoneModel &&
+			config.InterNetworkModel != vc.NetXConnectJailNetModel &&
 			config.InterNetworkModel != vc.NetXConnectNoneTapnetModel {
-			return fmt.Errorf("config disable_new_netns only works with 'none' or 'tapnet' internetworking_model")
+			return fmt.Errorf("config disable_new_netns only works with 'none', 'jailnet' or 'tapnet' internetworking_model")
 		}
 	}
 

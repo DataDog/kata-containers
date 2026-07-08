@@ -36,7 +36,7 @@
 - [How to load kernel modules in Kata Containers](how-to-load-kernel-modules-with-kata.md)
 - [How to use Kata Containers with `virtio-mem`](how-to-use-virtio-mem-with-kata.md)
 - [How to set sandbox Kata Containers configurations with pod annotations](how-to-set-sandbox-config-kata.md)
-- [How to use host-side-proxy networking (`none` and `tapnet`)](how-to-use-host-side-proxy-networking.md)
+- [How to use host-side-proxy networking (`jailnet` and `tapnet`)](how-to-use-host-side-proxy-networking.md)
 - [How to monitor Kata Containers in K8s](how-to-set-prometheus-in-k8s.md)
 - [How to use hotplug memory on arm64 in Kata Containers](how-to-hotplug-memory-arm64.md)
 - [How to setup swap devices in guest kernel](how-to-setup-swap-devices-in-guest-kernel.md)

@@ -36,7 +36,7 @@ compatibility, and performance on par with MACVTAP.
 Kata Containers has deprecated support for bridge due to lacking performance relative to TC-filter and MACVTAP.
 
 For routing all VM traffic through a host-side proxy container instead of the normal
-container network path, see `none` and `tapnet` in
+container network path, see `jailnet` and `tapnet` in
 [how-to-use-host-side-proxy-networking.md](../../how-to/how-to-use-host-side-proxy-networking.md).
 
 Kata Containers supports both

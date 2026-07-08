@@ -478,7 +478,7 @@ func (n *LinuxNetwork) scanEndpointsInNs(ctx context.Context, s *Sandbox, nsPath
 			continue
 		}
 
-		// Skip proxy-managed veth interfaces created by setupNoneNetworking.
+		// Skip proxy-managed veth interfaces created by setupJailNetNetworking.
 		// A stale kata-pvp in the pod netns (left by a failed prior attempt)
 		// must not be treated as a VM endpoint.
 		if netInfo.Iface.Name == proxyPodVethName {
@@ -915,9 +915,9 @@ func xConnectVMNetwork(ctx context.Context, endpoint Endpoint, h Hypervisor) err
 	case NetXConnectTCFilterModel:
 		networkLogger().Info("connect TCFilter to VM network")
 		err = setupTCFiltering(ctx, endpoint, queues, disableVhostNet)
-	case NetXConnectNoneModel:
-		networkLogger().Info("connect none model to VM network (iptables proxy)")
-		err = setupNoneNetworking(ctx, endpoint, queues, disableVhostNet)
+	case NetXConnectJailNetModel:
+		networkLogger().Info("connect jailnet model to VM network (iptables proxy)")
+		err = setupJailNetNetworking(ctx, endpoint, queues, disableVhostNet)
 	case NetXConnectNoneTapnetModel:
 		networkLogger().Info("connect none model to VM network (tapnet proxy)")
 		err = setupTapnetNetworking(ctx, endpoint, queues, disableVhostNet)
@@ -945,8 +945,8 @@ func xDisconnectVMNetwork(ctx context.Context, endpoint Endpoint) error {
 		err = untapNetworkPair(ctx, endpoint)
 	case NetXConnectTCFilterModel:
 		err = removeTCFiltering(ctx, endpoint)
-	case NetXConnectNoneModel:
-		err = removeNoneNetworking(ctx, endpoint)
+	case NetXConnectJailNetModel:
+		err = removeJailNetNetworking(ctx, endpoint)
 	case NetXConnectNoneTapnetModel:
 		err = removeTapnetNetworking(ctx, endpoint)
 	default:
@@ -1413,12 +1413,12 @@ func removeTCFiltering(ctx context.Context, endpoint Endpoint) error {
 	return nil
 }
 
-// Addressing shared by internetworking_model=none and internetworking_model=tapnet.
+// Addressing shared by internetworking_model=jailnet and internetworking_model=tapnet.
 //
 // Both models give the VM 169.254.1.2/30 with a default route via the tap
 // host address 169.254.1.1, where the host-side proxy acts as gateway.
 //
-// none: the VM runs inside an isolated "jail" network namespace that
+// jailnet: the VM runs inside an isolated "jail" network namespace that
 // contains only tap0_kata. A veth pair bridges the jail netns to the pod
 // netns:
 //
@@ -1451,7 +1451,7 @@ const (
 )
 
 // jailNetnsName returns the /run/netns name for the jail netns created by
-// setupNoneNetworking so that removeNoneNetworking can look it up by name.
+// setupJailNetNetworking so that removeJailNetNetworking can look it up by name.
 //
 // id must be globally unique (netPair.ID, set in addSingleEndpoint to
 // "<sandbox ID>-<interface index>") rather than the tap interface name
@@ -1463,7 +1463,7 @@ func jailNetnsName(id string) string {
 	return "kata-jail-" + id
 }
 
-// setupNoneNetworking creates an isolated jail network namespace containing
+// setupJailNetNetworking creates an isolated jail network namespace containing
 // only the kata tap device, connects it to the pod netns via a veth pair, and
 // configures routing so the host-sidecar proxy can intercept all VM egress.
 //
@@ -1471,8 +1471,8 @@ func jailNetnsName(id string) string {
 // (169.254.1.1).  The proxy's iptables REDIRECT rules (applied in the pod
 // netns on kata-pvp) intercept TCP and DNS-UDP; everything else is dropped by
 // the pod netns default FORWARD policy — structurally no bypass is possible.
-func setupNoneNetworking(ctx context.Context, endpoint Endpoint, queues int, disableVhostNet bool) (err error) {
-	span, _ := networkTrace(ctx, "setupNoneNetworking", endpoint)
+func setupJailNetNetworking(ctx context.Context, endpoint Endpoint, queues int, disableVhostNet bool) (err error) {
+	span, _ := networkTrace(ctx, "setupJailNetNetworking", endpoint)
 	defer span.End()
 
 	netPair := endpoint.NetworkPair()
@@ -1521,7 +1521,7 @@ func setupNoneNetworking(ctx context.Context, endpoint Endpoint, queues int, dis
 	defer netns.Set(podNsFd) //nolint:errcheck
 
 	// Create and enter the jail netns.  NewNamed bind-mounts it at
-	// /run/netns/<name> so removeNoneNetworking can open it by name.
+	// /run/netns/<name> so removeJailNetNetworking can open it by name.
 	jailNsFd, err := netns.NewNamed(jailNS)
 	if err != nil {
 		return fmt.Errorf("create jail netns: %w", err)
@@ -1667,7 +1667,7 @@ func setupNoneNetworking(ctx context.Context, endpoint Endpoint, queues int, dis
 
 // setProxyVMEndpointProps tells kata-agent to configure the VM with the
 // tap-subnet IP (169.254.1.2/30) and a default route via the tap host
-// address (169.254.1.1), shared by both the none and tapnet models.
+// address (169.254.1.1), shared by both the jailnet and tapnet models.
 func setProxyVMEndpointProps(endpoint Endpoint) error {
 	vmAddr, err := netlink.ParseAddr(proxyTapVMCIDR)
 	if err != nil {
@@ -1690,10 +1690,10 @@ func setProxyVMEndpointProps(endpoint Endpoint) error {
 	return nil
 }
 
-// removeNoneNetworking tears down the jail netns and veth pair created by
-// setupNoneNetworking.
-func removeNoneNetworking(ctx context.Context, endpoint Endpoint) error {
-	span, _ := networkTrace(ctx, "removeNoneNetworking", endpoint)
+// removeJailNetNetworking tears down the jail netns and veth pair created by
+// setupJailNetNetworking.
+func removeJailNetNetworking(ctx context.Context, endpoint Endpoint) error {
+	span, _ := networkTrace(ctx, "removeJailNetNetworking", endpoint)
 	defer span.End()
 
 	netPair := endpoint.NetworkPair()
@@ -1708,10 +1708,10 @@ func removeNoneNetworking(ctx context.Context, endpoint Endpoint) error {
 
 	if podVeth, err := podHandle.LinkByName(proxyPodVethName); err == nil {
 		if err := podHandle.LinkDel(podVeth); err != nil {
-			networkLogger().WithError(err).WithField("iface", proxyPodVethName).Warn("removeNoneNetworking: pod veth delete failed")
+			networkLogger().WithError(err).WithField("iface", proxyPodVethName).Warn("removeJailNetNetworking: pod veth delete failed")
 		}
 	} else if !errors.As(err, &netlink.LinkNotFoundError{}) {
-		networkLogger().WithError(err).WithField("iface", proxyPodVethName).Warn("removeNoneNetworking: pod veth lookup failed")
+		networkLogger().WithError(err).WithField("iface", proxyPodVethName).Warn("removeJailNetNetworking: pod veth lookup failed")
 	}
 
 	// Enter the jail netns to remove the tap, then delete the named netns.
@@ -1743,10 +1743,10 @@ func removeNoneNetworking(ctx context.Context, endpoint Endpoint) error {
 
 	if tapLink, err := getLinkByName(jailHandle, netPair.TAPIface.Name, &netlink.Tuntap{}); err == nil {
 		if err := jailHandle.LinkSetDown(tapLink); err != nil {
-			networkLogger().WithError(err).WithField("iface", netPair.TAPIface.Name).Warn("removeNoneNetworking: tap set-down failed")
+			networkLogger().WithError(err).WithField("iface", netPair.TAPIface.Name).Warn("removeJailNetNetworking: tap set-down failed")
 		}
 		if err := jailHandle.LinkDel(tapLink); err != nil {
-			networkLogger().WithError(err).WithField("iface", netPair.TAPIface.Name).Warn("removeNoneNetworking: tap delete failed")
+			networkLogger().WithError(err).WithField("iface", netPair.TAPIface.Name).Warn("removeJailNetNetworking: tap delete failed")
 		}
 	}
 
@@ -2189,10 +2189,10 @@ func addTxRateLimiter(endpoint Endpoint, maxRate uint64) error {
 				return err
 			}
 			return addHTBQdisc(link.Attrs().Index, maxRate)
-		case NetXConnectMacVtapModel:
+		case NetXConnectMacVtapModel, NetXConnectNoneModel:
 			linkName = netPair.TAPIface.Name
-		case NetXConnectNoneModel, NetXConnectNoneTapnetModel:
-			// none's tap lives inside a jail netns unreachable by name from
+		case NetXConnectJailNetModel, NetXConnectNoneTapnetModel:
+			// jailnet's tap lives inside a jail netns unreachable by name from
 			// here, and tapnet has no tap device at all (a Unix socketpair
 			// backs the VM's virtio-net instead) — neither has a link this
 			// function can shape.
@@ -2288,9 +2288,9 @@ func removeTxRateLimiter(endpoint Endpoint, networkNSPath string) error {
 				return err
 			}
 			return nil
-		case NetXConnectMacVtapModel:
+		case NetXConnectMacVtapModel, NetXConnectNoneModel:
 			linkName = netPair.TAPIface.Name
-		case NetXConnectNoneModel, NetXConnectNoneTapnetModel:
+		case NetXConnectJailNetModel, NetXConnectNoneTapnetModel:
 			// See the matching case in addTxRateLimiter: neither model has a
 			// link reachable by name here, so a rate limiter can never have
 			// been successfully attached for them in the first place.

@@ -125,18 +125,18 @@ func (endpoint *VethEndpoint) Detach(ctx context.Context, netNsCreated bool, net
 	// The network namespace would have been deleted at this point
 	// if it has not been created by virtcontainers.
 	if !netNsCreated {
-		// none and tapnet create host-global resources (a jail netns, a
+		// jailnet and tapnet create host-global resources (a jail netns, a
 		// tapnet control socket) outside the pod netns; unlike the
 		// tap/qdisc state other models leave behind, those aren't reclaimed
 		// when the (CNI-owned) pod netns disappears, so they need cleaning
 		// up here regardless of who created the netns.
 		switch endpoint.NetworkPair().NetInterworkingModel {
-		case NetXConnectNoneModel:
-			// removeNoneNetworking looks up the pod-side veth by name, which
+		case NetXConnectJailNetModel:
+			// removeJailNetNetworking looks up the pod-side veth by name, which
 			// requires running inside the pod netns, same as the normal path
 			// below.
 			return doNetNS(netNsPath, func(_ ns.NetNS) error {
-				return removeNoneNetworking(ctx, endpoint)
+				return removeJailNetNetworking(ctx, endpoint)
 			})
 		case NetXConnectNoneTapnetModel:
 			// removeTapnetNetworking only touches host-global state (the
@@ -176,13 +176,13 @@ func (endpoint *VethEndpoint) HotAttach(ctx context.Context, s *Sandbox) error {
 // HotDetach for the veth endpoint uses hot pull device
 func (endpoint *VethEndpoint) HotDetach(ctx context.Context, s *Sandbox, netNsCreated bool, netNsPath string) error {
 	if !netNsCreated {
-		// See the matching case in Detach: none and tapnet create
+		// See the matching case in Detach: jailnet and tapnet create
 		// host-global resources that the (CNI-owned) pod netns disappearing
 		// does not reclaim.
 		switch endpoint.NetworkPair().NetInterworkingModel {
-		case NetXConnectNoneModel:
+		case NetXConnectJailNetModel:
 			return doNetNS(netNsPath, func(_ ns.NetNS) error {
-				return removeNoneNetworking(ctx, endpoint)
+				return removeJailNetNetworking(ctx, endpoint)
 			})
 		case NetXConnectNoneTapnetModel:
 			return removeTapnetNetworking(ctx, endpoint)

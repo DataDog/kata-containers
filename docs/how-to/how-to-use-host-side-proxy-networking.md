@@ -1,4 +1,4 @@
-# How to use host-side-proxy networking (`none` and `tapnet`)
+# How to use host-side-proxy networking (`jailnet` and `tapnet`)
 
 This document covers two `internetworking_model` options built for a specific use case:
 routing **all** VM network traffic through a proxy container running alongside the Kata
@@ -7,7 +7,7 @@ bridge the pod's own network interface into the VM).
 
 They are two independent, selectable implementations of the same goal — pick one, not both:
 
-| | `none` | `tapnet` |
+| | `jailnet` | `tapnet` |
 |---|---|---|
 | Mechanism | Kernel tap device in an isolated "jail" netns, bridged to the pod netns via a veth pair, with iptables `REDIRECT` rules | VM's virtio-net device backed directly by a Unix socketpair; no kernel tap device at all |
 | What reaches the proxy | Only TCP and UDP/53 (DNS) — other protocols are dropped by the pod netns's default `FORWARD` policy, not proxied | Everything — the proxy's user-space network stack sees every VM frame (TCP/UDP/ICMP) |
@@ -17,7 +17,7 @@ They are two independent, selectable implementations of the same goal — pick o
 
 If you need maximum protocol coverage and a hard "no bypass" guarantee, use `tapnet`. If you
 need the performance characteristics of a real kernel tap device and can tolerate only
-TCP/DNS being interceptable, use `none`.
+TCP/DNS being interceptable, use `jailnet`.
 
 Both share the same VM-side addressing: the VM is configured with `169.254.1.2/30` and a
 default route via `169.254.1.1`, where the host-side proxy acts as gateway
@@ -31,7 +31,7 @@ Set `internetworking_model` under `[hypervisor.qemu]` in your `configuration.tom
 
 ```toml
 [hypervisor.qemu]
-internetworking_model = "tapnet"   # or "none"
+internetworking_model = "tapnet"   # or "jailnet"
 ```
 
 Or per-pod via the OCI/CRI annotation (see
@@ -43,14 +43,14 @@ annotations:
 ```
 
 Both models also support `disable_new_netns = true` (the runtime accepts this only for
-`none`/`tapnet` — see `checkNetNsConfig` in `src/runtime/pkg/katautils/config.go`).
+`jailnet`/`tapnet` — see `checkNetNsConfig` in `src/runtime/pkg/katautils/config.go`).
 
 In both cases, **a proxy container or process must exist and be reachable from the pod
 before the VM's network traffic is expected to flow.** Kata itself does not run the proxy —
 that's the responsibility of whatever deploys the sandbox (e.g. a sidecar container or
 DaemonSet-installed component).
 
-## `none`: jail netns + veth + iptables REDIRECT
+## `jailnet`: jail netns + veth + iptables REDIRECT
 
 ### Topology
 
@@ -60,7 +60,7 @@ jail netns:  tap0_kata (169.254.1.1/30) ─── kata-pvj (169.254.2.1/30)
 pod  netns:                               kata-pvp (169.254.2.2/30) ─── eth0
 ```
 
-`setupNoneNetworking` (in `network_linux.go`) creates a network namespace named
+`setupJailNetNetworking` (in `network_linux.go`) creates a network namespace named
 `kata-jail-<id>` (bind-mounted at `/run/netns/kata-jail-<id>`) containing only the VM's tap
 device, then bridges it to the pod netns with a veth pair (`kata-pvj` inside the jail,
 `kata-pvp` in the pod netns). `<id>` is the sandbox's per-interface UUID
@@ -222,7 +222,7 @@ order interfaces are attached in.
 
 ## Limitations
 
-- `none` only proxies TCP and UDP/53; every other protocol is dropped, not forwarded.
+- `jailnet` only proxies TCP and UDP/53; every other protocol is dropped, not forwarded.
 - `tapnet` does not support proxy reconnection — a proxy crash or restart requires the pod
   to be restarted to get a new socketpair.
 - Both require an external proxy component; neither is useful on its own.
