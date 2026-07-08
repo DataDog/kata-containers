@@ -1427,10 +1427,15 @@ func removeTCFiltering(ctx context.Context, endpoint Endpoint) error {
 //	pod  netns:                               kata-pvp (169.254.2.2/30) ─── eth0
 //
 // The proxy (running in the pod netns) installs iptables REDIRECT rules on
-// kata-pvp. Traffic arriving from the VM crosses the veth and is intercepted
-// by REDIRECT before it can reach eth0. Non-TCP/DNS traffic has no forwarding
-// path to eth0 and is dropped — no bypass is possible, but coverage is
-// limited to TCP and UDP/53.
+// kata-pvp. Traffic arriving from the VM crosses the veth and, if matched by
+// a REDIRECT rule, is intercepted before it can reach eth0. This code does
+// not itself enforce anything beyond that: enabling ip_forward inside the
+// jail netns (see setupJailNetNetworking) is what lets the kernel move
+// packets from the tap onto the veth in the first place, so any protocol the
+// proxy's REDIRECT rules don't match is only blocked if the proxy has also
+// installed a scoped drop for kata-pvp in its own FORWARD chain (see
+// how-to-use-host-side-proxy-networking.md). Without that second rule,
+// unmatched traffic is not dropped — it is forwarded to eth0 unmodified.
 //
 // tapnet: no kernel tap device, netns, or iptables rule is involved — the
 // VM's virtio-net device is backed directly by a Unix socketpair whose far
@@ -1468,9 +1473,12 @@ func jailNetnsName(id string) string {
 // configures routing so the host-sidecar proxy can intercept all VM egress.
 //
 // The VM gets 169.254.1.2/30 with a default route via the tap host address
-// (169.254.1.1).  The proxy's iptables REDIRECT rules (applied in the pod
-// netns on kata-pvp) intercept TCP and DNS-UDP; everything else is dropped by
-// the pod netns default FORWARD policy — structurally no bypass is possible.
+// (169.254.1.1).  This function only sets up the plumbing (tap, veth, routes,
+// ip_forward=1 inside the jail netns) — it installs no iptables rules of its
+// own.  Whether unredirected traffic is dropped or silently forwarded to
+// eth0 depends entirely on the proxy installing both its REDIRECT rules and
+// a matching drop rule for kata-pvp in its own FORWARD chain; this function
+// makes forwarding possible, it does not make it safe on its own.
 func setupJailNetNetworking(ctx context.Context, endpoint Endpoint, queues int, disableVhostNet bool) (err error) {
 	span, _ := networkTrace(ctx, "setupJailNetNetworking", endpoint)
 	defer span.End()
