@@ -125,7 +125,26 @@ func (endpoint *VethEndpoint) Detach(ctx context.Context, netNsCreated bool, net
 	// The network namespace would have been deleted at this point
 	// if it has not been created by virtcontainers.
 	if !netNsCreated {
-		return nil
+		// jailnet and tapnet create host-global resources (a jail netns, a
+		// tapnet control socket) outside the pod netns; unlike the
+		// tap/qdisc state other models leave behind, those aren't reclaimed
+		// when the (CNI-owned) pod netns disappears, so they need cleaning
+		// up here regardless of who created the netns.
+		switch endpoint.NetworkPair().NetInterworkingModel {
+		case NetXConnectJailNetModel:
+			// removeJailNetNetworking looks up the pod-side veth by name, which
+			// requires running inside the pod netns, same as the normal path
+			// below.
+			return doNetNS(netNsPath, func(_ ns.NetNS) error {
+				return removeJailNetNetworking(ctx, endpoint)
+			})
+		case NetXConnectNoneTapnetModel:
+			// removeTapnetNetworking only touches host-global state (the
+			// control socket path and listener map), no netns switch needed.
+			return removeTapnetNetworking(ctx, endpoint)
+		default:
+			return nil
+		}
 	}
 
 	span, ctx := vethTrace(ctx, "Detach", endpoint)
@@ -157,7 +176,19 @@ func (endpoint *VethEndpoint) HotAttach(ctx context.Context, s *Sandbox) error {
 // HotDetach for the veth endpoint uses hot pull device
 func (endpoint *VethEndpoint) HotDetach(ctx context.Context, s *Sandbox, netNsCreated bool, netNsPath string) error {
 	if !netNsCreated {
-		return nil
+		// See the matching case in Detach: jailnet and tapnet create
+		// host-global resources that the (CNI-owned) pod netns disappearing
+		// does not reclaim.
+		switch endpoint.NetworkPair().NetInterworkingModel {
+		case NetXConnectJailNetModel:
+			return doNetNS(netNsPath, func(_ ns.NetNS) error {
+				return removeJailNetNetworking(ctx, endpoint)
+			})
+		case NetXConnectNoneTapnetModel:
+			return removeTapnetNetworking(ctx, endpoint)
+		default:
+			return nil
+		}
 	}
 
 	span, ctx := vethTrace(ctx, "HotDetach", endpoint)
