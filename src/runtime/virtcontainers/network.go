@@ -160,6 +160,8 @@ const (
 	noneNetModelStr = "none"
 
 	jailNetModelStr = "jailnet"
+
+	tapNetModelStr = "tapnet"
 )
 
 // GetModel returns the string value of a NetInterworkingModel
@@ -176,7 +178,7 @@ func (n *NetInterworkingModel) GetModel() string {
 	case NetXConnectJailNetModel:
 		return jailNetModelStr
 	case NetXConnectNoneTapnetModel:
-		return "tapnet"
+		return tapNetModelStr
 	}
 	return "unknown"
 }
@@ -199,7 +201,7 @@ func (n *NetInterworkingModel) SetModel(modelName string) error {
 	case jailNetModelStr:
 		*n = NetXConnectJailNetModel
 		return nil
-	case "tapnet":
+	case tapNetModelStr:
 		*n = NetXConnectNoneTapnetModel
 		return nil
 	}
