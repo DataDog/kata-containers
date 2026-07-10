@@ -1038,6 +1038,19 @@ func (q *QMP) ExecuteNetdevAddByFds(ctx context.Context, netdevType, netdevID st
 	return q.executeCommand(ctx, "netdev_add", args, nil)
 }
 
+// ExecuteNetdevAddBySocketFd adds a socket-backed netdev to a QEMU instance
+// using a single pre-connected fd (e.g. one end of a Unix socketpair).
+// netdevID is the id of the device to add; fdName must already have been
+// passed to QEMU via ExecuteGetFD.
+func (q *QMP) ExecuteNetdevAddBySocketFd(ctx context.Context, netdevID, fdName string) error {
+	args := map[string]interface{}{
+		"type": "socket",
+		"id":   netdevID,
+		"fd":   fdName,
+	}
+	return q.executeCommand(ctx, "netdev_add", args, nil)
+}
+
 // ExecuteNetdevDel deletes a Net device from a QEMU instance
 // using the netdev_del command. netdevID is the id of the device to delete.
 func (q *QMP) ExecuteNetdevDel(ctx context.Context, netdevID string) error {

@@ -124,6 +124,23 @@ const (
 	// NetXConnectNoneModel can be used when the VM is in the host network namespace
 	NetXConnectNoneModel
 
+	// NetXConnectJailNetModel routes VM network traffic through a host-side
+	// proxy: the VM's tap device lives inside an isolated "jail" network
+	// namespace, connected to the host via a veth pair, with iptables
+	// REDIRECT rules steering traffic to the proxy. Unlike
+	// NetXConnectNoneModel, the shim actively creates and tears down this
+	// jail netns, veth pair, and iptables rules.
+	// Corresponds to internetworking_model=jailnet in configuration.toml.
+	NetXConnectJailNetModel
+
+	// NetXConnectNoneTapnetModel replaces the kernel tap device entirely: the
+	// VM's virtio-net device is backed by a Unix socketpair, one end owned by
+	// QEMU and the other handed off (via SCM_RIGHTS) to a host-sidecar proxy
+	// that drives a gvisor-tap-vsock user-space network stack. No tap device,
+	// jail netns, veth, or iptables rule is created by the shim.
+	// Corresponds to internetworking_model=tapnet in configuration.toml.
+	NetXConnectNoneTapnetModel
+
 	// NetXConnectInvalidModel is the last item to Check valid values by IsValid()
 	NetXConnectInvalidModel
 )
@@ -141,6 +158,10 @@ const (
 	tcFilterNetModelStr = "tcfilter"
 
 	noneNetModelStr = "none"
+
+	jailNetModelStr = "jailnet"
+
+	tapNetModelStr = "tapnet"
 )
 
 // GetModel returns the string value of a NetInterworkingModel
@@ -154,6 +175,10 @@ func (n *NetInterworkingModel) GetModel() string {
 		return tcFilterNetModelStr
 	case NetXConnectNoneModel:
 		return noneNetModelStr
+	case NetXConnectJailNetModel:
+		return jailNetModelStr
+	case NetXConnectNoneTapnetModel:
+		return tapNetModelStr
 	}
 	return "unknown"
 }
@@ -172,6 +197,12 @@ func (n *NetInterworkingModel) SetModel(modelName string) error {
 		return nil
 	case noneNetModelStr:
 		*n = NetXConnectNoneModel
+		return nil
+	case jailNetModelStr:
+		*n = NetXConnectJailNetModel
+		return nil
+	case tapNetModelStr:
+		*n = NetXConnectNoneTapnetModel
 		return nil
 	}
 	return fmt.Errorf("Unknown type %s", modelName)
