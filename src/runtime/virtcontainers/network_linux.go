@@ -10,15 +10,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -129,6 +132,12 @@ func (n *LinuxNetwork) trace(ctx context.Context, name string) (otelTrace.Span, 
 
 func (n *LinuxNetwork) addSingleEndpoint(ctx context.Context, s *Sandbox, netInfo NetworkInfo, hotplug bool) (Endpoint, error) {
 	var endpoint Endpoint
+	// idx identifies this endpoint within the sandbox (e.g. for naming
+	// br0_kata/tap0_kata); -1 for the physical-interface branch, which
+	// never uses it. Declared here (rather than inside the else block
+	// below) so it also survives to the sandbox-ID assignment after the
+	// shared err check.
+	idx := -1
 	// TODO: This is the incoming interface
 	// based on the incoming interface we should create
 	// an appropriate EndPoint based on interface type
@@ -151,7 +160,7 @@ func (n *LinuxNetwork) addSingleEndpoint(ctx context.Context, s *Sandbox, netInf
 		endpoint, err = createPhysicalEndpoint(netInfo)
 	} else {
 		var socketPath string
-		idx := len(n.eps)
+		idx = len(n.eps)
 
 		// Avoid endpoint naming conflicts
 		// When creating a new endpoint, we check existing endpoint names and automatically adjust the naming of the new endpoint to ensure uniqueness.
@@ -228,6 +237,18 @@ func (n *LinuxNetwork) addSingleEndpoint(ctx context.Context, s *Sandbox, netInf
 
 	if err != nil {
 		return nil, err
+	}
+
+	// Give none/tapnet a host-global-safe, externally-discoverable ID to
+	// name their host-global resources (jail netns, tapnet control socket)
+	// by: replace the fresh random UUID createNetworkInterfacePair generated
+	// with one derived from the sandbox ID, which callers outside the shim
+	// (e.g. a host-side proxy sidecar) already know from the CRI/OCI sandbox
+	// ID, unlike a UUID minted deep inside virtcontainers. Still unique
+	// across sandboxes (sandbox ID) and across a sandbox's own interfaces
+	// (idx), so this doesn't reintroduce the collision the UUID switch fixed.
+	if netPair := endpoint.NetworkPair(); netPair != nil {
+		netPair.ID = fmt.Sprintf("%s-%d", s.ID(), idx)
 	}
 
 	endpoint.SetProperties(netInfo)
@@ -454,6 +475,14 @@ func (n *LinuxNetwork) scanEndpointsInNs(ctx context.Context, s *Sandbox, nsPath
 		// Skip any interfaces that are already added
 		if n.endpointAlreadyAdded(&netInfo) {
 			networkLogger().WithField("endpoint", netInfo.Iface.Name).Info("already added")
+			continue
+		}
+
+		// Skip proxy-managed veth interfaces created by setupJailNetNetworking.
+		// A stale kata-pvp in the pod netns (left by a failed prior attempt)
+		// must not be treated as a VM endpoint.
+		if netInfo.Iface.Name == proxyPodVethName {
+			networkLogger().WithField("endpoint", netInfo.Iface.Name).Info("skipping proxy veth")
 			continue
 		}
 
@@ -886,6 +915,12 @@ func xConnectVMNetwork(ctx context.Context, endpoint Endpoint, h Hypervisor) err
 	case NetXConnectTCFilterModel:
 		networkLogger().Info("connect TCFilter to VM network")
 		err = setupTCFiltering(ctx, endpoint, queues, disableVhostNet)
+	case NetXConnectJailNetModel:
+		networkLogger().Info("connect jailnet model to VM network (iptables proxy)")
+		err = setupJailNetNetworking(ctx, endpoint, queues, disableVhostNet)
+	case NetXConnectNoneTapnetModel:
+		networkLogger().Info("connect none model to VM network (tapnet proxy)")
+		err = setupTapnetNetworking(ctx, endpoint, queues, disableVhostNet)
 	default:
 		err = fmt.Errorf("Invalid internetworking model")
 	}
@@ -910,6 +945,10 @@ func xDisconnectVMNetwork(ctx context.Context, endpoint Endpoint) error {
 		err = untapNetworkPair(ctx, endpoint)
 	case NetXConnectTCFilterModel:
 		err = removeTCFiltering(ctx, endpoint)
+	case NetXConnectJailNetModel:
+		err = removeJailNetNetworking(ctx, endpoint)
+	case NetXConnectNoneTapnetModel:
+		err = removeTapnetNetworking(ctx, endpoint)
 	default:
 		err = fmt.Errorf("Invalid internetworking model")
 	}
@@ -1374,6 +1413,525 @@ func removeTCFiltering(ctx context.Context, endpoint Endpoint) error {
 	return nil
 }
 
+// Addressing shared by internetworking_model=jailnet and internetworking_model=tapnet.
+//
+// Both models give the VM 169.254.1.2/30 with a default route via the tap
+// host address 169.254.1.1, where the host-side proxy acts as gateway.
+//
+// jailnet: the VM runs inside an isolated "jail" network namespace that
+// contains only tap0_kata. A veth pair bridges the jail netns to the pod
+// netns:
+//
+//	jail netns:  tap0_kata (169.254.1.1/30) ─── kata-pvj (169.254.2.1/30)
+//	                                                  │ veth pair
+//	pod  netns:                               kata-pvp (169.254.2.2/30) ─── eth0
+//
+// The proxy (running in the pod netns) installs iptables REDIRECT rules on
+// kata-pvp. Traffic arriving from the VM crosses the veth and, if matched by
+// a REDIRECT rule, is intercepted before it can reach eth0. This code does
+// not itself enforce anything beyond that: enabling ip_forward inside the
+// jail netns (see setupJailNetNetworking) is what lets the kernel move
+// packets from the tap onto the veth in the first place, so any protocol the
+// proxy's REDIRECT rules don't match is only blocked if the proxy has also
+// installed a scoped drop for kata-pvp in its own FORWARD chain (see
+// how-to-use-host-side-proxy-networking.md). Without that second rule,
+// unmatched traffic is not dropped — it is forwarded to eth0 unmodified.
+//
+// tapnet: no kernel tap device, netns, or iptables rule is involved — the
+// VM's virtio-net device is backed directly by a Unix socketpair whose far
+// end the proxy owns, and a gvisor-tap-vsock user-space stack in the proxy
+// handles TCP/UDP/ICMP directly.
+const (
+	proxyTapHostCIDR  = "169.254.1.1/30"
+	proxyTapVMCIDR    = "169.254.1.2/30"
+	proxyJailVethCIDR = "169.254.2.1/30"
+	proxyJailVethIP   = "169.254.2.1"
+	proxyPodVethCIDR  = "169.254.2.2/30"
+	proxyPodVethIP    = "169.254.2.2"
+)
+
+const (
+	proxyJailVethName = "kata-pvj"
+	proxyPodVethName  = "kata-pvp"
+)
+
+// jailNetnsName returns the /run/netns name for the jail netns created by
+// setupJailNetNetworking so that removeJailNetNetworking can look it up by name.
+//
+// id must be globally unique (netPair.ID, set in addSingleEndpoint to
+// "<sandbox ID>-<interface index>") rather than the tap interface name
+// (netPair.TAPIface.Name, e.g. "tap0_kata") — the jail netns is a
+// host-global resource, unlike the tap device itself which is scoped to the
+// sandbox's own pod netns, so reusing the per-sandbox tap name here would
+// collide across sandboxes that both happen to be on their first interface.
+func jailNetnsName(id string) string {
+	return "kata-jail-" + id
+}
+
+// setupJailNetNetworking creates an isolated jail network namespace containing
+// only the kata tap device, connects it to the pod netns via a veth pair, and
+// configures routing so the host-sidecar proxy can intercept all VM egress.
+//
+// The VM gets 169.254.1.2/30 with a default route via the tap host address
+// (169.254.1.1).  This function only sets up the plumbing (tap, veth, routes,
+// ip_forward=1 inside the jail netns) — it installs no iptables rules of its
+// own.  Whether unredirected traffic is dropped or silently forwarded to
+// eth0 depends entirely on the proxy installing both its REDIRECT rules and
+// a matching drop rule for kata-pvp in its own FORWARD chain; this function
+// makes forwarding possible, it does not make it safe on its own.
+func setupJailNetNetworking(ctx context.Context, endpoint Endpoint, queues int, disableVhostNet bool) (err error) {
+	span, _ := networkTrace(ctx, "setupJailNetNetworking", endpoint)
+	defer span.End()
+
+	netPair := endpoint.NetworkPair()
+	jailNS := jailNetnsName(netPair.ID)
+
+	// Gather endpoint attributes (MTU, MAC) from the pod netns before we leave it.
+	podHandle, err := netlink.NewHandle()
+	if err != nil {
+		return err
+	}
+	defer podHandle.Close()
+
+	// Idempotent pre-clean: remove stale state from any previous failed attempt
+	// so that NewNamed and LinkAdd do not fail with EEXIST.
+	// DeleteNamed calls Unmount then Remove; if the netns was never fully
+	// bind-mounted (partial failure), Unmount returns EINVAL and the file is
+	// left behind.  Fall back to a direct Remove so NewNamed always gets a
+	// clean slate.
+	if err := netns.DeleteNamed(jailNS); err != nil {
+		_ = os.Remove("/run/netns/" + jailNS)
+	}
+	if podVeth, err := podHandle.LinkByName(proxyPodVethName); err == nil {
+		_ = podHandle.LinkDel(podVeth)
+	}
+
+	link, err := getLinkForEndpoint(endpoint, podHandle)
+	if err != nil {
+		return err
+	}
+	attrs := link.Attrs()
+
+	// Pin the OS thread so netns switches are stable across goroutine scheduling.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	podNsFd, err := netns.Get()
+	if err != nil {
+		return fmt.Errorf("get pod netns: %w", err)
+	}
+	defer podNsFd.Close()
+	// Safety net for every early return below: without this, an error
+	// returned while the OS thread is still switched into the jail netns
+	// would leave that netns binding on the thread after UnlockOSThread
+	// releases it back to the runtime's pool, silently relocating whichever
+	// goroutine the runtime schedules onto it next.
+	defer netns.Set(podNsFd) //nolint:errcheck
+
+	// Create and enter the jail netns.  NewNamed bind-mounts it at
+	// /run/netns/<name> so removeJailNetNetworking can open it by name.
+	jailNsFd, err := netns.NewNamed(jailNS)
+	if err != nil {
+		return fmt.Errorf("create jail netns: %w", err)
+	}
+	defer jailNsFd.Close()
+
+	jailHandle, err := netlink.NewHandle()
+	if err != nil {
+		return err
+	}
+	defer jailHandle.Close()
+
+	// Create tap in the jail netns.
+	tapLink, fds, err := createLink(jailHandle, netPair.TAPIface.Name, &netlink.Tuntap{}, queues)
+	if err != nil {
+		return fmt.Errorf("could not create TAP interface: %w", err)
+	}
+	netPair.VMFds = fds
+	defer func() {
+		if err != nil {
+			for _, f := range fds {
+				f.Close()
+			}
+		}
+	}()
+
+	if !disableVhostNet {
+		vhostFds, err := createVhostFds(queues)
+		if err != nil {
+			return fmt.Errorf("could not setup vhost fds %s: %w", netPair.VirtIface.Name, err)
+		}
+		netPair.VhostFds = vhostFds
+		defer func() {
+			if err != nil {
+				for _, f := range vhostFds {
+					f.Close()
+				}
+			}
+		}()
+	}
+
+	netPair.TAPIface.HardAddr = attrs.HardwareAddr.String()
+	if err := jailHandle.LinkSetMTU(tapLink, attrs.MTU); err != nil {
+		return fmt.Errorf("could not set TAP MTU: %w", err)
+	}
+	if err := jailHandle.LinkSetUp(tapLink); err != nil {
+		return fmt.Errorf("could not enable TAP %s: %w", netPair.TAPIface.Name, err)
+	}
+
+	tapHostAddr, err := netlink.ParseAddr(proxyTapHostCIDR)
+	if err != nil {
+		return fmt.Errorf("parse tap host addr: %w", err)
+	}
+	if err := jailHandle.AddrAdd(tapLink, tapHostAddr); err != nil {
+		return fmt.Errorf("assign tap host addr: %w", err)
+	}
+
+	// Create the veth pair in the jail netns, then move the pod end out.
+	if err := jailHandle.LinkAdd(&netlink.Veth{
+		LinkAttrs: netlink.LinkAttrs{Name: proxyJailVethName},
+		PeerName:  proxyPodVethName,
+	}); err != nil {
+		return fmt.Errorf("create veth pair: %w", err)
+	}
+
+	jailVeth, err := jailHandle.LinkByName(proxyJailVethName)
+	if err != nil {
+		return fmt.Errorf("get jail veth: %w", err)
+	}
+	podVethPeer, err := jailHandle.LinkByName(proxyPodVethName)
+	if err != nil {
+		return fmt.Errorf("get pod veth peer: %w", err)
+	}
+	if err := jailHandle.LinkSetNsFd(podVethPeer, int(podNsFd)); err != nil {
+		return fmt.Errorf("move veth peer to pod netns: %w", err)
+	}
+
+	// Configure the jail-side veth and add a default route through it so
+	// VM traffic forwarded by the kernel reaches the pod netns.
+	jailVethAddr, err := netlink.ParseAddr(proxyJailVethCIDR)
+	if err != nil {
+		return fmt.Errorf("parse jail veth addr: %w", err)
+	}
+	if err := jailHandle.AddrAdd(jailVeth, jailVethAddr); err != nil {
+		return fmt.Errorf("assign jail veth addr: %w", err)
+	}
+	if err := jailHandle.LinkSetUp(jailVeth); err != nil {
+		return fmt.Errorf("enable jail veth: %w", err)
+	}
+	if err := jailHandle.RouteAdd(&netlink.Route{
+		LinkIndex: jailVeth.Attrs().Index,
+		Gw:        net.ParseIP(proxyPodVethIP),
+	}); err != nil {
+		return fmt.Errorf("jail default route: %w", err)
+	}
+
+	// Enable IP forwarding inside the jail netns so the kernel forwards
+	// packets from tap0_kata to the veth.
+	if err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1\n"), 0644); err != nil {
+		return fmt.Errorf("enable ip_forward in jail netns: %w", err)
+	}
+
+	// Switch back to the pod netns.
+	if err := netns.Set(podNsFd); err != nil {
+		return fmt.Errorf("restore pod netns: %w", err)
+	}
+
+	// Create a fresh handle now that we're back in the pod netns so that
+	// LinkByName reflects the veth just moved here from the jail netns.
+	podHandle2, err := netlink.NewHandle()
+	if err != nil {
+		return err
+	}
+	defer podHandle2.Close()
+
+	// Configure the pod-side veth and add a return route to the VM subnet
+	// so the proxy can send responses back to the VM.
+	podVeth, err := podHandle2.LinkByName(proxyPodVethName)
+	if err != nil {
+		return fmt.Errorf("get pod veth: %w", err)
+	}
+	podVethAddr, err := netlink.ParseAddr(proxyPodVethCIDR)
+	if err != nil {
+		return fmt.Errorf("parse pod veth addr: %w", err)
+	}
+	if err := podHandle2.AddrAdd(podVeth, podVethAddr); err != nil {
+		return fmt.Errorf("assign pod veth addr: %w", err)
+	}
+	if err := podHandle2.LinkSetUp(podVeth); err != nil {
+		return fmt.Errorf("enable pod veth: %w", err)
+	}
+	_, vmSubnet, _ := net.ParseCIDR(proxyTapHostCIDR)
+	if err := podHandle2.RouteAdd(&netlink.Route{
+		LinkIndex: podVeth.Attrs().Index,
+		Dst:       vmSubnet,
+		Gw:        net.ParseIP(proxyJailVethIP),
+	}); err != nil {
+		return fmt.Errorf("pod netns VM route: %w", err)
+	}
+
+	return setProxyVMEndpointProps(endpoint)
+}
+
+// setProxyVMEndpointProps tells kata-agent to configure the VM with the
+// tap-subnet IP (169.254.1.2/30) and a default route via the tap host
+// address (169.254.1.1), shared by both the jailnet and tapnet models.
+func setProxyVMEndpointProps(endpoint Endpoint) error {
+	vmAddr, err := netlink.ParseAddr(proxyTapVMCIDR)
+	if err != nil {
+		return fmt.Errorf("parse tap VM addr: %w", err)
+	}
+	tapHostAddr, err := netlink.ParseAddr(proxyTapHostCIDR)
+	if err != nil {
+		return fmt.Errorf("parse tap host addr: %w", err)
+	}
+	_, tapNet, _ := net.ParseCIDR(proxyTapHostCIDR)
+
+	props := endpoint.Properties()
+	props.Addrs = []netlink.Addr{*vmAddr}
+	props.Routes = []netlink.Route{
+		{Dst: tapNet, Gw: nil, Scope: netlink.SCOPE_LINK},
+		{Dst: nil, Gw: tapHostAddr.IP},
+	}
+	endpoint.SetProperties(props)
+
+	return nil
+}
+
+// removeJailNetNetworking tears down the jail netns and veth pair created by
+// setupJailNetNetworking.
+func removeJailNetNetworking(ctx context.Context, endpoint Endpoint) error {
+	span, _ := networkTrace(ctx, "removeJailNetNetworking", endpoint)
+	defer span.End()
+
+	netPair := endpoint.NetworkPair()
+	jailNS := jailNetnsName(netPair.ID)
+
+	// Delete the pod-side veth; the kernel auto-deletes the jail-side peer.
+	podHandle, err := netlink.NewHandle()
+	if err != nil {
+		return err
+	}
+	defer podHandle.Close()
+
+	if podVeth, err := podHandle.LinkByName(proxyPodVethName); err == nil {
+		if err := podHandle.LinkDel(podVeth); err != nil {
+			networkLogger().WithError(err).WithField("iface", proxyPodVethName).Warn("removeJailNetNetworking: pod veth delete failed")
+		}
+	} else if !errors.As(err, &netlink.LinkNotFoundError{}) {
+		networkLogger().WithError(err).WithField("iface", proxyPodVethName).Warn("removeJailNetNetworking: pod veth lookup failed")
+	}
+
+	// Enter the jail netns to remove the tap, then delete the named netns.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	curNsFd, err := netns.Get()
+	if err != nil {
+		return fmt.Errorf("get current netns: %w", err)
+	}
+	defer curNsFd.Close()
+	defer netns.Set(curNsFd) //nolint:errcheck
+
+	jailNsFd, err := netns.GetFromName(jailNS)
+	if err != nil {
+		return fmt.Errorf("open jail netns: %w", err)
+	}
+	defer jailNsFd.Close()
+
+	if err := netns.Set(jailNsFd); err != nil {
+		return fmt.Errorf("enter jail netns: %w", err)
+	}
+
+	jailHandle, err := netlink.NewHandle()
+	if err != nil {
+		return err
+	}
+	defer jailHandle.Close()
+
+	if tapLink, err := getLinkByName(jailHandle, netPair.TAPIface.Name, &netlink.Tuntap{}); err == nil {
+		if err := jailHandle.LinkSetDown(tapLink); err != nil {
+			networkLogger().WithError(err).WithField("iface", netPair.TAPIface.Name).Warn("removeJailNetNetworking: tap set-down failed")
+		}
+		if err := jailHandle.LinkDel(tapLink); err != nil {
+			networkLogger().WithError(err).WithField("iface", netPair.TAPIface.Name).Warn("removeJailNetNetworking: tap delete failed")
+		}
+	}
+
+	if err := netns.Set(curNsFd); err != nil {
+		return fmt.Errorf("restore netns after jail cleanup: %w", err)
+	}
+
+	return netns.DeleteNamed(jailNS)
+}
+
+const tapnetSocketDir = "/run/kata-tapnet"
+
+// tapnetCtrlPath returns the control socket path for a sandbox's tapnet
+// endpoint. id must be globally unique (netPair.ID, set in addSingleEndpoint
+// to "<sandbox ID>-<interface index>") — the socket lives in a host-global
+// directory, so using the per-sandbox tap interface name here (e.g.
+// "tap0_kata") would collide across sandboxes that both happen to be on
+// their first interface. Deriving it from the sandbox ID (rather than a
+// fresh random UUID) also makes the path predictable to a proxy sidecar
+// that already knows its own CRI sandbox ID.
+func tapnetCtrlPath(id string) string {
+	return filepath.Join(tapnetSocketDir, id+".ctrl")
+}
+
+// setupTapnetNetworking prepares the pod netns for the QEMU socketpair
+// tapnet model (internetworking_model=tapnet).
+//
+// A Unix socketpair is created.  The VM end (fd_vm) is passed to QEMU via
+// VMFds as -netdev socket,fd=<N>.  Because both ends of the socketpair are
+// connected at launch, the virtio-net device always has a live backend and
+// the VM boots reliably without racing against the proxy container startup.
+//
+// The proxy end (fd_ctrl) is held by a shim goroutine (serveTapnetCtrl) that
+// drains VM TX frames and waits for the proxy container to connect to the
+// control socket at /run/kata-tapnet/<tap>.ctrl.  When the proxy connects,
+// fd_ctrl is handed off via SCM_RIGHTS.
+//
+// Note: after the proxy is killed, fd_ctrl closes and QEMU marks the
+// virtio-net link down.  Reconnection requires restarting the pod (QEMU
+// holds a fixed fd and cannot accept a new socketpair end).
+func setupTapnetNetworking(ctx context.Context, endpoint Endpoint, queues int, disableVhostNet bool) (err error) {
+	span, _ := networkTrace(ctx, "setupTapnetNetworking", endpoint)
+	defer span.End()
+
+	netPair := endpoint.NetworkPair()
+	ctrlPath := tapnetCtrlPath(netPair.ID)
+
+	podHandle, err := netlink.NewHandle()
+	if err != nil {
+		return err
+	}
+	defer podHandle.Close()
+
+	// Read the pod veth MAC so QEMU can set the correct MAC on the virtio-net device.
+	link, err := getLinkForEndpoint(endpoint, podHandle)
+	if err != nil {
+		return err
+	}
+	netPair.TAPIface.HardAddr = link.Attrs().HardwareAddr.String()
+
+	// Create a Unix socketpair.  fds[0] (VM end) goes to QEMU; fds[1] (ctrl
+	// end) is held by the shim until the proxy container connects.
+	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("tapnet socketpair: %w", err)
+	}
+	vmFile := os.NewFile(uintptr(fds[0]), "tapnet-vm")
+	ctrlFile := os.NewFile(uintptr(fds[1]), "tapnet-ctrl")
+	defer func() {
+		if err != nil {
+			vmFile.Close()
+			ctrlFile.Close()
+		}
+	}()
+
+	netPair.VMFds = []*os.File{vmFile}
+
+	// Ensure the socket directory exists, then listen synchronously (rather
+	// than inside the goroutine below) so the listener can be tracked here
+	// and closed by removeTapnetNetworking on teardown — otherwise a proxy
+	// that never connects leaves serveTapnetCtrl blocked in Accept forever.
+	if err := os.MkdirAll(tapnetSocketDir, 0o700); err != nil {
+		return fmt.Errorf("create tapnet socket dir: %w", err)
+	}
+	if err := os.Remove(ctrlPath); err != nil && !os.IsNotExist(err) {
+		networkLogger().WithError(err).WithField("path", ctrlPath).Warn("tapnet ctrl: failed to remove stale socket")
+	}
+	ln, err := net.Listen("unix", ctrlPath)
+	if err != nil {
+		return fmt.Errorf("tapnet ctrl listen: %w", err)
+	}
+	tapnetListeners.Store(ctrlPath, ln)
+
+	go serveTapnetCtrl(ln, ctrlFile)
+
+	return setProxyVMEndpointProps(endpoint)
+}
+
+// tapnetListeners tracks the live control-socket listener for each tapnet
+// sandbox (keyed by ctrl socket path) so removeTapnetNetworking can close it
+// and unblock serveTapnetCtrl's Accept, even if the proxy never connected.
+var tapnetListeners sync.Map
+
+// removeTapnetNetworking cleans up after setupTapnetNetworking.
+func removeTapnetNetworking(ctx context.Context, endpoint Endpoint) error {
+	span, _ := networkTrace(ctx, "removeTapnetNetworking", endpoint)
+	defer span.End()
+	netPair := endpoint.NetworkPair()
+	ctrlPath := tapnetCtrlPath(netPair.ID)
+
+	if v, ok := tapnetListeners.LoadAndDelete(ctrlPath); ok {
+		if ln, ok := v.(net.Listener); ok {
+			if err := ln.Close(); err != nil {
+				networkLogger().WithError(err).WithField("path", ctrlPath).Warn("tapnet ctrl: listener close failed")
+			}
+		}
+	}
+	if err := os.Remove(ctrlPath); err != nil && !os.IsNotExist(err) {
+		networkLogger().WithError(err).WithField("path", ctrlPath).Warn("tapnet ctrl: failed to remove socket")
+	}
+	return nil
+}
+
+// serveTapnetCtrl is the shim-side goroutine for tapnet fd handoff. It drains
+// ctrlFile (VM TX frames) to prevent the socketpair buffer from filling, then
+// accepts on ln (already listening — see setupTapnetNetworking) for the
+// proxy container to connect. When the proxy connects, ctrlFile is sent via
+// SCM_RIGHTS and the goroutine exits. removeTapnetNetworking closing ln is
+// what makes Accept return (with an error) if the proxy never connects.
+func serveTapnetCtrl(ln net.Listener, ctrlFile *os.File) {
+	defer ctrlFile.Close()
+
+	// Drain VM TX frames from ctrlFile until handoff or error.
+	go drainFile(ctrlFile)
+
+	conn, err := ln.Accept()
+	if err != nil {
+		if !errors.Is(err, net.ErrClosed) {
+			networkLogger().WithError(err).Error("tapnet ctrl: accept failed")
+		}
+		return
+	}
+	defer conn.Close()
+
+	// Send ctrlFile to the proxy via SCM_RIGHTS.
+	uc, ok := conn.(*net.UnixConn)
+	if !ok {
+		networkLogger().WithField("type", fmt.Sprintf("%T", conn)).Error("tapnet ctrl: unexpected connection type")
+		return
+	}
+	cf, err := uc.File()
+	if err != nil {
+		networkLogger().WithError(err).Error("tapnet ctrl: failed to get connection fd")
+		return
+	}
+	defer cf.Close()
+
+	rights := unix.UnixRights(int(ctrlFile.Fd()))
+	if _, err := unix.SendmsgN(int(cf.Fd()), []byte{0}, rights, nil, 0); err != nil {
+		networkLogger().WithError(err).Error("tapnet ctrl: SCM_RIGHTS send failed")
+	}
+	// ctrlFile.Close() is called by the defer above; the drain goroutine exits on EOF/EBADF.
+}
+
+// drainFile reads and discards all data from f until it returns an error.
+func drainFile(f *os.File) {
+	buf := make([]byte, 4096)
+	for {
+		if _, err := f.Read(buf); err != nil {
+			if !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrClosed) {
+				networkLogger().WithError(err).Warn("tapnet ctrl: drain read failed")
+			}
+			return
+		}
+	}
+}
+
 // doNetNS is free from any call to a go routine, and it calls
 // into runtime.LockOSThread(), meaning it won't be executed in a
 // different thread than the one expected by the caller.
@@ -1641,6 +2199,12 @@ func addTxRateLimiter(endpoint Endpoint, maxRate uint64) error {
 			return addHTBQdisc(link.Attrs().Index, maxRate)
 		case NetXConnectMacVtapModel, NetXConnectNoneModel:
 			linkName = netPair.TAPIface.Name
+		case NetXConnectJailNetModel, NetXConnectNoneTapnetModel:
+			// jailnet's tap lives inside a jail netns unreachable by name from
+			// here, and tapnet has no tap device at all (a Unix socketpair
+			// backs the VM's virtio-net instead) — neither has a link this
+			// function can shape.
+			return fmt.Errorf("tx rate limiting is not supported for inter-networking model %v", netPair.NetInterworkingModel)
 		default:
 			return fmt.Errorf("Unsupported inter-networking model %v for adding tx rate limiter", netPair.NetInterworkingModel)
 		}
@@ -1734,6 +2298,11 @@ func removeTxRateLimiter(endpoint Endpoint, networkNSPath string) error {
 			return nil
 		case NetXConnectMacVtapModel, NetXConnectNoneModel:
 			linkName = netPair.TAPIface.Name
+		case NetXConnectJailNetModel, NetXConnectNoneTapnetModel:
+			// See the matching case in addTxRateLimiter: neither model has a
+			// link reachable by name here, so a rate limiter can never have
+			// been successfully attached for them in the first place.
+			return fmt.Errorf("tx rate limiting is not supported for inter-networking model %v", netPair.NetInterworkingModel)
 		}
 	case *MacvtapEndpoint, *TapEndpoint:
 		linkName = endpoint.Name()
