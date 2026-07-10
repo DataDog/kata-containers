@@ -2432,7 +2432,20 @@ func (q *qemu) hotplugVFIODevice(ctx context.Context, device *config.VFIODev, op
 	}
 }
 
-func (q *qemu) hotAddNetDevice(name, hardAddr string, VMFds, VhostFds []*os.File) error {
+func (q *qemu) hotAddNetDevice(name, hardAddr string, model NetInterworkingModel, VMFds, VhostFds []*os.File) error {
+	if model == NetXConnectNoneTapnetModel {
+		// tapnet: a single pre-connected Unix socketpair fd, no vhost, no
+		// multiqueue — see setupTapnetNetworking.
+		if len(VMFds) != 1 {
+			return fmt.Errorf("tapnet hotplug expects exactly one fd, got %d", len(VMFds))
+		}
+		fdName := "fd0"
+		if err := q.qmpMonitorCh.qmp.ExecuteGetFD(q.qmpMonitorCh.ctx, fdName, VMFds[0]); err != nil {
+			return err
+		}
+		return q.qmpMonitorCh.qmp.ExecuteNetdevAddBySocketFd(q.qmpMonitorCh.ctx, name, fdName)
+	}
+
 	var (
 		VMFdNames    []string
 		VhostFdNames []string
@@ -2460,10 +2473,13 @@ func (q *qemu) hotplugNetDevice(ctx context.Context, endpoint Endpoint, op Opera
 		return err
 	}
 	var tap TapInterface
+	var model NetInterworkingModel
 
 	switch endpoint.Type() {
 	case VethEndpointType, NetkitEndpointType, IPVlanEndpointType, MacvlanEndpointType, TuntapEndpointType:
-		tap = endpoint.NetworkPair().TapInterface
+		netPair := endpoint.NetworkPair()
+		tap = netPair.TapInterface
+		model = netPair.NetInterworkingModel
 	case TapEndpointType:
 		drive := endpoint.(*TapEndpoint)
 		tap = drive.TapInterface
@@ -2471,10 +2487,17 @@ func (q *qemu) hotplugNetDevice(ctx context.Context, endpoint Endpoint, op Opera
 		return fmt.Errorf("this endpoint is not supported")
 	}
 
+	// tapnet is single-queue (one socketpair fd); mq/vectors only apply to
+	// the kernel tap backend.
+	queues := int(q.config.NumVCPUs())
+	if model == NetXConnectNoneTapnetModel {
+		queues = 0
+	}
+
 	devID := "virtio-" + tap.ID
 	machineType := q.HypervisorConfig().HypervisorMachineType
 	if op == AddDevice {
-		if err = q.hotAddNetDevice(tap.Name, endpoint.HardwareAddr(), tap.VMFds, tap.VhostFds); err != nil {
+		if err = q.hotAddNetDevice(tap.Name, endpoint.HardwareAddr(), model, tap.VMFds, tap.VhostFds); err != nil {
 			return err
 		}
 
@@ -2491,7 +2514,7 @@ func (q *qemu) hotplugNetDevice(ctx context.Context, endpoint Endpoint, op Opera
 			dev := config.VFIODev{ID: devID}
 			config.PCIeDevicesPerPort[config.RootPort] = append(config.PCIeDevicesPerPort[config.RootPort], dev)
 
-			return q.qmpMonitorCh.qmp.ExecuteNetPCIDeviceAdd(q.qmpMonitorCh.ctx, tap.Name, devID, endpoint.HardwareAddr(), addr, bridgeID, romFile, int(q.config.NumVCPUs()), defaultDisableModern)
+			return q.qmpMonitorCh.qmp.ExecuteNetPCIDeviceAdd(q.qmpMonitorCh.ctx, tap.Name, devID, endpoint.HardwareAddr(), addr, bridgeID, romFile, queues, defaultDisableModern)
 		}
 
 		addr, bridge, err := q.arch.addDeviceToBridge(ctx, tap.ID, types.PCI)
@@ -2514,9 +2537,9 @@ func (q *qemu) hotplugNetDevice(ctx context.Context, endpoint Endpoint, op Opera
 		}
 		if machine.Type == QemuCCWVirtio {
 			devNoHotplug := fmt.Sprintf("fe.%x.%v", bridge.Addr, addr)
-			return q.qmpMonitorCh.qmp.ExecuteNetCCWDeviceAdd(q.qmpMonitorCh.ctx, tap.Name, devID, endpoint.HardwareAddr(), devNoHotplug, int(q.config.NumVCPUs()))
+			return q.qmpMonitorCh.qmp.ExecuteNetCCWDeviceAdd(q.qmpMonitorCh.ctx, tap.Name, devID, endpoint.HardwareAddr(), devNoHotplug, queues)
 		}
-		return q.qmpMonitorCh.qmp.ExecuteNetPCIDeviceAdd(q.qmpMonitorCh.ctx, tap.Name, devID, endpoint.HardwareAddr(), addr, bridge.ID, romFile, int(q.config.NumVCPUs()), defaultDisableModern)
+		return q.qmpMonitorCh.qmp.ExecuteNetPCIDeviceAdd(q.qmpMonitorCh.ctx, tap.Name, devID, endpoint.HardwareAddr(), addr, bridge.ID, romFile, queues, defaultDisableModern)
 	}
 
 	if err := q.arch.removeDeviceFromBridge(tap.ID); err != nil {

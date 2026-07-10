@@ -900,6 +900,15 @@ const (
 
 	// VHOSTUSER is a vhost-user port (socket)
 	VHOSTUSER NetDeviceType = "vhostuser"
+
+	// NetDeviceSocketFd is a socket-based networking device using a pre-existing
+	// file descriptor (from a Unix socketpair).  Produces:
+	//   -netdev socket,id=<id>,fd=<N>
+	// Both ends of the socketpair are connected at QEMU launch, so the
+	// virtio-net device always has a live backend — no race between VM boot
+	// and proxy startup.  The shim holds the proxy end and hands it off via
+	// SCM_RIGHTS on a control socket once the proxy container connects.
+	NetDeviceSocketFd NetDeviceType = "socketfd"
 )
 
 // QemuNetdevParam converts to the QEMU -netdev parameter notation
@@ -927,6 +936,8 @@ func (n NetDeviceType) QemuNetdevParam(netdev *NetDevice, config *Config) string
 			log.Fatal("vhost-user devices are not supported on IBM Z")
 		}
 		return "vhost-user" // -netdev type=vhost-user (no device)
+	case NetDeviceSocketFd:
+		return "socket"
 	default:
 		return ""
 
@@ -950,6 +961,8 @@ func (n NetDeviceType) QemuDeviceParam(netdev *NetDevice, config *Config) Device
 		device = "virtio-net"
 	case VETHTAP:
 		device = "virtio-net" // -netdev type=tap -device virtio-net-pci
+	case NetDeviceSocketFd:
+		device = "virtio-net"
 	case VFIO:
 		if netdev.Transport == TransportMMIO {
 			log.Fatal("vfio devices are not support with the MMIO transport")
@@ -1037,15 +1050,15 @@ var VirtioNetTransport = map[VirtioTransport]string{
 
 // Valid returns true if the NetDevice structure is valid and complete.
 func (netdev NetDevice) Valid() bool {
-	if netdev.ID == "" || netdev.IFName == "" {
+	if netdev.ID == "" {
 		return false
 	}
 
 	switch netdev.Type {
-	case TAP:
-		return true
-	case MACVTAP:
-		return true
+	case TAP, MACVTAP:
+		return netdev.IFName != ""
+	case NetDeviceSocketFd:
+		return len(netdev.FDs) > 0
 	default:
 		return false
 	}
@@ -1107,8 +1120,8 @@ func (netdev NetDevice) QemuDeviceParams(config *Config) []string {
 		deviceParams = append(deviceParams, s)
 	}
 
-	if len(netdev.FDs) > 0 {
-		// Note: We are appending to the device params here
+	// mq is only valid for tap-based netdevs; the socketfd backend is single-queue.
+	if len(netdev.FDs) > 0 && netdev.Type != NetDeviceSocketFd {
 		deviceParams = append(deviceParams, netdev.mqParameter(config))
 	}
 
@@ -1137,6 +1150,17 @@ func (netdev NetDevice) QemuNetdevParams(config *Config) []string {
 
 	netdevParams = append(netdevParams, netdevType)
 	netdevParams = append(netdevParams, fmt.Sprintf("id=%s", netdev.ID))
+
+	// SocketFd netdev uses a pre-connected socketpair fd. Valid() should have
+	// already rejected a NetDevice with no FDs before it reaches here.
+	if netdev.Type == NetDeviceSocketFd {
+		if len(netdev.FDs) == 0 {
+			log.Fatal("NetDeviceSocketFd netdev requires at least one FD")
+		}
+		qemuFDs := config.appendFDs(netdev.FDs)
+		netdevParams = append(netdevParams, fmt.Sprintf("fd=%d", qemuFDs[0]))
+		return netdevParams
+	}
 
 	if netdev.VHost {
 		netdevParams = append(netdevParams, "vhost=on")
