@@ -1,12 +1,17 @@
 # Builder stage
-FROM ubuntu:22.04 AS builder
+FROM registry.ddbuild.io/images/base/gbi-ubuntu_2404:release AS builder
 
-# CI_COMMIT_TAG will be passed as build arg (e.g., 3.18.0-dd.202526)
-ARG CI_COMMIT_TAG
+# GBI images default to a non-root user; switch to root for the apt/install
+# steps below. The final image is scratch, so this only affects the builder.
+USER root
+
+# The upstream kata-static release to bundle. Defaults to the repo's VERSION
+# file so it tracks the fork automatically; override with --build-arg KATA_VERSION.
+ARG KATA_VERSION=""
 
 # Install packages
 RUN apt-get update && \
-    apt-get install -y curl wget unzip xz-utils ca-certificates && \
+    apt-get install -y curl wget unzip xz-utils zstd ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 # Create directory structure
@@ -16,13 +21,14 @@ RUN mkdir -p /kata-build/opt/kata/bin \
              /kata-build/opt/kata/share/kata-containers \
              /kata-build/etc/containerd/config.d
 
-# Download and extract kata package
-# Extract version from tag and construct URL
+# Download and extract the upstream kata-static package for this arch. The
+# version defaults to the repo's VERSION file so it tracks the fork automatically.
 ARG TARGETARCH
-RUN KATA_VERSION=${CI_COMMIT_TAG%-dd.*} && \
-    echo "Downloading kata ${KATA_VERSION} from tag ${CI_COMMIT_TAG}" && \
-    wget -q "https://github.com/kata-containers/kata-containers/releases/download/${KATA_VERSION}/kata-static-${KATA_VERSION}-${TARGETARCH}.tar.xz" -O /tmp/kata.tar.xz && \
-    tar -xJf /tmp/kata.tar.xz -C /kata-build --wildcards \
+COPY VERSION /tmp/kata-version
+RUN KATA_VERSION="${KATA_VERSION:-$(cat /tmp/kata-version)}" && \
+    echo "Downloading kata-static ${KATA_VERSION} (${TARGETARCH})" && \
+    wget -q "https://github.com/kata-containers/kata-containers/releases/download/${KATA_VERSION}/kata-static-${KATA_VERSION}-${TARGETARCH}.tar.zst" -O /tmp/kata.tar.zst && \
+    tar --zstd -xf /tmp/kata.tar.zst -C /kata-build --wildcards \
         './opt/kata/bin/qemu-system-*' \
         './opt/kata/libexec/virtiofsd' \
         './opt/kata/lib/kata-qemu/libfdt.a' \
@@ -45,7 +51,6 @@ RUN KATA_VERSION=${CI_COMMIT_TAG%-dd.*} && \
         './opt/kata/share/kata-qemu/qemu/firmware/60-edk2-i386.json' \
         './opt/kata/share/kata-qemu/qemu/firmware/60-edk2-x86_64.json' \
         './opt/kata/share/kata-qemu/qemu/kvmvapic.bin' \
-        './opt/kata/share/kata-qemu/qemu/linuxboot.bin' \
         './opt/kata/share/kata-qemu/qemu/linuxboot_dma.bin' \
         './opt/kata/share/kata-qemu/qemu/multiboot_dma.bin' \
         './opt/kata/share/kata-qemu/qemu/pvh.bin' \
@@ -54,10 +59,13 @@ RUN KATA_VERSION=${CI_COMMIT_TAG%-dd.*} && \
         './opt/kata/share/defaults/kata-containers/configuration-qemu.toml' \
         './opt/kata/share/kata-containers/kata-ubuntu-noble.image' && \
     mv /kata-build/opt/kata/share/kata-containers/kata-ubuntu-noble.image /kata-build/opt/kata/share/kata-containers/kata-containers-datadog.img && \
-    rm -f /tmp/kata.tar.xz
+    rm -f /tmp/kata.tar.zst
 
 # Copy CI-built kernel for the target architecture and rename to datadog convention
 COPY tools/packaging/kernel/vmlinux-${TARGETARCH} /kata-build/opt/kata/share/kata-containers/vmlinux-datadog
+
+# Copy the CI-built kernel config alongside the kernel so it ships in the image
+COPY tools/packaging/kernel/kernel-config-${TARGETARCH} /kata-build/opt/kata/share/kata-containers/config-datadog
 
 # Copy CI-built shim binary
 # This should be built by the CI pipeline and placed in the expected location
