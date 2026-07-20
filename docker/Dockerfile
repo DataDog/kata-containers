@@ -64,7 +64,7 @@ RUN ln -s /opt/kata/share/kata-containers/kata-containers-datadog.img /kata-buil
     ln -s /opt/kata/share/kata-containers/vmlinux-datadog /kata-build/opt/kata/share/kata-containers/vmlinux.container
 
 # Link configuration
-RUN ln /kata-build/opt/kata/share/defaults/kata-containers/configuration-qemu.toml /kata-build/opt/kata/conf/qemu/configuration-qemu.toml
+RUN cp -a /kata-build/opt/kata/share/defaults/kata-containers/configuration-qemu.toml /kata-build/opt/kata/conf/qemu/configuration-qemu.toml
 
 # Copy override configuration
 COPY docker/containerd/config.d/10-override.toml /kata-build/opt/kata/conf/qemu/config.d/10-override.toml
