@@ -13,6 +13,7 @@ stages:
   - ci-image
   - build
   - publish
+  - nydus
   - notify
 
 ci-image:
@@ -165,6 +166,23 @@ publish-oci-image:
     IMAGE_TAG: "$CI_COMMIT_REF_SLUG"
   # .build-docker-image (compute-delivery/v3) defines `rules`, which cannot be
   # combined with `only`. Express "run on tags and branches" via rules.
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH
+
+# Convert the published OCI image to a lazy-loading nydus variant (<tag>-nydus)
+# via the compute-delivery .build-nydus-image template, so the node-installer's
+# ImageVolume pull can be lazy (cuts the kata-install latency at node provision).
+publish-oci-image-nydus:
+  stage: nydus
+  extends: .build-nydus-image
+  # Convert the image publish-oci-image just pushed; run after it.
+  needs:
+    - "publish-oci-image"
+  variables:
+    # Match the tag publish-oci-image used (sluggified ref) so nydus-convert
+    # finds the just-built source image.
+    IMAGE_TAG: "$CI_COMMIT_REF_SLUG"
   rules:
     - if: $CI_COMMIT_TAG
     - if: $CI_COMMIT_BRANCH
