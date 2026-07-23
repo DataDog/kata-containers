@@ -22,6 +22,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 #[cfg(target_arch = "s390x")]
 use std::str::FromStr;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use ttrpc::{
     self,
@@ -820,6 +821,7 @@ impl AgentService {
         let eid = &req.exec_id;
 
         let term_exit_notifier;
+        let term_closed;
         let reader = {
             let mut sandbox = self.sandbox.lock().await;
             let p = sandbox
@@ -827,6 +829,7 @@ impl AgentService {
                 .map_err(sandbox_err_to_ttrpc)?;
 
             term_exit_notifier = p.term_exit_notifier.clone();
+            term_closed = p.term_closed.clone();
 
             if p.term_master.is_some() {
                 p.get_reader(StreamType::TermMaster)
@@ -847,55 +850,58 @@ impl AgentService {
         let read_fut = read_stream(&reader, req.len as usize);
         tokio::pin!(read_fut);
 
-        // Cancellation and polling model: Rust async is polled, not preempted.
-        // `Future::poll()` is a synchronous function call that runs to completion and
-        // returns Ready or Pending (`std::future::Future`).
-        // Readiness notifications (Waker::wake / Tokio Notify) only schedule the task
-        // to be polled again later; they do not interrupt an in-progress poll.
-        // Therefore, a Notify becoming ready while `poll_read()` is executing cannot cause
-        // the read future to be dropped mid-way; cancellation can only happen when the branch
-        // is still pending between polls (Tokio `select!` cancels by dropping non-selected futures).
-        // Detailed information, please refer to Tokio doc for more information:
-        // - Future::poll: https://doc.rust-lang.org/std/future/trait.Future.html
-        // - Waker: https://doc.rust-lang.org/std/task/struct.Waker.html
-        // - Tokio select!: https://docs.rs/tokio/latest/tokio/macro.select.html
-        let data = tokio::select! {
-            // Use `biased` to make the polling order deterministic (top-to-bottom).
-            // This ensures that *when multiple branches are ready at the same time*,
-            // we prefer reading pending output over reacting to the exit notification.
-            //
-            // Note: `biased` does NOT guarantee that we won't lose output. If the exit
-            // notification becomes ready while `read_stream` is still pending, the
-            // exit branch may be selected and we may stop reading before draining the
-            // remaining buffered data.
-            //
-            // Detailed information, please refer to Tokio doc for more information:
-            // https://docs.rs/tokio/latest/src/tokio/macros/select.rs.html#67
-            biased;
-
-            v = &mut read_fut => v?,
-            _ = term_exit_notifier.notified() => {
-                // Drain-after-exit rationale:
-                // The process has exited, but the data may still be buffered in the pipe/pty.
-                // We should keep waiting for the same in-flight read for a bounded window to drain the data.
-                //
-                // It enters this branch only if `term_exit_notifier.notified()` fires. It then try to "drain"
-                // any remaining buffered output for a short, bounded time window:
-                // - If non-empty data is read: return immediately.
-                // - else then return empty data as EOF.
-
+        // Drain any output still buffered in the pipe/pty after the process has
+        // exited, for a short bounded window, then return empty data (EOF).
+        // Shared by the "already exited" fast path and the exit-notification
+        // branch of the select below.
+        macro_rules! drain_after_exit {
+            ($read_fut:expr) => {{
                 const DRAIN_DEADLINE_MS: u64 = 500; // 500ms
                 let deadline = Duration::from_millis(DRAIN_DEADLINE_MS);
 
-                // Attempt to drain remaining buffered output after process exit
-                // Try reading with timeout
-                match timeout(deadline, &mut read_fut).await {
+                // Attempt to drain remaining buffered output after process exit.
+                match timeout(deadline, &mut $read_fut).await {
                     Ok(v) => v?, // got data or EOF (empty)
                     _ => {
                         warn!(sl(), "exit-drain timeout, return EOF"; "container-id" => cid, "exec-id" => eid);
                         Vec::new() // Return empty as EOF
                     }
                 }
+            }};
+        }
+
+        // Register interest on the exit notifier BEFORE reading the sticky
+        // `term_closed` flag, to close a lost-wake-up race. `notify_waiters()`
+        // (in Process::notify_term_close) stores no permit, so a reader that
+        // parks on `.notified()` *after* the process exits would miss the wake-up
+        // and block until the caller times out -- the pipe never reaches EOF
+        // while any child still holds fd 1/2 open, which is exactly how a k8s
+        // exec/attach (e.g. a CI runner) hangs. `notify_term_close()` sets
+        // `term_closed` *before* calling `notify_waiters()`, so with the ordering
+        // here every interleaving is covered:
+        //   - enable() runs before that store -> the subsequent notify wakes us;
+        //   - the store ran before enable()    -> we observe term_closed == true.
+        // `Notified::enable()` registers the waiter without awaiting it.
+        let term_notified = term_exit_notifier.notified();
+        tokio::pin!(term_notified);
+        term_notified.as_mut().enable();
+
+        let data = if term_closed.load(Ordering::SeqCst) {
+            // Process already exited before this read started: drain, then EOF.
+            drain_after_exit!(read_fut)
+        } else {
+            // Cancellation and polling model: Rust async is polled, not preempted,
+            // so a Notify becoming ready while `read_stream()` is mid-poll cannot
+            // drop the read future; `select!` only cancels a still-pending branch
+            // between polls (it drops non-selected futures).
+            tokio::select! {
+                // `biased`: deterministic top-to-bottom poll order, so when both
+                // branches are ready we prefer draining pending output over
+                // reacting to the exit notification.
+                biased;
+
+                v = &mut read_fut => v?,
+                _ = &mut term_notified => drain_after_exit!(read_fut),
             }
         };
 
