@@ -22,6 +22,7 @@ use slog::Logger;
 use crate::pipestream::PipeStream;
 use awaitgroup::WaitGroup;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::io::{split, ReadHalf, WriteHalf};
 use tokio::sync::Mutex;
@@ -99,6 +100,11 @@ pub struct Process {
     pub oci: OCIProcess,
     pub logger: Logger,
     pub term_exit_notifier: Arc<Notify>,
+    /// Sticky "process has terminated" flag, paired with `term_exit_notifier`.
+    /// `Notify::notify_waiters()` stores no permit, so a reader that starts
+    /// waiting *after* the process exits would miss the wake-up and block
+    /// forever. Readers register on the notifier and then consult this flag.
+    pub term_closed: Arc<AtomicBool>,
 
     readers: HashMap<StreamType, Reader>,
     writers: HashMap<StreamType, Writer>,
@@ -160,6 +166,7 @@ impl Process {
             oci: ocip.clone(),
             logger: logger.clone(),
             term_exit_notifier: Arc::new(Notify::new()),
+            term_closed: Arc::new(AtomicBool::new(false)),
             readers: HashMap::new(),
             writers: HashMap::new(),
             proc_io,
@@ -195,6 +202,11 @@ impl Process {
     }
 
     pub fn notify_term_close(&mut self) {
+        // Record the terminated state *before* waking readers. `notify_waiters()`
+        // does not store a permit, so a reader that has not yet parked on
+        // `.notified()` would miss this wake-up permanently; the sticky flag lets
+        // such a late reader still observe termination (see rpc::do_read_stream).
+        self.term_closed.store(true, Ordering::SeqCst);
         let notify = self.term_exit_notifier.clone();
         notify.notify_waiters();
     }
