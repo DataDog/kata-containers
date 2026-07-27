@@ -1,0 +1,16 @@
+diff a/src/runtime/virtcontainers/physical_endpoint.go b/src/runtime/virtcontainers/physical_endpoint.go	(rejected hunks)
+@@ -93,6 +93,14 @@ func (endpoint *PhysicalEndpoint) Attach(ctx context.Context, s *Sandbox) error
+ 	span, ctx := physicalTrace(ctx, "Attach", endpoint)
+ 	defer span.End()
+ 
++	// [datadog] emit a structured log for telemetry correlation. This lets
++	// the DD agent match NIC passthrough events to the enclosing sandbox span.
++	networkLogger().WithFields(logrus.Fields{
++		"bdf":    endpoint.BDF,
++		"driver": endpoint.Driver,
++		"iface":  endpoint.IfaceName,
++	}).Info("[datadog] PhysicalEndpoint.Attach: binding NIC to vfio-pci")
++
+ 	// Unbind physical interface from host driver and bind to vfio
+ 	// so that it can be passed to qemu.
+ 	vfioPath, err := bindNICToVFIO(endpoint)
