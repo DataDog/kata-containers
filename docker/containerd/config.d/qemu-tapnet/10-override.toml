@@ -1,0 +1,17 @@
+### Kata tapnet networking model overrides.
+### Applied on top of the base qemu config for the kata-tapnet multiruntime backend
+### (KATA_CONF_FILE=/opt/kata/conf/qemu-tapnet/configuration-qemu-tapnet.toml).
+### Kept in sync with k8s-platform-machine-images
+### (ansible/roles/node/templates/kata-containers/configuration-tapnet.override.toml.j2);
+### the node_kata_* facts are static, so this renders to a fixed file.
+
+[hypervisor.qemu]
+kernel_params = "systemd.unified_cgroup_hierarchy=1"
+
+[agent.kata]
+debug_console_enabled = false
+
+[runtime]
+internetworking_model = "tapnet"
+static_sandbox_resource_mgmt=true
+sandbox_bind_mounts = ["/etc/datadog-agent"]
