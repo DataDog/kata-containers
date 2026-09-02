@@ -161,14 +161,18 @@ publish-oci-image:
     - "build-shim-arm64"
   variables:
     EXTRA_ARGS: "-f docker/Dockerfile"
-    # Tag the image with the sluggified ref (branch or tag) so branch builds are
-    # easy to pull and test.
-    IMAGE_TAG: "$CI_COMMIT_REF_SLUG"
   # .build-docker-image (compute-delivery/v3) defines `rules`, which cannot be
-  # combined with `only`. Express "run on tags and branches" via rules.
+  # combined with `only`. Express "run on tags and branches" via rules, and pin
+  # IMAGE_TAG per case: the exact tag on a tag build (e.g. 3.32.0-dd.202636, not the
+  # sluggified 3-32-0-dd-202636), and the sluggified ref on branch builds (branch
+  # names can contain '/', which is invalid in an image tag).
   rules:
     - if: $CI_COMMIT_TAG
+      variables:
+        IMAGE_TAG: "$CI_COMMIT_TAG"
     - if: $CI_COMMIT_BRANCH
+      variables:
+        IMAGE_TAG: "$CI_COMMIT_REF_SLUG"
 
 # Convert the published OCI image to a lazy-loading nydus variant (<tag>-nydus)
 # via the compute-delivery .build-nydus-image template, so the node-installer's
@@ -179,11 +183,13 @@ publish-oci-image-nydus:
   # Convert the image publish-oci-image just pushed; run after it.
   needs:
     - "publish-oci-image"
-  variables:
-    # Match the tag publish-oci-image used (sluggified ref) so nydus-convert
-    # finds the just-built source image.
-    IMAGE_TAG: "$CI_COMMIT_REF_SLUG"
+  # Match the tag publish-oci-image used so nydus-convert finds the source image:
+  # the exact tag on a tag build, the sluggified ref on branch builds.
   rules:
     - if: $CI_COMMIT_TAG
+      variables:
+        IMAGE_TAG: "$CI_COMMIT_TAG"
     - if: $CI_COMMIT_BRANCH
+      variables:
+        IMAGE_TAG: "$CI_COMMIT_REF_SLUG"
 
