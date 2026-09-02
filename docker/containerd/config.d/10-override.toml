@@ -1,9 +1,16 @@
+### Base qemu override fragment for the kata-qemu runtime.
+### Kept in sync with k8s-platform-machine-images
+### (ansible/roles/node/templates/kata-containers/configuration.override.toml.j2);
+### the node_kata_* facts are static, so this renders to a fixed file.
+### enable_annotations is intentionally omitted (kpmi #2065: prevent overriding
+### kata config through annotations).
+
 [hypervisor.qemu]
 kernel_params = "systemd.unified_cgroup_hierarchy=1"
-enable_annotations = ["enable_iommu", "virtio_fs_extra_args", "kernel_params", "default_memory"]
 
 [agent.kata]
 debug_console_enabled = false
 
 [runtime]
 static_sandbox_resource_mgmt=true
+sandbox_bind_mounts = ["/etc/datadog-agent"]
