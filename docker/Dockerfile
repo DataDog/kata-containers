@@ -14,9 +14,13 @@ RUN apt-get update && \
     apt-get install -y curl wget unzip xz-utils zstd ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-# Create directory structure
+# Create directory structure. conf/{qemu,qemu-tapnet,qemu-jailnet} mirror the
+# multiruntime layout k8s-platform-machine-images bakes into the AMI — the shim
+# routes the kata-tapnet / kata-jailnet backends to configs under these dirs.
 RUN mkdir -p /kata-build/opt/kata/bin \
              /kata-build/opt/kata/conf/qemu/config.d \
+             /kata-build/opt/kata/conf/qemu-tapnet/config.d \
+             /kata-build/opt/kata/conf/qemu-jailnet/config.d \
              /kata-build/opt/kata/libexec \
              /kata-build/opt/kata/share/kata-containers \
              /kata-build/etc/containerd/config.d
@@ -63,11 +67,21 @@ RUN chmod +x /kata-build/opt/kata/bin/containerd-shim-kata-v2
 RUN ln -s /opt/kata/share/kata-containers/kata-containers-datadog.img /kata-build/opt/kata/share/kata-containers/kata-containers.img && \
     ln -s /opt/kata/share/kata-containers/vmlinux-datadog /kata-build/opt/kata/share/kata-containers/vmlinux.container
 
-# Link configuration
-RUN cp -a /kata-build/opt/kata/share/defaults/kata-containers/configuration-qemu.toml /kata-build/opt/kata/conf/qemu/configuration-qemu.toml
+# Copy the base qemu config into each runtime-variant conf dir. A real copy (not a
+# symlink) is required: kata resolves config.d/ relative to the config file's own
+# directory, so the base config must physically live under each conf/<variant>/.
+RUN base=/kata-build/opt/kata/share/defaults/kata-containers/configuration-qemu.toml && \
+    cp -a "$base" /kata-build/opt/kata/conf/qemu/configuration-qemu.toml && \
+    cp -a "$base" /kata-build/opt/kata/conf/qemu-tapnet/configuration-qemu-tapnet.toml && \
+    cp -a "$base" /kata-build/opt/kata/conf/qemu-jailnet/configuration-qemu-jailnet.toml
 
-# Copy override configuration
+# Copy the per-variant override fragments. The multiruntime shim routes the
+# kata-tapnet / kata-jailnet backends here via KATA_CONF_FILE, so they must ship in
+# the OCI image — otherwise the /opt/kata bind-mount hides the AMI-baked copies and
+# multi-runtime breaks.
 COPY docker/containerd/config.d/10-override.toml /kata-build/opt/kata/conf/qemu/config.d/10-override.toml
+COPY docker/containerd/config.d/qemu-tapnet/10-override.toml /kata-build/opt/kata/conf/qemu-tapnet/config.d/10-override.toml
+COPY docker/containerd/config.d/qemu-jailnet/10-override.toml /kata-build/opt/kata/conf/qemu-jailnet/config.d/10-override.toml
 
 # Copy containerd runtime dropin
 COPY docker/containerd/config.d/20-kata-runtime.toml /kata-build/etc/containerd/config.d/20-kata-runtime.toml
