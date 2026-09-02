@@ -104,7 +104,10 @@ build-shim-rust-amd64:
     - cd src/runtime-rs
     - make clean-generated-files
     - make check
-    - make PREFIX=/opt/kata QEMUCMD=qemu-system-x86_64
+    # DD runs qemu only, never the in-process Dragonball VMM. USE_BUILTIN_DB=false
+    # skips building the dragonball crate + its ~13 dbs-* deps (the bulk of this
+    # job's compile time). Cloud-hypervisor / firecracker drivers still build.
+    - make PREFIX=/opt/kata QEMUCMD=qemu-system-x86_64 USE_BUILTIN_DB=false
     - cp ../../target/x86_64-unknown-linux-musl/release/containerd-shim-kata-v2 containerd-shim-kata-v2-rust-amd64
   artifacts:
     paths:
@@ -122,7 +125,8 @@ build-shim-rust-arm64:
     - cd src/runtime-rs
     - make clean-generated-files
     - make check
-    - ARCH=aarch64 make PREFIX=/opt/kata QEMUCMD=qemu-system-aarch64
+    # See build-shim-rust-amd64: qemu-only, skip building the Dragonball VMM.
+    - ARCH=aarch64 make PREFIX=/opt/kata QEMUCMD=qemu-system-aarch64 USE_BUILTIN_DB=false
     - cp ../../target/aarch64-unknown-linux-musl/release/containerd-shim-kata-v2 containerd-shim-kata-v2-rust-arm64
   artifacts:
     paths:
