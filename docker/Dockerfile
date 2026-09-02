@@ -86,6 +86,15 @@ COPY docker/containerd/config.d/qemu-jailnet/10-override.toml /kata-build/opt/ka
 # Copy containerd runtime dropin
 COPY docker/containerd/config.d/20-kata-runtime.toml /kata-build/etc/containerd/config.d/20-kata-runtime.toml
 
+# Stamp the image version into /opt/kata so the node-installer validation can
+# prove the /opt/kata bind-mounted on the host is THIS OCI image (not the
+# AMI-baked copy): the validation compares this file against the tag the kata
+# NodeInstaller CR references. CI passes OCI_VERSION as the image tag (the same
+# value the image is tagged with). The Dockerfile itself only knows the upstream
+# KATA_VERSION, so the DD tag has to come in as a build arg.
+ARG OCI_VERSION=""
+RUN echo "${OCI_VERSION}" > /kata-build/opt/kata/DATADOG_KATA_VERSION
+
 # Final scratch-based data volume
 FROM scratch
 COPY --from=builder /kata-build/opt/kata /opt/kata
