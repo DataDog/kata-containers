@@ -96,6 +96,11 @@ build-shim-arm64:
 build-shim-rust-amd64:
   image: registry.ddbuild.io/images/mirror/rust:1.91
   stage: build
+  # Run immediately on branch pipelines instead of waiting behind the manual
+  # ci-image gate, so PRs actually validate the rust shim build. This job uses the
+  # rust mirror image and needs no artifacts, so it has no real dependency on
+  # ci-image or the kernel build.
+  needs: []
   tags: [ "arch:amd64" ]
   script:
     - apt-get update -q && apt-get install -yq musl-tools g++ cmake
@@ -117,6 +122,8 @@ build-shim-rust-amd64:
 build-shim-rust-arm64:
   image: registry.ddbuild.io/images/mirror/rust:1.91
   stage: build
+  # See build-shim-rust-amd64: run immediately on branch pipelines.
+  needs: []
   tags: [ "arch:arm64" ]
   script:
     - apt-get update -q && apt-get install -yq musl-tools g++ cmake
