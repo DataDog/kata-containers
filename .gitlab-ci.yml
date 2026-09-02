@@ -160,7 +160,9 @@ publish-oci-image:
     - "build-shim-amd64"
     - "build-shim-arm64"
   variables:
-    EXTRA_ARGS: "-f docker/Dockerfile"
+    # Stamp the image with its own tag (OCI_VERSION) so the validation can verify
+    # the /opt/kata it bind-mounts is this image. $IMAGE_TAG is set per-rule below.
+    EXTRA_ARGS: "-f docker/Dockerfile --build-arg OCI_VERSION=$IMAGE_TAG"
   # .build-docker-image (compute-delivery/v3) defines `rules`, which cannot be
   # combined with `only`. Express "run on tags and branches" via rules, and pin
   # IMAGE_TAG per case: the exact tag on a tag build (e.g. 3.32.0-dd.202636, not the
