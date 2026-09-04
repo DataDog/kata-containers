@@ -72,10 +72,12 @@ build-shim-amd64:
   script:
     - cd src/runtime
     - make containerd-shim-v2
-    - mv containerd-shim-kata-v2 containerd-shim-kata-v2-amd64
+    # Export the Go shim at the context root. This is the default the OCI image build
+    # copies unless SHIM_BINARY overrides it (see docker/Dockerfile).
+    - mv containerd-shim-kata-v2 ../../containerd-shim-kata-v2-amd64
   artifacts:
     paths:
-      - src/runtime/containerd-shim-kata-v2-amd64
+      - containerd-shim-kata-v2-amd64
     expire_in: 1 week
 
 build-shim-arm64:
@@ -87,10 +89,11 @@ build-shim-arm64:
   script:
     - cd src/runtime
     - make containerd-shim-v2
-    - mv containerd-shim-kata-v2 containerd-shim-kata-v2-arm64
+    # Export the Go shim at the context root (see build-shim-amd64).
+    - mv containerd-shim-kata-v2 ../../containerd-shim-kata-v2-arm64
   artifacts:
     paths:
-      - src/runtime/containerd-shim-kata-v2-arm64
+      - containerd-shim-kata-v2-arm64
     expire_in: 1 week
 
 build-shim-rust-amd64:
@@ -105,10 +108,12 @@ build-shim-rust-amd64:
     - make clean-generated-files
     - make check
     - make PREFIX=/opt/kata QEMUCMD=qemu-system-x86_64
-    - cp ../../target/x86_64-unknown-linux-musl/release/containerd-shim-kata-v2 containerd-shim-kata-v2-rust-amd64
+    # Export the Rust shim at the context root under a -rust name (selected by the
+    # SHIM_BINARY build-arg; see docker/Dockerfile).
+    - cp ../../target/x86_64-unknown-linux-musl/release/containerd-shim-kata-v2 ../../containerd-shim-kata-v2-rust-amd64
   artifacts:
     paths:
-      - src/runtime-rs/containerd-shim-kata-v2-rust-amd64
+      - containerd-shim-kata-v2-rust-amd64
     expire_in: 1 week
 
 build-shim-rust-arm64:
@@ -123,10 +128,11 @@ build-shim-rust-arm64:
     - make clean-generated-files
     - make check
     - ARCH=aarch64 make PREFIX=/opt/kata QEMUCMD=qemu-system-aarch64
-    - cp ../../target/aarch64-unknown-linux-musl/release/containerd-shim-kata-v2 containerd-shim-kata-v2-rust-arm64
+    # Export the Rust shim at the context root under a -rust name (see -amd64).
+    - cp ../../target/aarch64-unknown-linux-musl/release/containerd-shim-kata-v2 ../../containerd-shim-kata-v2-rust-arm64
   artifacts:
     paths:
-      - src/runtime-rs/containerd-shim-kata-v2-rust-arm64
+      - containerd-shim-kata-v2-rust-arm64
     expire_in: 1 week
 
 publish-artifacts:
@@ -135,9 +141,13 @@ publish-artifacts:
   only:
     - tags
   tags: [ "arch:amd64" ]
+  # Publishes the Go shim to the canonical containerd-shim-kata-v2 S3 key and the
+  # Rust shim to a parallel -rust key.
   dependencies:
     - "build-kernel-amd64"
     - "build-kernel-arm64"
+    - "build-shim-amd64"
+    - "build-shim-arm64"
     - "build-shim-rust-amd64"
     - "build-shim-rust-arm64"
   variables:
@@ -147,8 +157,10 @@ publish-artifacts:
     - aws s3 cp tools/packaging/kernel/vmlinux-arm64 s3://kata-containers-ci-artifacts/$CI_COMMIT_REF_NAME/arm64/vmlinux
     - aws s3 cp tools/packaging/kernel/kernel-config-amd64 s3://kata-containers-ci-artifacts/$CI_COMMIT_REF_NAME/amd64/kernel-config
     - aws s3 cp tools/packaging/kernel/kernel-config-arm64 s3://kata-containers-ci-artifacts/$CI_COMMIT_REF_NAME/arm64/kernel-config
-    - aws s3 cp src/runtime-rs/containerd-shim-kata-v2-rust-amd64 s3://kata-containers-ci-artifacts/$CI_COMMIT_REF_NAME/amd64/containerd-shim-kata-v2
-    - aws s3 cp src/runtime-rs/containerd-shim-kata-v2-rust-arm64 s3://kata-containers-ci-artifacts/$CI_COMMIT_REF_NAME/arm64/containerd-shim-kata-v2
+    - aws s3 cp containerd-shim-kata-v2-amd64 s3://kata-containers-ci-artifacts/$CI_COMMIT_REF_NAME/amd64/containerd-shim-kata-v2
+    - aws s3 cp containerd-shim-kata-v2-arm64 s3://kata-containers-ci-artifacts/$CI_COMMIT_REF_NAME/arm64/containerd-shim-kata-v2
+    - aws s3 cp containerd-shim-kata-v2-rust-amd64 s3://kata-containers-ci-artifacts/$CI_COMMIT_REF_NAME/amd64/containerd-shim-kata-v2-rust
+    - aws s3 cp containerd-shim-kata-v2-rust-arm64 s3://kata-containers-ci-artifacts/$CI_COMMIT_REF_NAME/arm64/containerd-shim-kata-v2-rust
     - echo $CI_COMMIT_REF_NAME > LATEST && aws s3 cp LATEST s3://kata-containers-ci-artifacts/LATEST
 
 publish-oci-image:
@@ -194,4 +206,50 @@ publish-oci-image-nydus:
     - if: $CI_COMMIT_BRANCH
       variables:
         IMAGE_TAG: "$CI_COMMIT_REF_SLUG"
+
+# Rust-shim image variants (tag suffix -rust). Same OCI image, but built with the
+# runtime-rs (Rust) containerd-shim-kata-v2 instead of the Go shim (selected via the
+# SHIM_BINARY build-arg) AND with the runtime-rs base config (KATA_BASE_CONFIG)
+# instead of the Go shim's configuration-qemu.toml. The Rust
+# shim ignores the Go config and resolves runtime-rs/configuration.toml, whose
+# schema differs (it carries the [runtime] name/hypervisor_name/agent_name
+# identity fields); our config.d override fragments are schema-compatible with
+# both and layer on top unchanged. Stamped with its own tag (<tag>-rust) so the
+# Rust shim can be validated on nodes without touching the default image.
+publish-oci-image-rust:
+  stage: publish
+  extends: .build-docker-image
+  dependencies:
+    - "build-kernel-amd64"
+    - "build-kernel-arm64"
+    - "build-shim-rust-amd64"
+    - "build-shim-rust-arm64"
+  variables:
+    # KATA_DROP_VARIANTS: runtime-rs has no tapnet/jailnet internetworking model
+    # (Go-only, virtcontainers) and would silently fall back to NoneModel, so drop
+    # those conf dirs — the kata-tapnet/kata-jailnet route then fails loudly rather
+    # than mis-networking. Only kata-qemu (tcfilter) is supported on the Rust shim.
+    EXTRA_ARGS: "-f docker/Dockerfile --build-arg OCI_VERSION=$IMAGE_TAG --build-arg SHIM_BINARY=containerd-shim-kata-v2-rust --build-arg KATA_BASE_CONFIG=share/defaults/kata-containers/runtime-rs/configuration-qemu-runtime-rs.toml --build-arg KATA_DROP_VARIANTS=qemu-tapnet,qemu-jailnet"
+  rules:
+    - if: $CI_COMMIT_TAG
+      variables:
+        IMAGE_TAG: "$CI_COMMIT_TAG-rust"
+    - if: $CI_COMMIT_BRANCH
+      variables:
+        IMAGE_TAG: "$CI_COMMIT_REF_SLUG-rust"
+
+# Nydus variant of the rust-shim image (<tag>-rust-nydus), for the node-installer
+# lazy-load path when validating the Rust shim.
+publish-oci-image-rust-nydus:
+  stage: nydus
+  extends: .build-nydus-image
+  needs:
+    - "publish-oci-image-rust"
+  rules:
+    - if: $CI_COMMIT_TAG
+      variables:
+        IMAGE_TAG: "$CI_COMMIT_TAG-rust"
+    - if: $CI_COMMIT_BRANCH
+      variables:
+        IMAGE_TAG: "$CI_COMMIT_REF_SLUG-rust"
 

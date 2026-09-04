@@ -39,6 +39,7 @@ RUN KATA_VERSION="${KATA_VERSION:-$(cat /tmp/kata-version)}" && \
         './opt/kata/include/*' \
         './opt/kata/share/kata-qemu/qemu/*' \
         './opt/kata/share/defaults/kata-containers/configuration-qemu.toml' \
+        './opt/kata/share/defaults/kata-containers/runtime-rs/*' \
         './opt/kata/share/kata-containers/kata-ubuntu-noble.image' && \
     # kata bundles edk2 UEFI firmware for every arch (~290MB of cross-arch
     # blobs); keep only the target arch's. arm64 uses aarch64, not 32-bit arm.
@@ -58,9 +59,12 @@ COPY tools/packaging/kernel/vmlinux-${TARGETARCH} /kata-build/opt/kata/share/kat
 # Copy the CI-built kernel config alongside the kernel so it ships in the image
 COPY tools/packaging/kernel/kernel-config-${TARGETARCH} /kata-build/opt/kata/share/kata-containers/config-datadog
 
-# Copy CI-built shim binary
-# This should be built by the CI pipeline and placed in the expected location
-COPY src/runtime/containerd-shim-kata-v2-${TARGETARCH} /kata-build/opt/kata/bin/containerd-shim-kata-v2
+# Copy the CI-built shim binary. SHIM_BINARY selects which one: the Go shim
+# (containerd-shim-kata-v2, default) or the Rust shim (containerd-shim-kata-v2-rust,
+# passed by the -rust image build). Both are exported at the context root by the
+# build-shim / build-shim-rust CI jobs.
+ARG SHIM_BINARY=containerd-shim-kata-v2
+COPY ${SHIM_BINARY}-${TARGETARCH} /kata-build/opt/kata/bin/containerd-shim-kata-v2
 RUN chmod +x /kata-build/opt/kata/bin/containerd-shim-kata-v2
 
 # Create symlinks for kata-containers.img and vmlinux.container
@@ -70,7 +74,14 @@ RUN ln -s /opt/kata/share/kata-containers/kata-containers-datadog.img /kata-buil
 # Copy the base qemu config into each runtime-variant conf dir. A real copy (not a
 # symlink) is required: kata resolves config.d/ relative to the config file's own
 # directory, so the base config must physically live under each conf/<variant>/.
-RUN base=/kata-build/opt/kata/share/defaults/kata-containers/configuration-qemu.toml && \
+#
+# KATA_BASE_CONFIG selects which base: the Go shim's configuration-qemu.toml
+# (default), or the runtime-rs config for the -rust image. They share the same
+# config.d override fragments — every field our overrides set exists in both
+# schemas — so only this base differs. The runtime-rs config additionally carries
+# the [runtime] name/hypervisor_name/agent_name identity the Rust shim needs.
+ARG KATA_BASE_CONFIG=share/defaults/kata-containers/configuration-qemu.toml
+RUN base=/kata-build/opt/kata/${KATA_BASE_CONFIG} && \
     cp -a "$base" /kata-build/opt/kata/conf/qemu/configuration-qemu.toml && \
     cp -a "$base" /kata-build/opt/kata/conf/qemu-tapnet/configuration-qemu-tapnet.toml && \
     cp -a "$base" /kata-build/opt/kata/conf/qemu-jailnet/configuration-qemu-jailnet.toml
@@ -82,6 +93,20 @@ RUN base=/kata-build/opt/kata/share/defaults/kata-containers/configuration-qemu.
 COPY docker/containerd/config.d/10-override.toml /kata-build/opt/kata/conf/qemu/config.d/10-override.toml
 COPY docker/containerd/config.d/qemu-tapnet/10-override.toml /kata-build/opt/kata/conf/qemu-tapnet/config.d/10-override.toml
 COPY docker/containerd/config.d/qemu-jailnet/10-override.toml /kata-build/opt/kata/conf/qemu-jailnet/config.d/10-override.toml
+
+# Fail closed for shims that don't implement a runtime variant's internetworking
+# model. DD's tapnet/jailnet models live only in the Go runtime (virtcontainers);
+# the runtime-rs (Rust) shim has no tapnet/jailnet and its model factory silently
+# degrades an unknown internetworking_model to NoneModel (no host-side proxy) with
+# NO error. Rather than ship qemu-tapnet/qemu-jailnet configs that quietly
+# mis-network on such a shim, drop those conf dirs entirely: the multiruntime
+# kata-tapnet/kata-jailnet route then hits a missing KATA_CONF_FILE and the shim
+# fails loudly. Empty by default (Go image keeps all variants); the -rust build
+# passes the unsupported ones.
+# Comma-separated (no spaces) so it survives as a single --build-arg through the
+# shell-split EXTRA_ARGS in the CI build template.
+ARG KATA_DROP_VARIANTS=""
+RUN for v in $(echo "${KATA_DROP_VARIANTS}" | tr ',' ' '); do rm -rf "/kata-build/opt/kata/conf/${v}"; done
 
 # Copy containerd runtime dropin
 COPY docker/containerd/config.d/20-kata-runtime.toml /kata-build/etc/containerd/config.d/20-kata-runtime.toml
