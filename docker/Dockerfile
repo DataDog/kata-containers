@@ -31,7 +31,7 @@ ARG TARGETARCH
 COPY VERSION /tmp/kata-version
 RUN KATA_VERSION="${KATA_VERSION:-$(cat /tmp/kata-version)}" && \
     echo "Downloading kata-static ${KATA_VERSION} (${TARGETARCH})" && \
-    wget -q "https://github.com/kata-containers/kata-containers/releases/download/${KATA_VERSION}/kata-static-${KATA_VERSION}-${TARGETARCH}.tar.zst" -O /tmp/kata.tar.zst && \
+    wget -q "https://github.com/kata-containers/kata-containers/releases/download/${KATA_VERSION}/kata-go-static-${KATA_VERSION}-${TARGETARCH}.tar.zst" -O /tmp/kata.tar.zst && \
     tar --zstd -xf /tmp/kata.tar.zst -C /kata-build --wildcards \
         './opt/kata/bin/qemu-system-*' \
         './opt/kata/libexec/virtiofsd' \
