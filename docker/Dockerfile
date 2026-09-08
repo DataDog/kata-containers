@@ -30,8 +30,14 @@ RUN mkdir -p /kata-build/opt/kata/bin \
 ARG TARGETARCH
 COPY VERSION /tmp/kata-version
 RUN KATA_VERSION="${KATA_VERSION:-$(cat /tmp/kata-version)}" && \
-    echo "Downloading kata-static ${KATA_VERSION} (${TARGETARCH})" && \
-    wget -q "https://github.com/kata-containers/kata-containers/releases/download/${KATA_VERSION}/kata-static-${KATA_VERSION}-${TARGETARCH}.tar.zst" -O /tmp/kata.tar.zst && \
+    KATA_MAJOR="${KATA_VERSION%%.*}" && \
+    if [ "${KATA_MAJOR}" -ge 4 ] 2>/dev/null; then \
+        KATA_PKG="kata-go-static"; \
+    else \
+        KATA_PKG="kata-static"; \
+    fi && \
+    echo "Downloading ${KATA_PKG} ${KATA_VERSION} (${TARGETARCH})" && \
+    wget -q "https://github.com/kata-containers/kata-containers/releases/download/${KATA_VERSION}/${KATA_PKG}-${KATA_VERSION}-${TARGETARCH}.tar.zst" -O /tmp/kata.tar.zst && \
     tar --zstd -xf /tmp/kata.tar.zst -C /kata-build --wildcards \
         './opt/kata/bin/qemu-system-*' \
         './opt/kata/libexec/virtiofsd' \
