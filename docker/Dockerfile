@@ -25,17 +25,21 @@ RUN mkdir -p /kata-build/opt/kata/bin \
              /kata-build/opt/kata/share/kata-containers \
              /kata-build/etc/containerd/config.d
 
-# Download and extract the upstream kata-static package for this arch. The
-# version defaults to the repo's VERSION file so it tracks the fork automatically.
+# Download and extract the upstream kata release bundle for this arch. The version
+# defaults to the repo's VERSION file so it tracks the fork automatically.
+#
+# KATA_PKG selects the bundle. Kata 4.x ships two: kata-go-static (the Go runtime —
+# carries configuration-qemu.toml, no runtime-rs/ configs) and kata-static (the
+# runtime-rs/Rust runtime — carries the runtime-rs/ configs, no configuration-qemu.toml).
+# The Go OCI image uses the former (default); the -rust image passes kata-static.
+# We only take qemu/virtiofsd/kernel-adjacent bits, the rootfs image, and the config
+# templates — never the bundle's shim (our CI-built shim is COPY'd in below). The
+# whole defaults/kata-containers config tree is extracted (tiny) so the right base
+# config is present regardless of bundle; KATA_BASE_CONFIG selects it below.
+ARG KATA_PKG=kata-go-static
 ARG TARGETARCH
 COPY VERSION /tmp/kata-version
 RUN KATA_VERSION="${KATA_VERSION:-$(cat /tmp/kata-version)}" && \
-    KATA_MAJOR="${KATA_VERSION%%.*}" && \
-    if [ "${KATA_MAJOR}" -ge 4 ] 2>/dev/null; then \
-        KATA_PKG="kata-go-static"; \
-    else \
-        KATA_PKG="kata-static"; \
-    fi && \
     echo "Downloading ${KATA_PKG} ${KATA_VERSION} (${TARGETARCH})" && \
     wget -q "https://github.com/kata-containers/kata-containers/releases/download/${KATA_VERSION}/${KATA_PKG}-${KATA_VERSION}-${TARGETARCH}.tar.zst" -O /tmp/kata.tar.zst && \
     tar --zstd -xf /tmp/kata.tar.zst -C /kata-build --wildcards \
@@ -44,8 +48,7 @@ RUN KATA_VERSION="${KATA_VERSION:-$(cat /tmp/kata-version)}" && \
         './opt/kata/lib/kata-qemu/*' \
         './opt/kata/include/*' \
         './opt/kata/share/kata-qemu/qemu/*' \
-        './opt/kata/share/defaults/kata-containers/configuration-qemu.toml' \
-        './opt/kata/share/defaults/kata-containers/runtime-rs/*' \
+        './opt/kata/share/defaults/kata-containers' \
         './opt/kata/share/kata-containers/kata-ubuntu-noble.image' && \
     # kata bundles edk2 UEFI firmware for every arch (~290MB of cross-arch
     # blobs); keep only the target arch's. arm64 uses aarch64, not 32-bit arm.
