@@ -230,7 +230,7 @@ publish-oci-image-rust:
     # (Go-only, virtcontainers) and would silently fall back to NoneModel, so drop
     # those conf dirs — the kata-tapnet/kata-jailnet route then fails loudly rather
     # than mis-networking. Only kata-qemu (tcfilter) is supported on the Rust shim.
-    EXTRA_ARGS: "-f docker/Dockerfile --build-arg OCI_VERSION=$IMAGE_TAG --build-arg SHIM_BINARY=containerd-shim-kata-v2-rust --build-arg KATA_BASE_CONFIG=share/defaults/kata-containers/runtime-rs/configuration-qemu-runtime-rs.toml --build-arg KATA_DROP_VARIANTS=qemu-tapnet,qemu-jailnet"
+    EXTRA_ARGS: "-f docker/Dockerfile --build-arg OCI_VERSION=$IMAGE_TAG --build-arg KATA_PKG=kata-static --build-arg SHIM_BINARY=containerd-shim-kata-v2-rust --build-arg KATA_BASE_CONFIG=share/defaults/kata-containers/runtime-rs/configuration-qemu-runtime-rs.toml --build-arg KATA_DROP_VARIANTS=qemu-tapnet,qemu-jailnet"
   rules:
     - if: $CI_COMMIT_TAG
       variables:

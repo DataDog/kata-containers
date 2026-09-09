@@ -620,7 +620,7 @@ func allowBlockDeviceForMount(disableBlockDeviceUse bool, emptyDirMode string, m
 		return true
 	}
 
-	return emptyDirMode == EmptyDirModeVirtioBlkEncrypted && Isk8sHostEmptyDir(mountSource)
+	return emptyDirMode == EmptyDirModeVirtioBlkEncrypted && IsNonTmpFSEmptyDir(mountSource)
 }
 
 // Add any mount based block devices to the device manager and Save the
