@@ -49,7 +49,12 @@ RUN KATA_VERSION="${KATA_VERSION:-$(cat /tmp/kata-version)}" && \
         './opt/kata/include/*' \
         './opt/kata/share/kata-qemu/qemu/*' \
         './opt/kata/share/defaults/kata-containers' \
-        './opt/kata/share/kata-containers/kata-ubuntu-noble.image' && \
+    # The guest rootfs asset is named kata-${os_name}-${os_version}.image by
+    # tools/packaging/guest-image/build_image.sh, so this filename is coupled to
+    # assets.image.architecture.*.version in versions.yaml. 4.2.0 moved the guest
+    # rootfs from ubuntu noble (24.04) to resolute (26.04); update both
+    # occurrences below whenever that pins a new distro version.
+        './opt/kata/share/kata-containers/kata-ubuntu-resolute.image' && \
     # kata bundles edk2 UEFI firmware for every arch (~290MB of cross-arch
     # blobs); keep only the target arch's. arm64 uses aarch64, not 32-bit arm.
     case "${TARGETARCH}" in \
@@ -59,7 +64,7 @@ RUN KATA_VERSION="${KATA_VERSION:-$(cat /tmp/kata-version)}" && \
     esac && \
     find /kata-build/opt/kata/share/kata-qemu/qemu -maxdepth 1 -name 'edk2-*.fd' \
         | grep -Ev "${keep_edk2}" | xargs -r rm -f && \
-    mv /kata-build/opt/kata/share/kata-containers/kata-ubuntu-noble.image /kata-build/opt/kata/share/kata-containers/kata-containers-datadog.img && \
+    mv /kata-build/opt/kata/share/kata-containers/kata-ubuntu-resolute.image /kata-build/opt/kata/share/kata-containers/kata-containers-datadog.img && \
     rm -f /tmp/kata.tar.zst
 
 # Copy CI-built kernel for the target architecture and rename to datadog convention
