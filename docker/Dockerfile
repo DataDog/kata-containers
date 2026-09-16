@@ -117,6 +117,25 @@ COPY docker/containerd/config.d/qemu-jailnet/10-override.toml /kata-build/opt/ka
 ARG KATA_DROP_VARIANTS=""
 RUN for v in $(echo "${KATA_DROP_VARIANTS}" | tr ',' ' '); do rm -rf "/kata-build/opt/kata/conf/${v}"; done
 
+# Optional EROFS block-rootfs override. The containerd erofs snapshotter hands the
+# shim erofs layers + an overlay mount instead of a virtio-fs share, and runtime-rs
+# attaches them as virtio-blk devices (erofs_rootfs.rs). That path needs no kata
+# config to activate, but the attach tuning does -- see 20-erofs.toml.
+# Off by default: the fragment sets block_device_driver, which we only want on
+# images actually paired with `snapshotter = 'erofs'` in containerd. Installed into
+# every conf variant that survived KATA_DROP_VARIANTS above, so the -rust image
+# gets qemu/ only and the Go image (which cannot read fsmerged EROFS) is normally
+# built without KATA_EROFS at all.
+ARG KATA_EROFS=""
+COPY docker/containerd/config.d/20-erofs.toml /tmp/20-erofs.toml
+RUN if [ -n "${KATA_EROFS}" ]; then \
+        for d in /kata-build/opt/kata/conf/*/config.d; do \
+            [ -d "${d}" ] || continue; \
+            cp /tmp/20-erofs.toml "${d}/20-erofs.toml"; \
+        done; \
+    fi; \
+    rm -f /tmp/20-erofs.toml
+
 # Copy containerd runtime dropin
 COPY docker/containerd/config.d/20-kata-runtime.toml /kata-build/etc/containerd/config.d/20-kata-runtime.toml
 

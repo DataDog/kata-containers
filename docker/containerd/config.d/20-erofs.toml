@@ -1,0 +1,53 @@
+### EROFS block-rootfs override fragment for the kata / kata-qemu runtimes.
+###
+### Installed only when the OCI image is built with --build-arg KATA_EROFS=1
+### (see docker/Dockerfile). Kept in sync with k8s-platform-machine-images
+### (ansible/roles/node/templates/kata-containers/configuration-erofs.override.toml.j2).
+###
+### Loaded after 10-override.toml: kata merges config.d/*.toml in lexical order and
+### the last writer wins, so the keys below override both the base config and
+### 10-override.toml.
+###
+### REQUIRES the runtime-rs (Rust) shim. The Go runtime cannot consume the fsmerged
+### EROFS layout (fsmeta.erofs); only runtime-rs implements the multi-layer EROFS
+### rootfs (src/runtime-rs/crates/resource/src/rootfs/erofs_rootfs.rs). Build with
+### SHIM_BINARY=containerd-shim-kata-v2-rust and the matching KATA_BASE_CONFIG.
+
+[hypervisor.qemu]
+
+# Nothing here turns EROFS "on" -- it cannot be enabled by a config key. runtime-rs
+# selects the EROFS rootfs path from the mount types containerd hands the shim
+# (is_erofs_multi_layer(), src/runtime-rs/crates/resource/src/rootfs/mod.rs), so the
+# switch lives in containerd's per-runtime `snapshotter = 'erofs'`. The image layers
+# then arrive as virtio-blk disks and the guest kernel mounts erofs + overlay
+# itself, taking virtio-fs off the container rootfs path entirely.
+
+# Default for runtime-rs/qemu on x86_64 is virtio-scsi (DEFBLOCKSTORAGEDRIVER_QEMU,
+# src/runtime-rs/Makefile). The agent's EROFS handler accepts either SCSI or
+# virtio-blk (multi_layer_erofs.rs handles both DRIVER_SCSI_TYPE and
+# DRIVER_BLK_PCI_TYPE), but virtio-blk drops the SCSI translation layer from every
+# rootfs read -- which is the point of moving the image off virtio-fs.
+block_device_driver = "virtio-blk-pci"
+
+# Deliberately "virtio-fs", and intended to stay that way.
+#
+# EROFS moves the container image -- the hot path, thousands of metadata ops per
+# container start -- off virtio-fs entirely. What remains on the share is low-volume
+# config data: configmaps, secrets, /etc/hosts, /etc/resolv.conf, the termination
+# log, and runtime.sandbox_bind_mounts (/etc/datadog-agent, for the system-probe/CWS
+# auth token). Those are read a handful of times per sandbox and are not
+# latency-sensitive, so removing the share buys nothing for them.
+#
+# Do NOT "finish the job" by setting shared_fs = "none". Two things break:
+#
+#   - runtime.sandbox_bind_mounts stages into the virtio-fs share directory via
+#     do_get_host_path(SANDBOX_BIND_MOUNTS_DIR, ...), and
+#     ResourceManagerInner::handle_sandbox_bindmounts() is NOT gated on shared_fs.
+#     With "none" it still runs and still reports success, but nothing exports the
+#     staging directory to the guest -- /etc/datadog-agent silently never appears
+#     inside the VM, and system-probe/CWS loses the agent auth token.
+#
+#   - Volumes/configmaps/secrets fall back to agent CopyFile over vsock
+#     (volume/share_fs_volume.rs): copied in at container create rather than
+#     shared, with poll-based change propagation instead of native coherency.
+shared_fs = "virtio-fs"
