@@ -64,6 +64,51 @@ build-kernel-arm64:
       - tools/packaging/kernel/kernel-config-arm64
     expire_in: 1 week
 
+# osbuilder needs mounts and loop devices, which the shared rootless BuildKit
+# workers cannot provide. The docker-in-docker pools run inside native Kata VMs;
+# the runner injects the Docker service and DOCKER_HOST (no services: needed).
+# Reuse compute-delivery's Docker CLI image, but export files instead of pushing
+# an image. Each job owns its BuildKit daemon and its privileged build entitlement.
+.build-rootfs:
+  extends: .build-docker-image
+  stage: build
+  needs: []
+  rules:
+    - if: $GBILITE_GITLAB_ACTION
+      when: never
+    - if: $CI_COMMIT_TAG || $CI_COMMIT_BRANCH
+  script:
+    - docker buildx create --name "kata-rootfs-${CI_JOB_ID}" --driver docker-container --buildkitd-flags '--allow-insecure-entitlement security.insecure'
+    - >-
+      docker buildx build
+      --builder "kata-rootfs-${CI_JOB_ID}"
+      --platform "linux/${ROOTFS_ARCH}"
+      --allow security.insecure
+      --ulimit nofile=262144:262144
+      --file docker/rootfs.Dockerfile
+      --build-arg "SOURCE_COMMIT=${CI_COMMIT_SHA}"
+      --output type=local,dest=.
+      .
+  after_script:
+    - docker buildx rm "kata-rootfs-${CI_JOB_ID}"
+  artifacts:
+    paths:
+      - kata-rootfs-${ROOTFS_ARCH}.img
+      - kata-rootfs-${ROOTFS_ARCH}.sbom.cdx.gz
+    expire_in: 1 week
+
+build-rootfs-amd64:
+  extends: .build-rootfs
+  tags: [ "docker-in-docker:amd64" ]
+  variables:
+    ROOTFS_ARCH: amd64
+
+build-rootfs-arm64:
+  extends: .build-rootfs
+  tags: [ "docker-in-docker:arm64" ]
+  variables:
+    ROOTFS_ARCH: arm64
+
 build-shim-amd64:
   image: registry.ddbuild.io/images/mirror/library/golang:1.24.5
   stage: build
@@ -179,6 +224,8 @@ publish-oci-image:
   stage: publish
   extends: .build-docker-image
   dependencies:
+    - "build-rootfs-amd64"
+    - "build-rootfs-arm64"
     - "build-kernel-amd64"
     - "build-kernel-arm64"
     - "build-shim-amd64"
@@ -232,6 +279,8 @@ publish-oci-image-rust:
   stage: publish
   extends: .build-docker-image
   dependencies:
+    - "build-rootfs-amd64"
+    - "build-rootfs-arm64"
     - "build-kernel-amd64"
     - "build-kernel-arm64"
     - "build-shim-rust-amd64"
