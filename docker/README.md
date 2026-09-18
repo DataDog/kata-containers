@@ -52,14 +52,26 @@ docker buildx rm "$builder"
 Rust and libseccomp installers source `tests/common.bash`. The repository's
 ordinary `.dockerignore` excludes that directory and cannot be used here.
 
-## KPMI installation
+## KPMI migration to OCI
 
-NodeInstaller and KPMI consume the same Go OCI image from
-`registry.ddbuild.io/kata-containers`, pinned to its multi-platform index digest.
-KPMI selects the target architecture and installs `/opt/kata` from that image.
-The guest SBOM ships at `/opt/kata/share/kata-containers/sbom.cdx.gz` so KPMI can
-publish it alongside the host SBOM without a separate artifact download.
+GitLab builds and publishes the OCI image used by NodeInstaller. It includes
+`/opt/kata/share/kata-containers/sbom.cdx.gz` so KPMI can preserve the guest SBOM
+when it switches to installing `/opt/kata` from the same multi-platform Go OCI
+image. The earlier `4.2.0-dd.202638.1` OCI image does not contain this SBOM.
 
-GitLab builds and publishes the OCI image. GitHub Actions no longer builds a
-second guest or publishes ZIP bundles. Consumers must use a release containing
-the guest SBOM; the earlier `4.2.0-dd.202638.1` OCI image does not contain it.
+Keep `.github/workflows/build-kata-os.yml` publishing the existing GitHub release
+bundles until KPMI has switched to OCI. The migration order is:
+
+1. Merge the OCI SBOM addition and publish a new release; retain the GitHub
+   publisher so existing KPMI builds can still use release bundles.
+2. Pin the new release and its OCI index digest in the KPMI consumer and
+   NodeInstaller chart. Validate the KPMI build and staging installation, then
+   merge the consumer changes.
+3. Remove the GitHub guest/release publisher in the cleanup follow-up only
+   after confirming active consumers no longer need newly published bundles.
+   Existing release assets must remain available for older pinned builds.
+
+The OCI consumer work is DataDog/k8s-platform-machine-images#2215 and
+DataDog/k8s-platform-resources#27583. Producer #105 prepares the image; cleanup
+#106 must follow the consumer migration. The Ubuntu 24.04 guest upgrade is a
+separate change and does not require retiring the GitHub publisher.

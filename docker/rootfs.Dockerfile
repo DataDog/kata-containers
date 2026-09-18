@@ -30,7 +30,7 @@ RUN ci/install_yq.sh && target_branch=datadog tests/install_rust.sh && \
 
 ARG TARGETARCH
 ARG SOURCE_COMMIT
-# Run the existing Ubuntu guest and disk-image osbuilder scripts
+# Match .github/workflows/build-kata-os.yml. Run the same two osbuilder scripts
 # directly inside BuildKit, without nested docker run or remote bind mounts.
 # /rootfs is also the path expected by the existing SBOM hook. Mount devtmpfs
 # inside this RUN so loop partitions created by the kernel appear in /dev.
