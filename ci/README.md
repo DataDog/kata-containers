@@ -1,5 +1,12 @@
 # Kata Containers CI
 
+## Datadog fork
+
+The upstream Azure cleanup, kubectl image publisher, and RISC-V nightly schedule
+are disabled in this fork because their credentials or runners are unavailable.
+The guest/release publisher, PR checks, and security scans remain enabled.
+The remainder of this document describes upstream Kata CI.
+
 > [!WARNING]
 > While this project's CI has several areas for improvement, it is constantly
 > evolving. This document attempts to describe its current state, but due to
