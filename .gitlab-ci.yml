@@ -1,7 +1,8 @@
 include: https://gitlab-templates.ddbuild.io/compute-delivery/v3/compute-delivery.yml
 
 variables:
-  CI_IMAGE: 3
+  CI_IMAGE: 4
+  CI_IMAGE_DIGEST: sha256:2cff3f03ed8a1ab9884fab60ca967fddae91b05b7802aa030995f78d13c8f04e
   KERNEL_VERSION: 6.8
   KUBERNETES_CPU_REQUEST: "10"
   KUBERNETES_MEMORY_REQUEST: "20Gi"
@@ -33,7 +34,7 @@ ci-image:
     TARGET: "build"
 
 build-kernel-amd64:
-  image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:$CI_IMAGE
+  image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:$CI_IMAGE@$CI_IMAGE_DIGEST
   stage: build
   tags: [ "arch:amd64" ]
   script:
@@ -49,7 +50,7 @@ build-kernel-amd64:
     expire_in: 1 week
 
 build-kernel-arm64:
-  image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:$CI_IMAGE
+  image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:$CI_IMAGE@$CI_IMAGE_DIGEST
   stage: build
   tags: [ "arch:arm64" ]
   script:
@@ -193,7 +194,7 @@ build-shim-rust-arm64:
     expire_in: 1 week
 
 publish-artifacts:
-  image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:$CI_IMAGE
+  image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:$CI_IMAGE@$CI_IMAGE_DIGEST
   stage: publish
   only:
     - tags

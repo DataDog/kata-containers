@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-FROM ubuntu:22.04
+FROM registry.ddbuild.io/images/base/gbi-ubuntu_2404:release
+USER root
 ENV DEBIAN_FRONTEND=noninteractive
 
 ENV RUSTUP_HOME="/opt/rustup"
