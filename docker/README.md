@@ -63,7 +63,8 @@ packaging deterministic.
 
 On tag pipelines, `publish-release-bundles` publishes these assets to the
 matching GitHub release using the repository's `publish-release` Octo STS
-policy. Merge that policy onto `datadog` before publishing a new tag. A published
+policy. The token service reads policies from the GitHub default branch (`main`),
+so land the same policy there before publishing a new tag from `datadog`. A published
 release is immutable: retries verify asset digests and reject differing content.
 GitHub hosts the release files; GitHub Actions no longer builds them.
 

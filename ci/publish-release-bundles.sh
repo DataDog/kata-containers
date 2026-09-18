@@ -10,7 +10,8 @@ trap 'rm -f "${metadata}"' EXIT
 
 # Verify the tag before creating anything; auth/API errors must fail closed.
 gh api "repos/${repo}/git/ref/tags/${CI_COMMIT_TAG}" >/dev/null
-gh api --paginate "repos/${repo}/releases?per_page=100" --jq ".[] | select(.tag_name == \"${CI_COMMIT_TAG}\")" > "${metadata}"
+gh api --paginate "repos/${repo}/releases?per_page=100" | \
+    jq --arg tag "${CI_COMMIT_TAG}" '.[] | select(.tag_name == $tag)' > "${metadata}"
 if [[ ! -s "${metadata}" ]]; then
     gh release create "${CI_COMMIT_TAG}" --repo "${repo}" --verify-tag --draft --title "${CI_COMMIT_TAG}" \
         --notes 'Datadog guest rootfs, SBOM, kernel and shims built by GitLab CI. The Go and Rust OCI images consume the same build outputs.'
