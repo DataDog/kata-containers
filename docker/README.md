@@ -10,7 +10,7 @@ Datadog packages, AppArmor profiles, and `datadog-files` overlay.
 The `build-rootfs-amd64` and `build-rootfs-arm64` GitLab jobs export
 `kata-rootfs-${arch}.img` and its SBOM with the `docker buildx` local exporter.
 Both the Go and Rust OCI jobs consume the same per-architecture guest. The rootfs
-uses the existing osbuilder scripts and Ubuntu Jammy, matching `build-kata-os.yml`.
+uses the existing osbuilder scripts and Ubuntu 22.04 (Jammy).
 The build checks the guest agent, system-probe binary and launcher, AppArmor
 parser and profiles, agent confinement configuration, and enabled guest services
 before exporting the image. These checks verify the artifact contents; boot
