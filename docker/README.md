@@ -72,6 +72,7 @@ bundles until KPMI has switched to OCI. The migration order is:
    Existing release assets must remain available for older pinned builds.
 
 The OCI consumer work is DataDog/k8s-platform-machine-images#2215 and
-DataDog/k8s-platform-resources#27583. Producer #105 prepares the image; cleanup
-#106 must follow the consumer migration. The Ubuntu 24.04 guest upgrade is a
-separate change and does not require retiring the GitHub publisher.
+DataDog/k8s-platform-resources#27583. Producer #105 prepares the image. Cleanup
+#106 only removes unrelated unusable upstream workflows; retiring the GitHub
+guest/release publisher needs a separate follow-up after consumer migration.
+The Ubuntu 24.04 guest upgrade is independent of that retirement.
