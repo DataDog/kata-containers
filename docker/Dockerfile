@@ -32,9 +32,9 @@ RUN mkdir -p /kata-build/opt/kata/bin \
 # carries configuration-qemu.toml, no runtime-rs/ configs) and kata-static (the
 # runtime-rs/Rust runtime — carries the runtime-rs/ configs, no configuration-qemu.toml).
 # The Go OCI image uses the former (default); the -rust image passes kata-static.
-# We only take qemu/virtiofsd/kernel-adjacent bits, the rootfs image, and the config
-# templates — never the bundle's shim (our CI-built shim is COPY'd in below). The
-# whole defaults/kata-containers config tree is extracted (tiny) so the right base
+# We only take qemu/virtiofsd/kernel-adjacent bits and config templates. The
+# Datadog guest rootfs and shim are built from this checkout by CI and COPY'd below.
+# The whole defaults/kata-containers config tree is extracted (tiny) so the right base
 # config is present regardless of bundle; KATA_BASE_CONFIG selects it below.
 ARG KATA_PKG=kata-go-static
 ARG TARGETARCH
@@ -48,8 +48,7 @@ RUN KATA_VERSION="${KATA_VERSION:-$(cat /tmp/kata-version)}" && \
         './opt/kata/lib/kata-qemu/*' \
         './opt/kata/include/*' \
         './opt/kata/share/kata-qemu/qemu/*' \
-        './opt/kata/share/defaults/kata-containers' \
-        './opt/kata/share/kata-containers/kata-ubuntu-noble.image' && \
+        './opt/kata/share/defaults/kata-containers' && \
     # kata bundles edk2 UEFI firmware for every arch (~290MB of cross-arch
     # blobs); keep only the target arch's. arm64 uses aarch64, not 32-bit arm.
     case "${TARGETARCH}" in \
@@ -59,8 +58,10 @@ RUN KATA_VERSION="${KATA_VERSION:-$(cat /tmp/kata-version)}" && \
     esac && \
     find /kata-build/opt/kata/share/kata-qemu/qemu -maxdepth 1 -name 'edk2-*.fd' \
         | grep -Ev "${keep_edk2}" | xargs -r rm -f && \
-    mv /kata-build/opt/kata/share/kata-containers/kata-ubuntu-noble.image /kata-build/opt/kata/share/kata-containers/kata-containers-datadog.img && \
     rm -f /tmp/kata.tar.zst
+
+# Copy the guest built with the fork's kata-agent and Datadog overlay.
+COPY kata-rootfs-${TARGETARCH}.img /kata-build/opt/kata/share/kata-containers/kata-containers-datadog.img
 
 # Copy CI-built kernel for the target architecture and rename to datadog convention
 COPY tools/packaging/kernel/vmlinux-${TARGETARCH} /kata-build/opt/kata/share/kata-containers/vmlinux-datadog

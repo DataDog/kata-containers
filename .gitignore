@@ -23,3 +23,6 @@ site/
 opt/
 tools/packaging/kernel/configs/**/.config
 root_hash.txt
+# Guest artifacts exported by docker/rootfs.Dockerfile.
+/kata-rootfs-*.img
+/kata-rootfs-*.sbom.cdx.gz
