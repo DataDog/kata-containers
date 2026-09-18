@@ -192,41 +192,6 @@ build-shim-rust-arm64:
       - containerd-shim-kata-v2-rust-arm64
     expire_in: 1 week
 
-# KPMI and OCI consume the same native build outputs; no second guest build.
-build-release-bundles:
-  stage: publish
-  tags: [ "arch:amd64" ]
-  dependencies:
-    - "build-rootfs-amd64"
-    - "build-rootfs-arm64"
-    - "build-kernel-amd64"
-    - "build-kernel-arm64"
-    - "build-shim-amd64"
-    - "build-shim-arm64"
-    - "build-shim-rust-amd64"
-    - "build-shim-rust-arm64"
-  script:
-    - python3 ci/create-release-bundles.py
-  artifacts:
-    paths:
-      - release-bundles/
-    expire_in: 1 week
-
-publish-release-bundles:
-  extends: .compute-ci.goreleaser
-  stage: publish
-  needs:
-    - build-release-bundles
-  variables:
-    COMPUTE_CI_STS_SCOPE: DataDog/kata-containers
-    COMPUTE_CI_STS_POLICY: publish-release
-  before_script:
-    - !reference [.compute-ci.github-sts-token]
-  script:
-    - bash ci/publish-release-bundles.sh
-  after_script:
-    - dd-octo-sts revoke -t "$(cat /tmp/gh_token.txt)"
-
 publish-artifacts:
   image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:$CI_IMAGE
   stage: publish

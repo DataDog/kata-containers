@@ -153,4 +153,3 @@ RAII
 Virt
 sysfs
 KPMI
-Octo

@@ -52,24 +52,14 @@ docker buildx rm "$builder"
 Rust and libseccomp installers source `tests/common.bash`. The repository's
 ordinary `.dockerignore` excludes that directory and cannot be used here.
 
-## KPMI release bundles
+## KPMI installation
 
-GitLab's `build-release-bundles` job packages the same native guest image, SBOM,
-kernel and Go/Rust shims used by OCI into `kata-artifacts-amd64.zip` and
-`kata-artifacts-arm64.zip`. The archive member names preserve KPMI's existing install
-interface. The `kata-` prefix distinguishes them from the old, independently
-Actions-built ZIPs. Each ZIP has a SHA-256 checksum file, and fixed ZIP metadata makes
-packaging deterministic.
+NodeInstaller and KPMI consume the same Go OCI image from
+`registry.ddbuild.io/kata-containers`, pinned to its multi-platform index digest.
+KPMI selects the target architecture and installs `/opt/kata` from that image.
+The guest SBOM ships at `/opt/kata/share/kata-containers/sbom.cdx.gz` so KPMI can
+publish it alongside the host SBOM without a separate artifact download.
 
-On tag pipelines, `publish-release-bundles` publishes these assets to the
-matching GitHub release using the repository's `publish-release` Octo STS
-policy. The token service reads policies from the GitHub default branch (`main`),
-so land the same policy there before publishing a new tag from `datadog`. A published
-release is immutable: retries verify asset digests and reject differing content.
-GitHub hosts the release files; GitHub Actions no longer builds them.
-
-For local packaging of downloaded GitLab job artifacts:
-
-```bash
-python3 ci/create-release-bundles.py --input /path/to/artifacts --output /tmp/release-bundles
-```
+GitLab builds and publishes the OCI image. GitHub Actions no longer builds a
+second guest or publishes ZIP bundles. Consumers must use a release containing
+the guest SBOM; the earlier `4.2.0-dd.202638.1` OCI image does not contain it.
