@@ -1,5 +1,14 @@
 # Kata Containers CI
 
+## Datadog fork
+
+The Datadog guest, kernel, shims, OCI images, and KPMI bundles are built by
+GitLab CI; see [the artifact guide](../docker/README.md). GitHub Actions still
+runs useful PR checks and security scans. The upstream Azure cleanup, kubectl
+image publisher, and RISC-V nightly schedule are removed in this fork because
+their credentials or runners are unavailable. The remainder of this document
+describes upstream Kata CI.
+
 > [!WARNING]
 > While this project's CI has several areas for improvement, it is constantly
 > evolving. This document attempts to describe its current state, but due to
