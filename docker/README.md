@@ -8,13 +8,17 @@ Datadog packages, AppArmor profiles, and `datadog-files` overlay.
 ## Guest rootfs build
 
 The `build-rootfs-amd64` and `build-rootfs-arm64` GitLab jobs export
-`kata-rootfs-${arch}.img` and its SBOM with Buildx's local exporter. Both the Go
-and Rust OCI jobs consume the same per-architecture guest. The rootfs uses the
-existing osbuilder scripts and Ubuntu Jammy, matching `build-kata-os.yml`.
+`kata-rootfs-${arch}.img` and its SBOM with the `docker buildx` local exporter.
+Both the Go and Rust OCI jobs consume the same per-architecture guest. The rootfs
+uses the existing osbuilder scripts and Ubuntu Jammy, matching `build-kata-os.yml`.
+The build checks the guest agent, system-probe binary and launcher, AppArmor
+parser and profiles, agent confinement configuration, and enabled guest services
+before exporting the image. These checks verify the artifact contents; boot
+validation must also check that the services and confinement are active.
 
 These jobs need **`docker-in-docker:amd64` / `docker-in-docker:arm64`** runners.
 The runner supplies the Docker service and `DOCKER_HOST`. Each job creates its
-own `docker-container` Buildx builder and removes it afterwards. Native runners
+own `docker-container` builder and removes it afterwards. Native runners
 avoid emulation during package installation and agent compilation.
 
 The usual compute-delivery image builds use shared, rootless Kubernetes
@@ -26,8 +30,8 @@ image builder. This preserves its ext4 partition and DAX header format.
 
 Runner setup was checked against compute-delivery's v3 `.build-docker-image`
 template and dd-source's `domains/devex/ci/gitlab/config/k8s/gitlab-runner/`
-configuration. `docker-in-docker` pools disable the shared Buildx setup and inject
-the Docker service. Do not change these jobs to plain `arch:*` tags.
+configuration. `docker-in-docker` pools disable the shared `docker buildx` setup
+and inject the Docker service. Do not change these jobs to plain `arch:*` tags.
 
 For a native local build with Docker and registry access, from the repository root:
 

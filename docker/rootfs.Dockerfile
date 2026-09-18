@@ -42,8 +42,14 @@ RUN --security=insecure \
         MAKEFLAGS="COMMIT_NO=${SOURCE_COMMIT}" && \
     tools/osbuilder/rootfs-builder/rootfs.sh -d -o "$(cat VERSION)-${SOURCE_COMMIT}" -r /rootfs ubuntu && \
     test -x /rootfs/usr/bin/kata-agent && \
-    test -f /rootfs/etc/apparmor.d/kata-container && \
-    test -f /rootfs/etc/systemd/system/system-probe.service && \
+    test -x /rootfs/opt/datadog-agent/embedded/bin/system-probe && \
+    test -x /rootfs/sbin/apparmor_parser && \
+    test -s /rootfs/etc/apparmor.d/kata-container && \
+    test -s /rootfs/etc/apparmor.d/usr.bin.kata-agent && \
+    test -x /rootfs/usr/local/bin/start-system-probe && \
+    test -s /rootfs/etc/systemd/system/kata-agent.service.d/50-apparmor.conf && \
+    test "$(chroot /rootfs systemctl is-enabled system-probe.service)" = enabled && \
+    test "$(chroot /rootfs systemctl is-enabled datadog-apparmor.service)" = enabled && \
     mkdir /out && \
     tools/osbuilder/image-builder/image_builder.sh -o "/out/kata-rootfs-${TARGETARCH}.img" /rootfs && \
     cp sbom.cdx.gz "/out/kata-rootfs-${TARGETARCH}.sbom.cdx.gz"
