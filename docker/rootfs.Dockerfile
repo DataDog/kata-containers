@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1-labs
 # Build on the native docker-in-docker runner for TARGETARCH. Only the osbuilder
 # RUN needs privileges; the shared rootless CI BuildKit workers cannot run it.
-FROM registry.ddbuild.io/images/base/gbi-ubuntu_2204:release AS builder
+FROM registry.ddbuild.io/images/base/gbi-ubuntu_2404:release AS builder
 USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -38,7 +38,7 @@ RUN --security=insecure \
     test -n "${SOURCE_COMMIT}" && \
     mount -t devtmpfs devtmpfs /dev && \
     trap 'umount -l /dev' EXIT && \
-    export OS_VERSION=jammy INSIDE_CONTAINER=1 USER=root GROUP=root target_branch=datadog \
+    export OS_VERSION=noble INSIDE_CONTAINER=1 USER=root GROUP=root target_branch=datadog \
         MAKEFLAGS="COMMIT_NO=${SOURCE_COMMIT}" && \
     tools/osbuilder/rootfs-builder/rootfs.sh -d -o "$(cat VERSION)-${SOURCE_COMMIT}" -r /rootfs ubuntu && \
     test -x /rootfs/usr/bin/kata-agent && \
