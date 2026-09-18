@@ -1,0 +1,20 @@
+# Unlike the OCI packaging context, the guest build needs tests/ (Rust and
+# libseccomp installers source tests/common.bash). Never import host build output.
+.git
+.github
+.claude
+target
+build
+kata-artifacts
+docs
+containerd-shim-kata-v2-*
+kata-rootfs-*
+tools/osbuilder/*_rootfs
+tools/osbuilder/.*_rootfs.done
+tools/osbuilder/*.img
+tools/osbuilder/image-builder/nsdax
+tools/packaging/kernel/kata-linux-*
+tools/packaging/kernel/vmlinux-*
+tools/packaging/kernel/kernel-config-*
+sbom.cdx*
+trivy.log
