@@ -54,12 +54,20 @@ ordinary `.dockerignore` excludes that directory and cannot be used here.
 
 ## KPMI installation
 
-NodeInstaller and KPMI consume the same Go OCI image from
-`registry.ddbuild.io/kata-containers`, pinned to its multi-platform index digest.
-KPMI selects the target architecture and installs `/opt/kata` from that image.
-The guest SBOM ships at `/opt/kata/share/kata-containers/sbom.cdx.gz` so KPMI can
-publish it alongside the host SBOM without a separate artifact download.
+GitLab's native jobs export the guest image and SBOM (`build-rootfs-*`),
+kernel and kernel configuration (`build-kernel-*`), and Go shim (`build-shim-*`).
+The OCI publisher consumes these outputs. KPMI downloads the same job archives
+by numeric job ID and SHA-256 checksum, then installs the files directly.
+There is no separate guest build, GitHub release upload, or OCI extraction in
+KPMI. QEMU and firmware still come from the upstream Kata version used by OCI.
 
-GitLab builds and publishes the OCI image. GitHub Actions no longer builds a
-second guest or publishes ZIP bundles. Consumers must use a release containing
-the guest SBOM; the earlier `4.2.0-dd.202638.1` OCI image does not contain it.
+When promoting a release, select the successful jobs from the tag pipeline
+that produced the OCI image. Keep all six referenced archives in GitLab before
+pinning their URLs and checksums in KPMI's `config/downloads.yaml`. Use the job
+page's **Keep** action or `POST /projects/3675/jobs/<job-id>/artifacts/keep`;
+confirm `artifacts_expire_at` is null. Do not use latest-by-branch download URLs.
+
+KPMI downloads on its CI controller with `CI_JOB_TOKEN`; local builds can use
+`GITLAB_TOKEN`. Credentials are not forwarded on artifact-storage redirects.
+The existing `4.2.0-dd.202638.1` native artifacts are retained and match that
+release's OCI payload, so this installation change needs no new image release.

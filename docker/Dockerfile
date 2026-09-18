@@ -62,8 +62,6 @@ RUN KATA_VERSION="${KATA_VERSION:-$(cat /tmp/kata-version)}" && \
 
 # Copy the guest built with the fork's kata-agent and Datadog overlay.
 COPY kata-rootfs-${TARGETARCH}.img /kata-build/opt/kata/share/kata-containers/kata-containers-datadog.img
-# Keep the guest inventory with the exact image it describes for KPMI consumers.
-COPY kata-rootfs-${TARGETARCH}.sbom.cdx.gz /kata-build/opt/kata/share/kata-containers/sbom.cdx.gz
 
 # Copy CI-built kernel for the target architecture and rename to datadog convention
 COPY tools/packaging/kernel/vmlinux-${TARGETARCH} /kata-build/opt/kata/share/kata-containers/vmlinux-datadog
