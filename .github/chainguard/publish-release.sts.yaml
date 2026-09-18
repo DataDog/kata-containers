@@ -1,0 +1,9 @@
+# Only tag pipelines in this fork may publish the KPMI release bundles.
+issuer: https://gitlab.ddbuild.io
+subject_pattern: "project_path:DataDog/kata-containers:ref_type:tag:ref:.+"
+claim_pattern:
+  project_path: "DataDog/kata-containers"
+  ref_type: "tag"
+  pipeline_source: "push"
+permissions:
+  contents: write

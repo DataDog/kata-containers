@@ -10,7 +10,7 @@ Datadog packages, AppArmor profiles, and `datadog-files` overlay.
 The `build-rootfs-amd64` and `build-rootfs-arm64` GitLab jobs export
 `kata-rootfs-${arch}.img` and its SBOM with the `docker buildx` local exporter.
 Both the Go and Rust OCI jobs consume the same per-architecture guest. The rootfs
-uses the existing osbuilder scripts and Ubuntu Jammy, matching `build-kata-os.yml`.
+uses the existing osbuilder scripts and Ubuntu 22.04 (Jammy).
 The build checks the guest agent, system-probe binary and launcher, AppArmor
 parser and profiles, agent confinement configuration, and enabled guest services
 before exporting the image. These checks verify the artifact contents; boot
@@ -51,3 +51,24 @@ docker buildx rm "$builder"
 `rootfs.Dockerfile.dockerignore` deliberately includes `tests/`: the existing
 Rust and libseccomp installers source `tests/common.bash`. The repository's
 ordinary `.dockerignore` excludes that directory and cannot be used here.
+
+## KPMI release bundles
+
+GitLab's `build-release-bundles` job packages the same native guest image, SBOM,
+kernel and Go/Rust shims used by OCI into `kata-artifacts-amd64.zip` and
+`kata-artifacts-arm64.zip`. The archive member names preserve KPMI's existing install
+interface. The `kata-` prefix distinguishes them from the old, independently
+Actions-built ZIPs. Each ZIP has a SHA-256 checksum file, and fixed ZIP metadata makes
+packaging deterministic.
+
+On tag pipelines, `publish-release-bundles` publishes these assets to the
+matching GitHub release using the repository's `publish-release` Octo STS
+policy. Merge that policy onto `datadog` before publishing a new tag. A published
+release is immutable: retries verify asset digests and reject differing content.
+GitHub hosts the release files; GitHub Actions no longer builds them.
+
+For local packaging of downloaded GitLab job artifacts:
+
+```bash
+python3 ci/create-release-bundles.py --input /path/to/artifacts --output /tmp/release-bundles
+```
