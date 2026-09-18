@@ -152,4 +152,3 @@ UNBINDABLE
 RAII
 Virt
 sysfs
-KPMI
