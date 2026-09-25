@@ -1010,7 +1010,7 @@ func (k *kataAgent) removeIgnoredOCIMount(spec *specs.Spec, ignoredMounts map[st
 	for _, m := range spec.Mounts {
 		if _, found := ignoredMounts[m.Source]; found {
 			k.Logger().WithField("removed-mount", m.Source).Debug("Removing OCI mount")
-		} else if HasOption(m.Options, vcAnnotations.IsFileSystemLayer) {
+		} else if HasOption(m.Options, vcAnnotations.IsFileSystemLayer) || m.Destination == spec.Annotations[vcAnnotations.RootFSUpperMount] {
 			k.Logger().WithField("removed-mount", m.Source).Debug("Removing layer")
 		} else {
 			mounts = append(mounts, m)
@@ -2122,7 +2122,7 @@ func (k *kataAgent) handleBlkOCIMounts(c *Container, spec *specs.Spec) ([]*grpc.
 			return nil, nil, err
 		}
 
-		if HasOption(m.Options, vcAnnotations.IsFileSystemLayer) {
+		if HasOption(m.Options, vcAnnotations.IsFileSystemLayer) || m.Destination == c.GetAnnotations()[vcAnnotations.RootFSUpperMount] {
 			layerStorages = append(layerStorages, vol)
 			continue
 		}

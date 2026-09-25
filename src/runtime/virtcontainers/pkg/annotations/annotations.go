@@ -237,6 +237,12 @@ const (
 	// Denotes whether flush requests for the device are ignored.
 	BlockDeviceCacheNoflush = kataAnnotHypervisorPrefix + "block_device_cache_noflush"
 
+	// RootFSUpperMount is the destination of a block volume mount that holds
+	// the container rootfs overlay upper/work directories. The volume is
+	// mounted in the guest before the rootfs, hidden from the container, and
+	// the rootfs shared by the host becomes the overlay lower.
+	RootFSUpperMount = kataAnnotationsPrefix + "volume.rootfs-upper"
+
 	// BlockDeviceLogicalSectorSize is a sandbox annotation that specifies the logical sector size
 	// reported by block devices to the guest, in bytes. Common values are 512 and 4096.
 	// Set to 0 to use the hypervisor default.
