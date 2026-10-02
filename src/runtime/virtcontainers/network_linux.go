@@ -1587,10 +1587,13 @@ func setupJailNetNetworking(ctx context.Context, endpoint Endpoint, queues int, 
 		return fmt.Errorf("assign tap host addr: %w", err)
 	}
 
-	// Create the veth pair in the jail netns, then move the pod end out.
+	// Preserve the pod MTU on both ends of the veth pair. Leaving either end
+	// at the default 1500 creates a smaller hop between the TAP and pod eth0
+	// on jumbo-frame networks, dropping large DF packets until PMTU recovery.
 	if err := jailHandle.LinkAdd(&netlink.Veth{
-		LinkAttrs: netlink.LinkAttrs{Name: proxyJailVethName},
+		LinkAttrs: netlink.LinkAttrs{Name: proxyJailVethName, MTU: attrs.MTU},
 		PeerName:  proxyPodVethName,
+		PeerMTU:   uint32(attrs.MTU),
 	}); err != nil {
 		return fmt.Errorf("create veth pair: %w", err)
 	}
