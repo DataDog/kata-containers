@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -789,6 +790,28 @@ func (f *FilesystemShare) ShareRootFilesystem(ctx context.Context, c *Container)
 	// the host and it will show up in the guest.
 	if err := bindMountContainerRootfs(ctx, getMountPath(f.sandbox.ID()), c.id, c.rootFs.Target, false); err != nil {
 		return nil, err
+	}
+
+	// Stack the rootfs shared above under an upper/work pair on the block
+	// volume selected by annotations.RootFSUpperMount, which is mounted first
+	// as a layer (see handleBlkOCIMounts).
+	if upper := c.GetAnnotations()[annotations.RootFSUpperMount]; upper != "" &&
+		slices.ContainsFunc(c.mounts, func(m Mount) bool { return m.Destination == upper && m.BlockDeviceID != "" }) {
+		guestPath := filepath.Join("/run/kata-containers/", c.id, c.rootfsSuffix)
+		createDir := "io.katacontainers.volume.overlayfs.create_directory="
+		return &SharedFile{
+			containerStorages: []*grpc.Storage{{
+				MountPoint:    guestPath,
+				Source:        typeOverlayFS,
+				Fstype:        typeOverlayFS,
+				Driver:        kataOverlayDevType,
+				DriverOptions: []string{createDir + upper + "/upper", createDir + upper + "/work"},
+				// The trailing "/" makes the kernel mount the rootfs virtio-fs submount
+				// (--announce-submounts) before overlayfs checks the lower.
+				Options: []string{lowerDir + "=" + rootfsGuestPath + "/", upperDir + "=" + upper + "/upper", workDir + "=" + upper + "/work", "index=off"},
+			}},
+			guestPath: guestPath,
+		}, nil
 	}
 
 	return &SharedFile{
