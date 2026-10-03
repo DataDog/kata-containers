@@ -7,6 +7,8 @@
 
 [hypervisor.qemu]
 kernel_params = "systemd.unified_cgroup_hierarchy=1"
+# Expose image file capabilities (security.capability) to non-root guest processes.
+virtio_fs_extra_args = ["--thread-pool-size=1", "--announce-submounts", "--xattr"]
 
 [agent.kata]
 debug_console_enabled = false
