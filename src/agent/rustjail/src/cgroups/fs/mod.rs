@@ -225,10 +225,10 @@ impl CgroupManager for Manager {
 
     fn get_pids(&self) -> Result<Vec<pid_t>> {
         let mem_controller: &MemController = self.cgroup.controller_of().unwrap();
-        let pids = mem_controller.tasks();
-        let result = pids.iter().map(|x| x.pid as i32).collect::<Vec<i32>>();
-
-        Ok(result)
+        // The container init and nested workloads can live in child cgroups
+        // (for example /init and /k3s), leaving this cgroup's task list empty.
+        // Enumerate process IDs across the subtree so kill-all reaches them.
+        get_pids_recursive(mem_controller.path())
     }
 
     fn update_cpuset_path(&self, guest_cpuset: &str, container_cpuset: &str) -> Result<()> {
@@ -1371,6 +1371,45 @@ pub fn get_guest_cpuset() -> Result<String> {
     Ok(c.trim().to_string())
 }
 
+// Read process IDs rather than thread IDs: callers signal whole processes.
+// A descendant may disappear while walking the tree during container teardown.
+fn get_pids_recursive(root: &Path) -> Result<Vec<pid_t>> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut pids = Vec::new();
+    while let Some(path) = pending.pop() {
+        let contents = match fs::read_to_string(path.join("cgroup.procs")) {
+            Ok(contents) => contents,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(err).with_context(|| format!("read cgroup {:?}", path)),
+        };
+        for line in contents.lines() {
+            let pid: pid_t = line
+                .trim()
+                .parse()
+                .with_context(|| format!("invalid process ID in cgroup {:?}", path))?;
+            if pid <= 0 {
+                return Err(anyhow!("invalid process ID {} in cgroup {:?}", pid, path));
+            }
+            pids.push(pid);
+        }
+        let entries = match fs::read_dir(&path) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(err).with_context(|| format!("list cgroup {:?}", path)),
+        };
+        for entry in entries {
+            let entry = entry?;
+            // Do not follow symlinks out of the container's cgroup subtree.
+            if entry.file_type()?.is_dir() {
+                pending.push(entry.path());
+            }
+        }
+    }
+    pids.sort_unstable();
+    pids.dedup();
+    Ok(pids)
+}
+
 // Since the OCI spec is designed for cgroup v1, in some cases
 // there is need to convert from the cgroup v1 configuration to cgroup v2
 // the formula for cpuShares is y = (1 + ((x - 2) * 9999) / 262142)
@@ -1434,6 +1473,68 @@ mod tests {
     };
     use crate::cgroups::DevicesCgroupInfo;
     use crate::container::DEFAULT_DEVICES;
+
+    #[test]
+    fn test_get_pids_recursive_empty_parent_with_nested_workloads() {
+        let root = tempfile::tempdir().unwrap();
+        for (name, pids) in [
+            ("", ""),
+            ("init", "101\n102\n"),
+            ("k3s", "103\n"),
+            ("k8s.io", ""),
+            ("k8s.io/nested", "104\n"),
+        ] {
+            let path = root.path().join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("cgroup.procs"), pids).unwrap();
+        }
+        // A sibling cgroup must not be included in a container-scoped walk.
+        assert_eq!(
+            super::get_pids_recursive(root.path()).unwrap(),
+            vec![101, 102, 103, 104]
+        );
+        assert_eq!(
+            super::get_pids_recursive(&root.path().join("init")).unwrap(),
+            vec![101, 102]
+        );
+    }
+
+    #[test]
+    fn test_get_pids_recursive_disappeared_cgroup_and_duplicate_pids() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("cgroup.procs"), "102\n101\n").unwrap();
+        let child = root.path().join("child");
+        std::fs::create_dir(&child).unwrap();
+        std::fs::write(child.join("cgroup.procs"), "101\n").unwrap();
+        // Models a descendant removed before its process file could be read.
+        std::fs::create_dir(root.path().join("gone")).unwrap();
+        assert_eq!(
+            super::get_pids_recursive(root.path()).unwrap(),
+            vec![101, 102]
+        );
+        assert!(super::get_pids_recursive(&root.path().join("missing"))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn test_get_pids_recursive_rejects_invalid_pids() {
+        let root = tempfile::tempdir().unwrap();
+        for value in ["0\n", "-1\n", "invalid\n"] {
+            std::fs::write(root.path().join("cgroup.procs"), value).unwrap();
+            assert!(super::get_pids_recursive(root.path()).is_err());
+        }
+    }
+
+    #[test]
+    fn test_get_pids_recursive_does_not_follow_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("cgroup.procs"), "101\n").unwrap();
+        std::fs::write(outside.path().join("cgroup.procs"), "999\n").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("outside")).unwrap();
+        assert_eq!(super::get_pids_recursive(root.path()).unwrap(), vec![101]);
+    }
 
     #[test]
     fn test_cgroup_path_under_root_trims_absolute_cpath() {
