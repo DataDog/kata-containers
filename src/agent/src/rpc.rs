@@ -597,8 +597,8 @@ impl AgentService {
                 );
             }
 
-            let pids = self.get_pids(&cid).await?;
-            for pid in pids.iter() {
+            let pids = self.get_pids(&cid).await;
+            for pid in pids.as_ref().into_iter().flatten() {
                 let res = unsafe { libc::kill(*pid, sig) };
                 if let Err(err) = Errno::result(res).map(drop) {
                     warn!(
@@ -620,6 +620,8 @@ impl AgentService {
                     "error" => format!("{:?}", err),
                 );
             }
+            // Always thaw before returning an enumeration error.
+            pids?;
         }
 
         Ok(())
@@ -4245,6 +4247,57 @@ COMMIT
             }
             other => panic!("expected RpcStatus, got: {:?}", other),
         }
+    }
+
+    struct FailingPidManager {
+        states: Arc<std::sync::Mutex<Vec<FreezerState>>>,
+    }
+
+    impl rustjail::cgroups::Manager for FailingPidManager {
+        fn get_pids(&self) -> anyhow::Result<Vec<i32>> {
+            Err(anyhow!("failed to read cgroup process IDs"))
+        }
+
+        fn freeze(&self, state: FreezerState) -> anyhow::Result<()> {
+            self.states.lock().unwrap().push(state);
+            Ok(())
+        }
+
+        fn name(&self) -> &str {
+            "failing-pid-test"
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_signal_process_thaws_cgroup_after_pid_enumeration_error() {
+        skip_if_not_root!();
+        let states = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (mut container, _root) = create_linuxcontainer();
+        container.id = "1".to_string();
+        container.cgroup_manager = Arc::new(FailingPidManager {
+            states: states.clone(),
+        });
+        let logger = slog::Logger::root(slog::Discard, o!());
+        let mut sandbox = Sandbox::new(&logger).unwrap();
+        sandbox.add_container(container);
+        let service = AgentService {
+            sandbox: Arc::new(Mutex::new(sandbox)),
+            init_mode: true,
+            oma: None,
+        };
+        let result = service
+            .do_signal_process(protocols::agent::SignalProcessRequest {
+                container_id: "1".to_string(),
+                signal: libc::SIGKILL as u32,
+                ..Default::default()
+            })
+            .await;
+        assert!(result.is_err());
+        let states = states.lock().unwrap();
+        assert_eq!(states.len(), 2);
+        assert!(matches!(&states[0], FreezerState::Frozen));
+        assert!(matches!(&states[1], FreezerState::Thawed));
     }
 
     // A cgroup Manager whose get_stats() blocks until released, used to prove that

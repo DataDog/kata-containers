@@ -90,6 +90,7 @@ else
 		"k8s-ip6tables.bats" \
 		"k8s-job.bats" \
 		"k8s-kill-all-process-in-container.bats" \
+		"k8s-kill-descendant-cgroups.bats" \
 		"k8s-limit-range.bats" \
 		"k8s-liveness-probes.bats" \
 		"k8s-memory.bats" \
