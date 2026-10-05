@@ -1,0 +1,33 @@
+# Copyright (c) 2026 Datadog, Inc.
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kill-descendant-cgroups
+spec:
+  runtimeClassName: kata
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 2
+  containers:
+  - name: workload
+    image: quay.io/prometheus/busybox:latest
+    securityContext:
+      capabilities:
+        add: ["SYS_ADMIN"]
+    command: ["sh", "-c"]
+    args:
+    - |
+      set -eu
+      # Keep init alive after SIGTERM so deletion exercises SIGKILL-all.
+      trap ':' TERM
+      mount -o remount,rw /sys/fs/cgroup
+      mkdir -p /sys/fs/cgroup/init /sys/fs/cgroup/nested/worker
+      # Kubernetes reduces $$$$ to $$ before starting the shell.
+      echo $$$$ > /sys/fs/cgroup/init/cgroup.procs
+      sh -c 'echo $$$$ > /sys/fs/cgroup/nested/worker/cgroup.procs; exec sleep 3600' &
+      touch /tmp/ready
+      while :; do sleep 1 & wait $! || true; done
+    readinessProbe:
+      exec:
+        command: ["sh", "-c", 'test -f /tmp/ready && test -n "$(cat /sys/fs/cgroup/nested/worker/cgroup.procs)"']
+      periodSeconds: 1
