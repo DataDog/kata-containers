@@ -1,10 +1,19 @@
 name: Build Kata OS
 run-name: Build Kata OS
 on: [push]
-permissions:
-  contents: write
+permissions: {}
 jobs:
   build:
+    name: Build Kata OS (${{ matrix.arch }})
+    permissions:
+      contents: read # Required to check out repository code.
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.job }}-${{ github.ref }}-${{ matrix.arch }}
+      cancel-in-progress: false
+    env:
+      ARCH: ${{ matrix.arch }}
+      KERNEL_VERSION: ${{ matrix.kernel_version }}
+      MUSL_ARCH: ${{ matrix.musl_arch }}
     strategy:
       matrix:
         runner: [ubuntu-22.04, arm-8core-linux]
@@ -20,8 +29,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out repository code
-        uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: ">=1.24.0"
       - name: Install rust
@@ -32,27 +43,27 @@ jobs:
       - name: Build containerd-shim-kata-v2
         run: |
           cd src/runtime
-          make -j$(nproc) containerd-shim-v2
+          make -j"$(nproc)" containerd-shim-v2
       - name: Build containerd-shim-kata-v2-rs
         env:
           CC_${{ matrix.musl_arch }}-unknown-linux-musl: musl-gcc
           CARGO_TARGET_${{ matrix.musl_arch }}_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: |
-          rustup target add ${{ matrix.musl_arch }}-unknown-linux-musl
+          rustup target add "${MUSL_ARCH}-unknown-linux-musl"
           cd src/runtime-rs
           make clean-generated-files
           make PREFIX=/opt/kata
-          cp ../../target/${{ matrix.musl_arch }}-unknown-linux-musl/release/containerd-shim-kata-v2 /tmp/containerd-shim-kata-v2-rs
+          cp "../../target/${MUSL_ARCH}-unknown-linux-musl/release/containerd-shim-kata-v2" /tmp/containerd-shim-kata-v2-rs
       - name: Build Ubuntu image ${{ matrix.arch }}
         run: cd tools/osbuilder && sudo make USE_DOCKER=true OS_VERSION=jammy image-ubuntu
       - name: Build Kernel ${{ matrix.kernel_version }}
         run: |
           cd tools/packaging/kernel
-          sudo KERNEL_DEBUG_ENABLED=yes KERNEL_DATADOG_ENABLED=yes ./build-kernel.sh -v ${{ matrix.kernel_version }} setup
-          sudo ./build-kernel.sh -v ${{ matrix.kernel_version }} build
+          sudo KERNEL_DEBUG_ENABLED=yes KERNEL_DATADOG_ENABLED=yes ./build-kernel.sh -v "${KERNEL_VERSION}" setup
+          sudo ./build-kernel.sh -v "${KERNEL_VERSION}" build
       - name: Bundle artifacts
         run: |
-          if [[ "${{ matrix.arch }}" == "amd64" ]]
+          if [[ "${ARCH}" == "amd64" ]]
           then
             cp tools/packaging/kernel/kata-linux-*/arch/x86/boot/bzImage /tmp/vmlinux
           else
@@ -63,40 +74,48 @@ jobs:
           cp sbom.cdx.gz /tmp/sbom.cdx.gz
           cp src/runtime/containerd-shim-kata-v2 /tmp/containerd-shim-kata-v2
           mkdir -p /tmp/artifacts
-          zip -j /tmp/artifacts/artifacts-${{ matrix.arch }}.zip /tmp/vmlinux /tmp/kernel-config /tmp/kata-containers-image-ubuntu.img /tmp/sbom.cdx.gz /tmp/containerd-shim-kata-v2 /tmp/containerd-shim-kata-v2-rs
+          zip -j "/tmp/artifacts/artifacts-${ARCH}.zip" /tmp/vmlinux /tmp/kernel-config /tmp/kata-containers-image-ubuntu.img /tmp/sbom.cdx.gz /tmp/containerd-shim-kata-v2 /tmp/containerd-shim-kata-v2-rs
           cd /tmp/artifacts
-          sha256sum artifacts-${{ matrix.arch }}.zip > checksum-${{ matrix.arch }}.sha256
+          sha256sum "artifacts-${ARCH}.zip" > "checksum-${ARCH}.sha256"
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: artifacts-${{ matrix.arch }}
           path: /tmp/artifacts
           retention-days: 1
   release:
+    name: Release Kata OS
+    permissions:
+      contents: write # Required to create releases and upload release assets.
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.job }}-${{ github.ref }}
+      cancel-in-progress: false
     runs-on: ubuntu-22.04
     needs: build
     # Only create a release when a new tag is created
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
     steps:
       - name: Check out repository code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Download artifacts amd64
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: artifacts-amd64
       - name: Download artifacts arm64
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: artifacts-arm64
       - name: "Create New Release"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ github.ref_name }}
         run: |
-          RELEASE_VERSION=$(echo ${{ github.ref }} | sed 's/refs\/tags\///')
           echo "Creating release $RELEASE_VERSION"
-          gh release create ${RELEASE_VERSION} -t ${RELEASE_VERSION} --draft
+          gh release create "${RELEASE_VERSION}" -t "${RELEASE_VERSION}" --draft
           gh release upload "${RELEASE_VERSION}" artifacts-amd64.zip
           gh release upload "${RELEASE_VERSION}" artifacts-arm64.zip
           gh release upload "${RELEASE_VERSION}" checksum-amd64.sha256
           gh release upload "${RELEASE_VERSION}" checksum-arm64.sha256
-          gh release edit ${RELEASE_VERSION} --verify-tag	--draft=false
+          gh release edit "${RELEASE_VERSION}" --verify-tag --draft=false
