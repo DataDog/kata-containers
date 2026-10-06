@@ -326,6 +326,83 @@ func TestCreateSandboxAnnotations(t *testing.T) {
 	assert.Equal(path.Dir(netNsPath), "/var/run/netns")
 }
 
+func TestCreateSandboxEmptyDirMounts(t *testing.T) {
+	if tc.NotValid(ktu.NeedRoot()) {
+		t.Skip(ktu.TestDisabledNeedRoot)
+	}
+
+	dir := t.TempDir()
+	memoryPath := filepath.Join(dir, vc.K8sEmptyDir, "memory-volume")
+	diskPath := filepath.Join(dir, vc.K8sEmptyDir, "disk-volume")
+	bindPath := filepath.Join(dir, "bind-volume")
+	for _, source := range []string{memoryPath, diskPath, bindPath} {
+		if err := os.MkdirAll(source, testDirMode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := syscall.Mount("tmpfs", memoryPath, "tmpfs", 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := syscall.Unmount(memoryPath, 0); err != nil {
+			t.Error(err)
+		}
+	})
+
+	for _, test := range []struct {
+		name                 string
+		disableGuestEmptyDir bool
+		emptyDirMode         string
+		diskType             string
+	}{
+		{"guest emptyDir", false, vc.EmptyDirModeSharedFs, vc.KataLocalDevType},
+		{"host emptyDir", true, vc.EmptyDirModeSharedFs, "bind"},
+		{"encrypted block emptyDir", false, vc.EmptyDirModeVirtioBlkEncrypted, "bind"},
+		{"plain block emptyDir", false, vc.EmptyDirModeVirtioBlkPlain, "bind"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			assert := assert.New(t)
+			tmpdir, bundlePath, _ := ktu.SetupOCIConfigFile(t)
+			runtimeConfig, err := newTestRuntimeConfig(tmpdir, true)
+			if !assert.NoError(err) {
+				return
+			}
+			runtimeConfig.DisableNewNetNs = true
+			runtimeConfig.DisableGuestEmptyDir = test.disableGuestEmptyDir
+			runtimeConfig.EmptyDirMode = test.emptyDirMode
+			spec, err := compatoci.ParseConfigJSON(bundlePath)
+			if !assert.NoError(err) {
+				return
+			}
+			spec.Mounts = []specs.Mount{
+				{Source: memoryPath, Destination: "/workspace", Type: "bind", Options: []string{"rbind", "rw"}},
+				{Source: diskPath, Destination: "/disk", Type: "bind", Options: []string{"rbind", "rw"}},
+				{Source: bindPath, Destination: "/bind", Type: "bind", Options: []string{"rbind", "ro"}},
+			}
+
+			// Capture the configuration passed to the backend, then stop before
+			// booting a VM. This exercises the sandbox path used by a promoted
+			// workload rather than testing only the mount conversion helper.
+			stop := errors.New("sandbox configuration captured")
+			backend := &vcmock.VCMock{
+				CreateSandboxFunc: func(_ context.Context, config vc.SandboxConfig, _ func(context.Context) error) (vc.VCSandbox, error) {
+					if !assert.Len(config.Containers, 1) || !assert.Len(config.Containers[0].Mounts, 3) {
+						return nil, stop
+					}
+					mounts := config.Containers[0].Mounts
+					assert.Equal(vc.KataEphemeralDevType, mounts[0].Type)
+					assert.Equal(test.diskType, mounts[1].Type)
+					assert.Equal("bind", mounts[2].Type)
+					assert.True(mounts[2].ReadOnly)
+					return nil, stop
+				},
+			}
+			_, _, err = CreateSandbox(context.Background(), backend, spec, runtimeConfig, vc.RootFs{Mounted: true}, testContainerID, bundlePath, true, true)
+			assert.ErrorIs(err, stop)
+		})
+	}
+}
+
 func TestCheckForFips(t *testing.T) {
 	assert := assert.New(t)
 
