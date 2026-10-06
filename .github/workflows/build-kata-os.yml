@@ -10,10 +10,6 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-${{ github.job }}-${{ github.ref }}-${{ matrix.arch }}
       cancel-in-progress: false
-    env:
-      ARCH: ${{ matrix.arch }}
-      KERNEL_VERSION: ${{ matrix.kernel_version }}
-      MUSL_ARCH: ${{ matrix.musl_arch }}
     strategy:
       matrix:
         runner: [ubuntu-22.04, arm-8core-linux]
@@ -46,6 +42,7 @@ jobs:
           make -j"$(nproc)" containerd-shim-v2
       - name: Build containerd-shim-kata-v2-rs
         env:
+          MUSL_ARCH: ${{ matrix.musl_arch }}
           CC_${{ matrix.musl_arch }}-unknown-linux-musl: musl-gcc
           CARGO_TARGET_${{ matrix.musl_arch }}_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: |
@@ -57,13 +54,17 @@ jobs:
       - name: Build Ubuntu image ${{ matrix.arch }}
         run: cd tools/osbuilder && sudo make USE_DOCKER=true OS_VERSION=jammy image-ubuntu
       - name: Build Kernel ${{ matrix.kernel_version }}
+        env:
+          KERNEL_VERSION: ${{ matrix.kernel_version }}
         run: |
           cd tools/packaging/kernel
           sudo KERNEL_DEBUG_ENABLED=yes KERNEL_DATADOG_ENABLED=yes ./build-kernel.sh -v "${KERNEL_VERSION}" setup
           sudo ./build-kernel.sh -v "${KERNEL_VERSION}" build
       - name: Bundle artifacts
+        env:
+          ARTIFACT_ARCH: ${{ matrix.arch }}
         run: |
-          if [[ "${ARCH}" == "amd64" ]]
+          if [[ "${ARTIFACT_ARCH}" == "amd64" ]]
           then
             cp tools/packaging/kernel/kata-linux-*/arch/x86/boot/bzImage /tmp/vmlinux
           else
@@ -74,9 +75,9 @@ jobs:
           cp sbom.cdx.gz /tmp/sbom.cdx.gz
           cp src/runtime/containerd-shim-kata-v2 /tmp/containerd-shim-kata-v2
           mkdir -p /tmp/artifacts
-          zip -j "/tmp/artifacts/artifacts-${ARCH}.zip" /tmp/vmlinux /tmp/kernel-config /tmp/kata-containers-image-ubuntu.img /tmp/sbom.cdx.gz /tmp/containerd-shim-kata-v2 /tmp/containerd-shim-kata-v2-rs
+          zip -j "/tmp/artifacts/artifacts-${ARTIFACT_ARCH}.zip" /tmp/vmlinux /tmp/kernel-config /tmp/kata-containers-image-ubuntu.img /tmp/sbom.cdx.gz /tmp/containerd-shim-kata-v2 /tmp/containerd-shim-kata-v2-rs
           cd /tmp/artifacts
-          sha256sum "artifacts-${ARCH}.zip" > "checksum-${ARCH}.sha256"
+          sha256sum "artifacts-${ARTIFACT_ARCH}.zip" > "checksum-${ARTIFACT_ARCH}.sha256"
       - name: Upload Artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
