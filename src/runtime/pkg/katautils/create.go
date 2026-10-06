@@ -124,6 +124,11 @@ func CreateSandbox(ctx context.Context, vci vc.VC, ociSpec specs.Spec, runtimeCo
 	katatrace.AddTags(span, "container_id", containerID)
 	defer span.End()
 
+	// A sandbox can be created from a workload's spec rather than a pause
+	// container's. Apply the same emptyDir handling as CreateContainer so its
+	// memory-backed volumes are created inside the guest instead of shared.
+	ociSpec = SetEphemeralStorageType(ociSpec, runtimeConfig.DisableGuestEmptyDir, runtimeConfig.EmptyDirMode)
+
 	sandboxConfig, err := oci.SandboxConfig(ociSpec, runtimeConfig, bundlePath, containerID, disableOutput, systemdCgroup)
 	if err != nil {
 		return nil, vc.Process{}, err
