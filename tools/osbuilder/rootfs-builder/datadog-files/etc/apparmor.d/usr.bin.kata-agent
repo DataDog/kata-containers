@@ -18,4 +18,6 @@ profile usr.bin.kata-agent /usr/bin/kata-agent flags=(attach_disconnected) {
 
   deny /run/kata-containers/shared/containers/*/datadog-agent/auth/**  rwklmx,
   deny /proc/*/root/run/kata-containers/shared/containers/*/datadog-agent/auth/** rwklmx,
+  deny /run/kata-containers/shared/containers/passthrough/sandbox-mounts/datadog-agent/auth/**  rwklmx,
+  deny /proc/*/root/run/kata-containers/shared/containers/passthrough/sandbox-mounts/datadog-agent/auth/** rwklmx,
 }

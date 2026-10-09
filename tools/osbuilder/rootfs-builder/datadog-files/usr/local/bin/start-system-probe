@@ -1,7 +1,8 @@
 #!/bin/sh
 
 # Fetch datadog-agent token
-token_path=$(ls /run/kata-containers/shared/containers/*/datadog-agent/auth/token 2>/dev/null | head -n 1)
+token_path=$(ls /run/kata-containers/shared/containers/*/datadog-agent/auth/token \
+    /run/kata-containers/shared/containers/passthrough/sandbox-mounts/datadog-agent/auth/token 2>/dev/null | head -n 1)
 [ -n "${token_path}" ] && export DD_AUTH_TOKEN_FILE_PATH="${token_path}"
 
 # Get DD_SITE from container env variables
