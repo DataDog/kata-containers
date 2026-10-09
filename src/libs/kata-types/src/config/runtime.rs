@@ -71,6 +71,9 @@ pub struct Runtime {
     /// - l3forwarding: for Istio Ambient-style service mesh integration with node proxies.
     ///   Experimental, IPv4 only.
     /// - none: used when customize network. Only creates a tap device. No veth pair.
+    /// - jailnet: host-side proxy; the VM tap lives in an isolated jail netns bridged to the pod
+    ///   netns by a veth pair.
+    /// - tapnet: host-side proxy; the VM NIC is backed by a Unix socketpair handed to the proxy.
     /// - tcfilter: uses tc filter rules to redirect traffic from the network interface provided
     ///   by plugin to a tap interface connected to the VM.
     #[serde(default)]
@@ -267,6 +270,8 @@ impl ConfigOps for Runtime {
             && net_model != "none"
             && net_model != "tcfilter"
             && net_model != "l3forwarding"
+            && net_model != "jailnet"
+            && net_model != "tapnet"
         {
             return Err(std::io::Error::other(format!(
                 "Invalid internetworking_model `{net_model}` in configuration file",

@@ -32,6 +32,8 @@ use super::{
     utils::link,
     Network,
 };
+use crate::network::host_side_proxy::{self, is_host_side_proxy_model};
+use crate::network::network_model::jailnet_model::POD_VETH_NAME as JAIL_POD_VETH_NAME;
 use crate::network::NetworkInfo;
 
 #[derive(Clone, Debug)]
@@ -40,6 +42,7 @@ pub struct NetworkWithNetNsConfig {
     pub netns_path: String,
     pub queues: usize,
     pub network_created: bool,
+    pub sandbox_id: String,
 }
 
 struct NetworkWithNetnsInner {
@@ -251,6 +254,9 @@ async fn get_entity_from_netns(
         if (attrs.flags & libc::IFF_LOOPBACK as u32) != 0 {
             continue;
         }
+        if attrs.name == JAIL_POD_VETH_NAME {
+            continue;
+        }
 
         let ip_addresses = handle_addresses(&handle, attrs)
             .await
@@ -312,6 +318,13 @@ async fn create_endpoint(
             "{} network interface found: {}", &link_type, &attrs.name
         );
         match link_type {
+            "veth" | "device" | "macvlan" | "netkit"
+                if is_host_side_proxy_model(&config.network_model) =>
+            {
+                return host_side_proxy::create_endpoint(handle, link, addrs, idx, config, d)
+                    .await
+                    .context("host-side proxy endpoint");
+            }
             // "device" is the generic netlink type for interfaces whose
             // drivers do not register a more specific kind. This includes
             // mlx5 Scalable Functions (SFs) and other non-PCI backed

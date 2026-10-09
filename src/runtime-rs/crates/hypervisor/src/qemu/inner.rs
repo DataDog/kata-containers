@@ -9,6 +9,7 @@ use crate::device::pci_path::PciPath;
 use crate::device::topology::PCIePort;
 use crate::qemu::cmdline_generator::VfioDeviceConfig;
 use crate::qemu::qmp::get_qmp_socket_path;
+use crate::NetworkBackend;
 use crate::{
     device::driver::ProtectionDeviceConfig, hypervisor_persist::HypervisorState, selinux,
     HypervisorConfig, MemoryConfig, VcpuThreadIds, VsockDevice, HYPERVISOR_QEMU, KATA_BLK_DEV_TYPE,
@@ -198,6 +199,11 @@ impl QemuInner {
                             info!(sl!(), "unsupported block device driver: {}", unsupported)
                         }
                     }
+                }
+                DeviceType::Network(network)
+                    if !matches!(network.config.backend, NetworkBackend::Tap) =>
+                {
+                    cmdline.add_network_device_with_backend(&network.config)?;
                 }
                 DeviceType::Network(network) => {
                     // we need ensure add_network_device happens in netns.
@@ -1194,6 +1200,11 @@ impl QemuInner {
         };
 
         match device {
+            DeviceType::Network(network_device)
+                if !matches!(network_device.config.backend, NetworkBackend::Tap) =>
+            {
+                return qmp.hotplug_network_device_with_backend(&self.config, network_device);
+            }
             DeviceType::Network(mut network_device) => {
                 let (netdev, virtio_net_device) = get_network_device(
                     &self.config,

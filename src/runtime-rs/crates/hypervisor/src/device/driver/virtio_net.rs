@@ -5,6 +5,8 @@
 //
 
 use std::fmt;
+use std::os::fd::OwnedFd;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -26,6 +28,16 @@ impl fmt::Debug for Address {
             b[0], b[1], b[2], b[3], b[4], b[5]
         )
     }
+}
+
+#[derive(Clone, Debug, Default)]
+pub enum NetworkBackend {
+    #[default]
+    Tap,
+    /// Tap device living in the given netns instead of the hypervisor's.
+    TapInNetns(String),
+    /// Pre-connected stream socket used as the netdev (QEMU `-netdev socket,fd=`).
+    SocketFd(Arc<OwnedFd>),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -51,6 +63,7 @@ pub struct NetworkConfig {
     pub allow_duplicate_mac: bool,
     /// Guest PCI path after hot-plug (used by the agent to wait for uevents).
     pub pci_path: Option<PciPath>,
+    pub backend: NetworkBackend,
 }
 
 #[derive(Clone, Debug, Default)]
