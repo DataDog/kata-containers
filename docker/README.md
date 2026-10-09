@@ -12,9 +12,12 @@ The `build-rootfs-amd64` and `build-rootfs-arm64` GitLab jobs export
 Both the Go and Rust OCI jobs consume the same per-architecture guest. The rootfs
 uses the existing osbuilder scripts and Ubuntu 22.04 (Jammy).
 The build checks the guest agent, system-probe binary and launcher, AppArmor
-parser and profiles, agent confinement configuration, and enabled guest services
-before exporting the image. These checks verify the artifact contents; boot
-validation must also check that the services and confinement are active.
+parser and profiles, agent confinement configuration, guest kernel mounts hook,
+and enabled guest services before exporting the image. The hook
+(`src/tools/dd-guest-kernel-mounts`) is built from source by `rootfs.sh` as a
+static binary, using the Rust toolchain that `versions.yaml` pins. These checks
+verify the artifact contents; boot validation must also check that the services
+and confinement are active.
 
 These jobs need **`docker-in-docker:amd64` / `docker-in-docker:arm64`** runners.
 The runner supplies the Docker service and `DOCKER_HOST`. Each job creates its

@@ -37,3 +37,18 @@ every process it launches into the other.
 
 system-probe is intentionally left unconfined — it is the legitimate reader of
 the auth token.
+
+## Built alongside the overlay: guest kernel mounts hook
+
+`rootfs.sh` (`setup_rootfs_dd_specific`) also builds the guest prestart hook
+from [`src/tools/dd-guest-kernel-mounts`](../../../../src/tools/dd-guest-kernel-mounts/README.md)
+and installs it at
+`/usr/share/datadog/kata-guest-hooks/prestart/10-guest-kernel-mounts`. It runs
+only when the runtime sets `guest_hook_path` to
+`/usr/share/datadog/kata-guest-hooks`, and acts only on the docker-in-docker
+container of a pod annotated `io.katacontainers.datadog.guest-kernel-mounts=v1`.
+That container then gets read-only clones of the guest's `/proc` and
+`/sys/fs/cgroup`, plus `debugfs`, `tracefs` and `securityfs`, under `/vm-host`,
+so CWS can run inside it. Like everything kata-agent executes, the hook runs
+under the `kata-container` profile; narrowing that profile's `mount`,
+`capability` or `ptrace` rules can break it.

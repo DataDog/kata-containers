@@ -983,6 +983,42 @@ setup_rootfs_dd_specific()
 	if [ -d "${script_dir}/datadog-files" ]; then
 		cp -a "${script_dir}/datadog-files/." "${ROOTFS_DIR}/"
 	fi
+	install_dd_guest_kernel_mounts_hook
+}
+
+# Build the guest prestart hook that exposes guest kernel filesystems to an
+# opted-in docker-in-docker container. kata-agent only runs it when the
+# runtime sets guest_hook_path; see src/tools/dd-guest-kernel-mounts/README.md.
+install_dd_guest_kernel_mounts_hook()
+{
+	local src_dir="${script_dir}/../../../src/tools/dd-guest-kernel-mounts"
+	local hook="${ROOTFS_DIR}/usr/share/datadog/kata-guest-hooks/prestart/10-guest-kernel-mounts"
+	local target
+	local build_dir
+
+	case "${ARCH}" in
+		x86_64|amd64) target="x86_64-unknown-linux-musl" ;;
+		aarch64|arm64) target="aarch64-unknown-linux-musl" ;;
+		*) die "The dd-guest-kernel-mounts guest hook does not support ${ARCH}" ;;
+	esac
+	# The kata-agent build this script runs already installs the pinned Rust
+	# toolchain; reuse it rather than fetching another.
+	# shellcheck source=/dev/null
+	[ -r "${HOME}/.cargo/env" ] && source "${HOME}/.cargo/env"
+	command -v cargo >/dev/null || die "cargo is required to build the dd-guest-kernel-mounts guest hook"
+	rustup target add "${target}" >/dev/null 2>&1 || true
+
+	info "Build and install the dd-guest-kernel-mounts guest hook"
+	build_dir="$(mktemp -d)"
+	# A static musl binary, with no libc coupling to the guest. --locked builds
+	# exactly the committed Cargo.lock. CARGO_TARGET_DIR keeps the source tree,
+	# which may be owned by another user in the build container, untouched.
+	(cd "${src_dir}" && CARGO_TARGET_DIR="${build_dir}" \
+		cargo build --release --locked --target "${target}") \
+		|| die "Failed to build the dd-guest-kernel-mounts guest hook"
+	install -D -o root -g root -m 0755 \
+		"${build_dir}/${target}/release/dd-guest-kernel-mounts" "${hook}"
+	rm -rf "${build_dir}"
 }
 ########################################
 

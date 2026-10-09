@@ -29,6 +29,12 @@ RUN ci/install_yq.sh && target_branch=datadog tests/install_rust.sh && \
     fi
 
 ARG TARGETARCH
+# rootfs.sh builds the Datadog guest prestart hook (src/tools/dd-guest-kernel-mounts)
+# as a static musl binary with the pinned Rust toolchain installed above; add
+# the musl target it links against.
+RUN rust_arch="$([ "${TARGETARCH}" = "arm64" ] && echo aarch64 || echo x86_64)" && \
+    rustup target add "${rust_arch}-unknown-linux-musl"
+
 ARG SOURCE_COMMIT
 # Match .github/workflows/build-kata-os.yml. Run the same two osbuilder scripts
 # directly inside BuildKit, without nested docker run or remote bind mounts.
@@ -48,6 +54,7 @@ RUN --security=insecure \
     test -s /rootfs/etc/apparmor.d/usr.bin.kata-agent && \
     test -x /rootfs/usr/local/bin/start-system-probe && \
     test -s /rootfs/etc/systemd/system/kata-agent.service.d/50-apparmor.conf && \
+    test -x /rootfs/usr/share/datadog/kata-guest-hooks/prestart/10-guest-kernel-mounts && \
     test "$(chroot /rootfs systemctl is-enabled system-probe.service)" = enabled && \
     test "$(chroot /rootfs systemctl is-enabled datadog-apparmor.service)" = enabled && \
     mkdir /out && \
