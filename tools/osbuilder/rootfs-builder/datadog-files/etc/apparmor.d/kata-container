@@ -19,4 +19,6 @@ profile kata-container flags=(attach_disconnected,mediate_deleted) {
 
   deny /run/kata-containers/shared/containers/*/datadog-agent/auth/**  rwklmx,
   deny /proc/*/root/run/kata-containers/shared/containers/*/datadog-agent/auth/** rwklmx,
+  deny /run/kata-containers/shared/containers/passthrough/sandbox-mounts/datadog-agent/auth/**  rwklmx,
+  deny /proc/*/root/run/kata-containers/shared/containers/passthrough/sandbox-mounts/datadog-agent/auth/** rwklmx,
 }
