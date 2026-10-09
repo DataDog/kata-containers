@@ -634,6 +634,7 @@ mod tests {
             use_generic_irq: None,
             use_shared_irq: None,
             pci_path: None,
+            backend: Default::default(),
         };
 
         let net = NetConfig::try_from(cfg.clone());

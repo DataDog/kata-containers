@@ -59,6 +59,7 @@ impl VethEndpoint {
             guest_mac: Some(guest_mac),
             queue_num: self.net_pair.network_queues,
             queue_size: 256,
+            backend: self.net_pair.model.backend(&self.net_pair),
             ..Default::default()
         })
     }
