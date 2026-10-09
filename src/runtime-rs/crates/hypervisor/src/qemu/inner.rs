@@ -842,7 +842,7 @@ impl QemuInner {
     }
 
     pub(crate) async fn get_hypervisor_metrics(&self) -> Result<String> {
-        todo!()
+        Err(anyhow!("hypervisor metrics are not supported for qemu"))
     }
 
     pub(crate) fn set_capabilities(&mut self, flag: CapabilityBits) {
