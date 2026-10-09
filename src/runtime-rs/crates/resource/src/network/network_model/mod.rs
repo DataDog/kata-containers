@@ -4,30 +4,40 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
+pub mod jailnet_model;
 pub mod l3_forwarding_model;
 pub mod none_model;
 mod port_forwarding;
+pub mod tapnet_model;
 pub mod tc_filter_model;
 pub mod test_network_model;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use hypervisor::NetworkBackend;
 
 use super::NetworkPair;
 
 pub(crate) const TC_FILTER_NET_MODEL_STR: &str = "tcfilter";
 pub(crate) const L3_FORWARDING_NET_MODEL_STR: &str = "l3forwarding";
+pub(crate) const JAILNET_NET_MODEL_STR: &str = "jailnet";
+pub(crate) const TAPNET_NET_MODEL_STR: &str = "tapnet";
 
 pub enum NetworkModelType {
     NoneModel,
     TcFilter,
     L3Forwarding,
+    JailNet,
+    TapNet,
 }
 
 #[async_trait]
 pub trait NetworkModel: std::fmt::Debug + Send + Sync {
     fn model_type(&self) -> NetworkModelType;
+    fn backend(&self, _pair: &NetworkPair) -> NetworkBackend {
+        NetworkBackend::Tap
+    }
     async fn add(&self, net_pair: &NetworkPair) -> Result<()>;
     async fn del(&self, net_pair: &NetworkPair) -> Result<()>;
 }
@@ -39,6 +49,12 @@ pub fn new(model: &str) -> Result<Arc<dyn NetworkModel>> {
         )),
         L3_FORWARDING_NET_MODEL_STR => Ok(Arc::new(
             l3_forwarding_model::L3ForwardingModel::new().context("new l3 forwarding model")?,
+        )),
+        JAILNET_NET_MODEL_STR => Ok(Arc::new(
+            jailnet_model::JailNetModel::new().context("new jailnet model")?,
+        )),
+        TAPNET_NET_MODEL_STR => Ok(Arc::new(
+            tapnet_model::TapNetModel::new().context("new tapnet model")?,
         )),
         _ => Ok(Arc::new(
             none_model::NoneModel::new().context("new none model")?,
