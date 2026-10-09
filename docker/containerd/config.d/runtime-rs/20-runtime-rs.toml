@@ -1,0 +1,9 @@
+[hypervisor.qemu]
+enable_annotations = ["enable_iommu", "kernel_params", "kernel_verity_params"]
+
+[agent.kata]
+reconnect_timeout_ms = 45000
+create_container_timeout = 60
+
+[runtime]
+sandbox_cgroup_only = false
