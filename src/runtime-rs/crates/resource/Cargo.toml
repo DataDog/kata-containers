@@ -22,7 +22,7 @@ futures = { workspace = true }
 lazy_static = { workspace = true }
 libc = { workspace = true }
 netns-rs = { workspace = true }
-nix = { workspace = true }
+nix = { workspace = true, features = ["poll"] }
 rand = { workspace = true }
 scopeguard = { workspace = true }
 serde = { workspace = true }

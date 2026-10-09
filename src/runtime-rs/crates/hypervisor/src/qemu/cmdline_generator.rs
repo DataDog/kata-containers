@@ -30,6 +30,8 @@ use std::path::{Path, PathBuf};
 use std::str;
 use tokio;
 
+mod proxy_net;
+
 // These should have been called MiB and GiB for better readability but the
 // more fitting names unfortunately generate linter warnings.
 const MI_B: u64 = 1024 * 1024;
