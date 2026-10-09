@@ -44,10 +44,11 @@ impl TryFrom<&HashMap<String, String>> for InitialSize {
         }
 
         // When cpuManagerPolicy=static is in use, kubelet sets quota=-1
-        // (unconstrained) and assigns CPUs via cpuset instead. In that case
+        // (unconstrained) and assigns CPUs via cpuset instead; with
+        // cpuCFSQuota=false it sets no quota/period at all. In both cases
         // we derive the CPU count from the CPU shares (1024 shares per CPU).
         let shares = annotation.get_sandbox_cpu_shares();
-        if quota < 0 && vcpu == 0.0 && shares > 0 {
+        if (quota < 0 || period == 0) && vcpu == 0.0 && shares > 0 {
             vcpu = (shares as f32 / 1024.0).ceil();
         }
 
@@ -87,6 +88,13 @@ impl TryFrom<&oci::Spec> for InitialSize {
                         .map(LinuxContainerCpuResources::try_from)
                     {
                         vcpu = get_nr_vcpu(&cpu_resource);
+                        let shares = cpu_resource.shares();
+                        if (cpu_resource.quota() < 0 || cpu_resource.period() == 0)
+                            && vcpu == 0.0
+                            && shares > 0
+                        {
+                            vcpu = (shares as f32 / 1024.0).ceil();
+                        }
                     }
 
                     // memory resource
@@ -393,6 +401,56 @@ mod tests {
             "quota should take precedence over shares, got vcpu={}",
             initial_size.vcpu
         );
+    }
+
+    #[test]
+    fn test_initial_size_sandbox_cpu_shares_fallback_without_period() {
+        let annotations = HashMap::from([
+            (
+                cri_containerd::CONTAINER_TYPE_LABEL_KEY.to_string(),
+                cri_containerd::SANDBOX.to_string(),
+            ),
+            (
+                cri_containerd::SANDBOX_CPU_SHARE_KEY.to_string(),
+                "1536".to_string(),
+            ),
+        ]);
+
+        let initial_size = InitialSize::try_from(&annotations).unwrap();
+        assert_eq!(initial_size.vcpu, 2.0);
+    }
+
+    #[test]
+    fn test_initial_size_container_cpu_shares_fallback() {
+        for (period, quota, shares, expected_vcpu) in [
+            (None, None, 2048, 2.0),
+            (Some(100_000), Some(-1), 1024, 1.0),
+            (Some(100_000), Some(150_000), 4096, 1.5),
+        ] {
+            let mut spec = oci::Spec::default();
+            spec.set_annotations(Some(HashMap::from([(
+                cri_containerd::CONTAINER_TYPE_LABEL_KEY.to_string(),
+                cri_containerd::CONTAINER.to_string(),
+            )])));
+
+            let mut linux_cpu = oci::LinuxCpu::default();
+            linux_cpu.set_period(period);
+            linux_cpu.set_quota(quota);
+            linux_cpu.set_shares(Some(shares));
+            let linux = LinuxBuilder::default()
+                .resources(
+                    LinuxResourcesBuilder::default()
+                        .cpu(linux_cpu)
+                        .build()
+                        .unwrap(),
+                )
+                .build()
+                .unwrap();
+            spec.set_linux(Some(linux));
+
+            let initial_size = InitialSize::try_from(&spec).unwrap();
+            assert_eq!(initial_size.vcpu, expected_vcpu);
+        }
     }
 
     #[test]
