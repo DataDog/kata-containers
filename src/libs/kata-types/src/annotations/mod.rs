@@ -55,6 +55,9 @@ pub const KATA_ANNO_CONTAINER_RES_SWAPPINESS: &str =
 pub const KATA_ANNO_CONTAINER_RES_SWAP_IN_BYTES: &str =
     "io.katacontainers.container.resource.swap_in_bytes";
 
+/// Destination of a block volume mount holding the container rootfs overlay upper/work dirs.
+pub const KATA_ANNO_VOLUME_ROOTFS_UPPER: &str = "io.katacontainers.volume.rootfs-upper";
+
 // Agent related annotations
 /// Prefix for Agent configurations.
 pub const KATA_ANNO_CFG_AGENT_PREFIX: &str = "io.katacontainers.config.agent.";
