@@ -110,21 +110,11 @@ impl NetworkModel for JailNetModel {
         let tap_name = pair.tap.tap_iface.name.clone();
         let queues = pair.network_queues;
         run_in_netns(netns_path, move |handle| async move {
-            let tap = create_link(&handle, &tap_name, queues)
+            create_link(&handle, &tap_name, queues)
                 .await
                 .context("create tap")?;
-            handle
-                .link()
-                .set(
-                    LinkUnspec::new_with_index(tap.attrs().index)
-                        .mtu(mtu)
-                        .build(),
-                )
-                .execute()
-                .await
-                .context("set tap mtu")?;
-            configure_link(&handle, &tap_name, PROXY_TAP_HOST_IP).await?;
-            let veth = configure_link(&handle, JAIL_VETH_NAME, JAIL_VETH_IP).await?;
+            configure_link(&handle, &tap_name, PROXY_TAP_HOST_IP, mtu).await?;
+            let veth = configure_link(&handle, JAIL_VETH_NAME, JAIL_VETH_IP, mtu).await?;
             handle
                 .route()
                 .add(
@@ -140,7 +130,7 @@ impl NetworkModel for JailNetModel {
             fs::write("/proc/sys/net/ipv4/ip_forward", "1").context("enable ip_forward")
         })?;
 
-        let veth = configure_link(&handle, POD_VETH_NAME, POD_VETH_IP).await?;
+        let veth = configure_link(&handle, POD_VETH_NAME, POD_VETH_IP, mtu).await?;
         handle
             .route()
             .add(
@@ -183,7 +173,7 @@ impl NetworkModel for JailNetModel {
     }
 }
 
-async fn configure_link(handle: &Handle, name: &str, ip: Ipv4Addr) -> Result<u32> {
+async fn configure_link(handle: &Handle, name: &str, ip: Ipv4Addr, mtu: u32) -> Result<u32> {
     let index = get_link_by_name(handle, name).await?.attrs().index;
     handle
         .address()
@@ -193,7 +183,7 @@ async fn configure_link(handle: &Handle, name: &str, ip: Ipv4Addr) -> Result<u32
         .with_context(|| format!("add address to {name}"))?;
     handle
         .link()
-        .set(LinkUnspec::new_with_index(index).up().build())
+        .set(LinkUnspec::new_with_index(index).mtu(mtu).up().build())
         .execute()
         .await
         .with_context(|| format!("set {name} up"))?;
@@ -228,4 +218,68 @@ where
     })
     .join()
     .map_err(|e| anyhow!("{:?}", e))?
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use anyhow::ensure;
+    use rtnetlink::LinkDummy;
+    use test_utils::skip_if_not_root;
+
+    use super::*;
+    use crate::network::network_pair::{NetworkInterface, TapInterface};
+
+    async fn ensure_mtu(handle: &Handle, name: &str, mtu: u32) -> Result<()> {
+        let got = get_link_by_name(handle, name).await?.attrs().mtu;
+        ensure!(got == mtu, "{} MTU = {}, want {}", name, got, mtu);
+        Ok(())
+    }
+
+    #[test]
+    fn test_jailnet_preserves_mtu() {
+        skip_if_not_root!();
+
+        for mtu in [1280, 1500, 9001] {
+            let pod = NetNs::new(format!("kata-jailnet-test-{}", mtu)).unwrap();
+            let result = run_in_netns(pod.path().display().to_string(), move |handle| async move {
+                handle
+                    .link()
+                    .add(LinkDummy::new("eth0").mtu(mtu).build())
+                    .execute()
+                    .await?;
+                let pair = NetworkPair {
+                    tap: TapInterface {
+                        id: format!("test-{}", mtu),
+                        name: "br0_kata".to_owned(),
+                        tap_iface: NetworkInterface {
+                            name: "tap0_kata".to_owned(),
+                            ..Default::default()
+                        },
+                    },
+                    virt_iface: NetworkInterface {
+                        name: "eth0".to_owned(),
+                        ..Default::default()
+                    },
+                    model: Arc::new(JailNetModel::new()?),
+                    network_qos: false,
+                    network_queues: 1,
+                };
+
+                pair.add_network_model().await?;
+                let mut checked = ensure_mtu(&handle, POD_VETH_NAME, mtu).await;
+                if checked.is_ok() {
+                    checked = run_in_netns(jail_netns_path(&pair.tap.id), move |jail| async move {
+                        ensure_mtu(&jail, JAIL_VETH_NAME, mtu).await?;
+                        ensure_mtu(&jail, "tap0_kata", mtu).await
+                    });
+                }
+                pair.del_network_model().await?;
+                checked
+            });
+            pod.remove().unwrap();
+            result.unwrap();
+        }
+    }
 }
