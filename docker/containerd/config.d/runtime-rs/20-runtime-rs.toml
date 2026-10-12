@@ -1,5 +1,6 @@
 [hypervisor.qemu]
 enable_annotations = ["enable_iommu", "kernel_params", "kernel_verity_params"]
+overhead_memory = 512
 
 [agent.kata]
 reconnect_timeout_ms = 45000
