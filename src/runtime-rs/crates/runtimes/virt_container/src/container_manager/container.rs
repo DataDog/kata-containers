@@ -26,6 +26,7 @@ use kata_types::{
 use oci_spec::runtime as oci;
 
 use oci::{LinuxResources, Process as OCIProcess};
+use resource::rootfs::rootfs_upper;
 use resource::{
     cdi_devices::container_device::annotate_container_devices, ResourceManager, ResourceUpdateOp,
 };
@@ -178,6 +179,12 @@ impl Container {
         }
         inner.rootfs.push(rootfs);
 
+        let rootfs_upper = self
+            .resource_manager
+            .handler_rootfs_upper(&mut spec)
+            .await
+            .context("handler rootfs upper")?;
+
         // handler volumes
         let volumes = self
             .resource_manager
@@ -198,6 +205,18 @@ impl Container {
             inner.volumes.push(v);
         }
         spec.set_mounts(Some(oci_mounts));
+        if let Some(v) = rootfs_upper {
+            rootfs_upper::apply(
+                &config.container_id,
+                inner.rootfs.last(),
+                v.as_ref(),
+                &mut spec,
+                &mut storages,
+            )
+            .await
+            .context("rootfs upper")?;
+            inner.volumes.push(v);
+        }
 
         let linux = spec
             .linux()

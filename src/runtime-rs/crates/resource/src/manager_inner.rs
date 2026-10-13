@@ -510,6 +510,13 @@ impl ResourceManagerInner {
         self.volume_resource.handler_volumes(&ctx, cid, spec).await
     }
 
+    pub async fn handler_rootfs_upper(
+        &self,
+        spec: &mut oci::Spec,
+    ) -> Result<Option<Arc<dyn Volume>>> {
+        crate::rootfs::rootfs_upper::claim(self.device_manager.as_ref(), &self.sid, spec).await
+    }
+
     pub async fn handler_devices(&self, _cid: &str, linux: &Linux) -> Result<Vec<ContainerDevice>> {
         let mut devices = vec![];
 
