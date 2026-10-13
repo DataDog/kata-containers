@@ -17,7 +17,7 @@ use crate::{
 };
 
 use crate::utils::{
-    bytes_to_megs, create_dir_all_with_inherit_owner, enter_netns, get_jailer_root, megs_to_bytes,
+    bytes_to_megs, create_dir_all_with_inherit_owner, get_jailer_root, megs_to_bytes,
     set_process_credentials, uses_native_ccw_bus, vm_cleanup,
 };
 
@@ -421,11 +421,21 @@ impl QemuInner {
             None
         };
 
+        // pre_exec runs in the forked child of a multithreaded process, so the netns is
+        // opened here: allocating or locking there can deadlock.
+        let netns = if netns.is_empty() {
+            None
+        } else {
+            fs::File::open(&netns).ok()
+        };
+
         // we need move the qemu process into Network Namespace and set SELinux label.
         unsafe {
             let selinux_label = self.config.security_info.selinux_label.clone();
             let _pre_exec = command.pre_exec(move || {
-                let _ = enter_netns(&netns);
+                if let Some(netns) = &netns {
+                    let _ = nix::sched::setns(netns, nix::sched::CloneFlags::CLONE_NEWNET);
+                }
                 if let Some(label) = selinux_label.as_ref() {
                     if let Err(e) = selinux::set_exec_label(label) {
                         error!(sl!(), "Failed to set SELinux label in child process: {}", e);
