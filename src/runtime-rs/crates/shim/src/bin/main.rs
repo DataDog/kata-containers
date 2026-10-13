@@ -61,6 +61,11 @@ fn parse_args(args: &[OsString]) -> Result<Action> {
     })
     .context(Error::ParseArgument(format!("{args:?}")))?;
 
+    // containerd-shim-multiruntime spawns child shims without -publish-binary.
+    if shim_args.publish_binary.is_empty() {
+        shim_args.publish_binary = "containerd".to_string();
+    }
+
     if help {
         Ok(Action::Help)
     } else if version {
