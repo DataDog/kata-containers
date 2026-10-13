@@ -5,6 +5,7 @@
 //
 
 mod nydus_rootfs;
+pub mod rootfs_upper;
 mod share_fs_rootfs;
 use agent::Storage;
 use anyhow::{anyhow, Context, Result};
@@ -39,6 +40,9 @@ pub trait Rootfs: Send + Sync {
     async fn get_storage(&self) -> Option<Vec<Storage>>;
     async fn cleanup(&self, device_manager: &RwLock<DeviceManager>) -> Result<()>;
     async fn get_device_id(&self) -> Result<Option<String>>;
+    fn is_host_shared(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Default)]
