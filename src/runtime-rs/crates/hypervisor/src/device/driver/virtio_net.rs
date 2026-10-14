@@ -29,6 +29,14 @@ impl fmt::Debug for Address {
 }
 
 #[derive(Clone, Debug, Default)]
+pub enum NetworkBackend {
+    #[default]
+    Tap,
+    /// Tap device living in the given netns instead of the hypervisor's.
+    TapInNetns(String),
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct NetworkConfig {
     /// for detach, now it's default value 0.
     pub index: u64,
@@ -51,6 +59,7 @@ pub struct NetworkConfig {
     pub allow_duplicate_mac: bool,
     /// Guest PCI path after hot-plug (used by the agent to wait for uevents).
     pub pci_path: Option<PciPath>,
+    pub backend: NetworkBackend,
 }
 
 #[derive(Clone, Debug, Default)]

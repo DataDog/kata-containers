@@ -39,6 +39,7 @@ pub use virtio_blk_modern::{
 pub use virtio_fs::{
     ShareFsConfig, ShareFsDevice, ShareFsMountConfig, ShareFsMountOperation, ShareFsMountType,
 };
+pub use virtio_net::NetworkBackend;
 pub use virtio_net::{Address, NetworkConfig, NetworkDevice};
 pub use virtio_vsock::{
     HybridVsockConfig, HybridVsockDevice, VsockConfig, VsockDevice, DEFAULT_GUEST_VSOCK_CID,

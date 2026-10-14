@@ -964,6 +964,7 @@ impl VirtSandbox {
                         .network_info
                         .network_queues as usize,
                     network_created: network_env.network_created,
+                    sandbox_id: self.sid.clone(),
                 },
             ))))
         } else {
@@ -1468,6 +1469,7 @@ impl VirtSandbox {
             netns_path,
             queues,
             network_created: false,
+            sandbox_id: self.sid.clone(),
         })
     }
 }
@@ -1606,6 +1608,7 @@ impl Sandbox for VirtSandbox {
                         .network_info
                         .network_queues as usize,
                     network_created: sandbox_config.network_env.network_created,
+                    sandbox_id: self.sid.clone(),
                 });
                 // Creating the network already makes host artifacts (the
                 // TAPs of pair-based endpoints), and attaching acts on the
