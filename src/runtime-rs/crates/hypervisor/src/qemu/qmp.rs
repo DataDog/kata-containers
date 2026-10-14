@@ -34,6 +34,8 @@ use qapi_spec::Dictionary;
 use std::thread;
 use std::time::Instant;
 
+mod proxy_net;
+
 /// default qmp connection read timeout
 const DEFAULT_QMP_READ_TIMEOUT: u64 = 250;
 const DEFAULT_QMP_INIT_READ_TIMEOUT: u64 = 5000;

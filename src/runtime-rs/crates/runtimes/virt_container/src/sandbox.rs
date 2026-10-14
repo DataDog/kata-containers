@@ -586,6 +586,7 @@ impl VirtSandbox {
                         .network_info
                         .network_queues as usize,
                     network_created: network_env.network_created,
+                    sandbox_id: self.sid.clone(),
                 },
             )))
         } else {
@@ -972,6 +973,7 @@ impl VirtSandbox {
             netns_path,
             queues,
             network_created: false,
+            sandbox_id: self.sid.clone(),
         })
     }
 }
@@ -1106,6 +1108,7 @@ impl Sandbox for VirtSandbox {
                         .network_info
                         .network_queues as usize,
                     network_created: sandbox_config.network_env.network_created,
+                    sandbox_id: self.sid.clone(),
                 });
                 self.resource_manager
                     .handle_network(network_resource)
