@@ -6,6 +6,7 @@
 mod block_source;
 mod cmdline_generator;
 mod inner;
+mod metrics;
 mod qmp;
 
 use crate::device::pci_path::PciPath;
