@@ -17,7 +17,7 @@ use crate::{
 };
 
 use crate::utils::{
-    bytes_to_megs, check_unix_socket_path_len, create_dir_all_with_inherit_owner, enter_netns,
+    bytes_to_megs, check_unix_socket_path_len, create_dir_all_with_inherit_owner,
     get_jailer_root, link_rootless_vmm_socket, megs_to_bytes, set_process_credentials,
     uses_native_ccw_bus, vm_cleanup,
 };
@@ -455,10 +455,20 @@ impl QemuInner {
 
         selinux::apply_exec_label(&mut command, self.config.effective_selinux_label(), "QEMU")?;
 
+        // pre_exec runs in the forked child of a multithreaded process, so the netns is
+        // opened here: allocating or locking there can deadlock.
+        let netns = if netns.is_empty() {
+            None
+        } else {
+            fs::File::open(&netns).ok()
+        };
+
         // Move the QEMU child into its network namespace and set credentials.
         unsafe {
             let _pre_exec = command.pre_exec(move || {
-                let _ = enter_netns(&netns);
+                if let Some(netns) = &netns {
+                    let _ = nix::sched::setns(netns, nix::sched::CloneFlags::CLONE_NEWNET);
+                }
                 if let Some(user) = &user {
                     if let Some(limit) = memlock_limit {
                         set_memlock_rlimit(limit)
