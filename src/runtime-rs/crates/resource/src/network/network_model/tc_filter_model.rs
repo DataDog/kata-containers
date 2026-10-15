@@ -7,9 +7,10 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use futures::TryStreamExt;
+use netlink_packet_route::tc::{TcAttribute, TcHandle};
 use rtnetlink::Handle;
 use scopeguard::defer;
 
@@ -18,6 +19,8 @@ use crate::network::NetworkPair;
 
 const QDISC_ADD_ATTEMPTS: u64 = 5; // Number of attempts when adding an ingress qdisc
 const QDISC_ADD_BACKOFF_MS: u64 = 10; // Base delay for the linear backoff between qdisc add retries on EBUSY
+const INGRESS_PARENT: u32 = 0xffff0000;
+const CLSACT_INGRESS_PARENT: u32 = 0xfffffff2;
 
 /// One model per NetworkPair, so the flags below are this pair's history:
 /// whether an attach of this pair added the ingress qdisc on its TAP and
@@ -57,11 +60,11 @@ impl NetworkModel for TcFilterModel {
             .await
             .context("fetch virt by index")?;
 
-        add_ingress_qdisc(&handle, tap_index as i32, &self.tap_qdisc_added)
+        let tap_parent = add_ingress_qdisc(&handle, tap_index as i32, &self.tap_qdisc_added)
             .await
             .context("add tap ingress")?;
 
-        add_ingress_qdisc(&handle, virt_index as i32, &self.virt_qdisc_added)
+        let virt_parent = add_ingress_qdisc(&handle, virt_index as i32, &self.virt_qdisc_added)
             .await
             .context("add virt ingress")?;
 
@@ -72,7 +75,7 @@ impl NetworkModel for TcFilterModel {
         handle
             .traffic_filter(tap_index as i32)
             .add()
-            .parent(0xffff0000)
+            .parent(tap_parent)
             // get protocol with network byte order
             .protocol(0x0003_u16.to_be())
             .redirect(virt_index)?
@@ -83,7 +86,7 @@ impl NetworkModel for TcFilterModel {
         handle
             .traffic_filter(virt_index as i32)
             .add()
-            .parent(0xffff0000)
+            .parent(virt_parent)
             // get protocol with network byte order
             .protocol(0x0003_u16.to_be())
             .redirect(tap_index)?
@@ -131,15 +134,11 @@ fn is_absent(err: &rtnetlink::Error) -> bool {
 }
 
 /// Add an ingress qdisc to the device at the given index, retrying on EBUSY
-/// with linear backoff (10ms, 20ms, ...). An EEXIST is forgiven only when
-/// `added_before` says an earlier attempt of this attach added the qdisc,
-/// which a retry after a failure between the TC setup and the device
-/// hotplug finds again; a qdisc somebody else put there fails the attach.
-async fn add_ingress_qdisc(
-    handle: &Handle,
-    index: i32,
-    added_before: &AtomicBool,
-) -> Result<(), rtnetlink::Error> {
+/// with linear backoff (10ms, 20ms, ...), and return the parent to attach
+/// filters to. An EEXIST for the qdisc an earlier attempt of this attach
+/// added keeps it; an ingress or clsact qdisc that another agent installed
+/// first (e.g. the Datadog agent's network monitoring) is reused.
+async fn add_ingress_qdisc(handle: &Handle, index: i32, added_before: &AtomicBool) -> Result<u32> {
     let mut last_err = handle.qdisc().add(index).ingress().execute().await;
     for i in 1..QDISC_ADD_ATTEMPTS {
         match &last_err {
@@ -153,11 +152,31 @@ async fn add_ingress_qdisc(
     match last_err {
         Ok(()) => {
             added_before.store(true, Ordering::SeqCst);
-            Ok(())
+            Ok(INGRESS_PARENT)
         }
-        Err(ref e) if is_eexist(e) && added_before.load(Ordering::SeqCst) => Ok(()),
-        other => other,
+        Err(ref e) if is_eexist(e) && added_before.load(Ordering::SeqCst) => Ok(INGRESS_PARENT),
+        Err(ref e) if is_eexist(e) => existing_ingress_parent(handle, index).await,
+        Err(e) => Err(e.into()),
     }
+}
+
+async fn existing_ingress_parent(handle: &Handle, index: i32) -> Result<u32> {
+    let mut qdiscs = handle.qdisc().get().index(index).execute();
+    while let Some(qdisc) = qdiscs.try_next().await? {
+        if qdisc.header.handle != TcHandle::from(INGRESS_PARENT) {
+            continue;
+        }
+        for attr in &qdisc.attributes {
+            match attr {
+                TcAttribute::Kind(kind) if kind == "ingress" => return Ok(INGRESS_PARENT),
+                TcAttribute::Kind(kind) if kind == "clsact" => return Ok(CLSACT_INGRESS_PARENT),
+                _ => {}
+            }
+        }
+    }
+    Err(anyhow!(
+        "device {index} has an ingress qdisc that is neither ingress nor clsact"
+    ))
 }
 
 fn is_ebusy(err: &rtnetlink::Error) -> bool {
@@ -186,6 +205,14 @@ pub async fn fetch_index(handle: &Handle, name: &str) -> Result<u32> {
 mod tests {
     use std::sync::Arc;
 
+    use futures::StreamExt;
+    use kata_sys_util::netns::NetnsGuard;
+    use netlink_packet_core::{
+        NetlinkMessage, NetlinkPayload, NLM_F_ACK, NLM_F_CREATE, NLM_F_EXCL, NLM_F_REQUEST,
+    };
+    use netlink_packet_route::{tc::TcMessage, RouteNetlinkMessage};
+    use netns_rs::NetNs;
+    use rtnetlink::LinkDummy;
     use test_utils::skip_if_not_root;
 
     use super::*;
@@ -213,12 +240,34 @@ mod tests {
         assert!(added.load(Ordering::SeqCst));
         add_ingress_qdisc(&handle, index, &added).await.unwrap();
 
-        // To a fresh attach the same qdisc is foreign, and the loud failure
-        // tells the admin that Kata and something else want the same hook.
+        // To a fresh attach the same qdisc is foreign, and it is reused.
         let foreign = AtomicBool::new(false);
-        assert!(add_ingress_qdisc(&handle, index, &foreign).await.is_err());
+        assert_eq!(
+            add_ingress_qdisc(&handle, index, &foreign).await.unwrap(),
+            INGRESS_PARENT
+        );
         assert!(!foreign.load(Ordering::SeqCst));
         delete_link(&handle, name).await.unwrap();
+    }
+
+    async fn add_clsact(handle: &Handle, index: i32) -> Result<()> {
+        let mut qdisc = TcMessage::with_index(index);
+        qdisc.header.parent = TcHandle::INGRESS;
+        qdisc.header.handle = TcHandle::from(INGRESS_PARENT);
+        qdisc
+            .attributes
+            .push(TcAttribute::Kind("clsact".to_string()));
+        let mut req = NetlinkMessage::from(RouteNetlinkMessage::NewQueueDiscipline(qdisc));
+        req.header.flags = NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL;
+        let mut response = handle.clone().request(req)?;
+        while let Some(msg) = response.next().await {
+            if let NetlinkPayload::Error(e) = msg.payload {
+                if e.code.is_some() {
+                    return Err(anyhow!("add clsact: {e:?}"));
+                }
+            }
+        }
+        Ok(())
     }
 
     #[tokio::test]
@@ -237,5 +286,53 @@ mod tests {
 
         model.del(&pair).await.unwrap();
         model.del(&pair).await.unwrap();
+    }
+
+    #[test]
+    fn test_add_reuses_existing_clsact() {
+        skip_if_not_root!();
+
+        let netns = NetNs::new("kata-tcfilter-test").unwrap();
+        let path = netns.path().display().to_string();
+        let result = std::thread::spawn(move || -> Result<()> {
+            let _netns_guard = NetnsGuard::new(&path)?;
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            rt.block_on(async {
+                let (connection, handle, _) = rtnetlink::new_connection()?;
+                tokio::spawn(connection);
+                for name in ["eth0", "tap0_kata"] {
+                    handle
+                        .link()
+                        .add(LinkDummy::new(name).build())
+                        .execute()
+                        .await?;
+                }
+                add_clsact(&handle, fetch_index(&handle, "eth0").await? as i32).await?;
+                let pair = NetworkPair {
+                    tap: TapInterface {
+                        id: "test".to_owned(),
+                        name: "br0_kata".to_owned(),
+                        tap_iface: NetworkInterface {
+                            name: "tap0_kata".to_owned(),
+                            ..Default::default()
+                        },
+                    },
+                    virt_iface: NetworkInterface {
+                        name: "eth0".to_owned(),
+                        ..Default::default()
+                    },
+                    model: Arc::new(TcFilterModel::new()?),
+                    network_qos: false,
+                    network_queues: 1,
+                };
+                pair.add_network_model().await
+            })
+        })
+        .join()
+        .unwrap();
+        netns.remove().unwrap();
+        result.unwrap();
     }
 }
