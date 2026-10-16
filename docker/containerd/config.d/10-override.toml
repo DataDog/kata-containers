@@ -7,6 +7,9 @@
 
 [hypervisor.qemu]
 kernel_params = "systemd.unified_cgroup_hierarchy=1"
+# Datadog guest hooks baked into the guest image. The only hook is a no-op
+# unless the pod opts in (src/tools/dd-guest-kernel-mounts/README.md).
+guest_hook_path = "/usr/share/datadog/kata-guest-hooks"
 
 [agent.kata]
 debug_console_enabled = false

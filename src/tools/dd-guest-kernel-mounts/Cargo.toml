@@ -1,0 +1,35 @@
+# Copyright (c) 2026 Datadog, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "dd-guest-kernel-mounts"
+version = "0.1.0"
+edition = "2021"
+# Keep in sync with rust-toolchain.toml and versions.yaml.
+rust-version = "1.96"
+publish = false
+
+[[bin]]
+name = "dd-guest-kernel-mounts"
+path = "src/main.rs"
+
+[dependencies]
+# serde_json parses the one document the hook is handed: the OCI runtime state
+# kata-agent writes to the hook's stdin (the OCI hook contract). A well-tested
+# parser, not a hand-rolled one, matters because the hook runs as root in the
+# guest-initial namespaces.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# rustix wraps the mount and namespace syscalls with OwnedFd and typed flags.
+# This is a guest-only Linux binary (amd64/arm64), so it is an unconditional dep.
+rustix = { version = "1", features = ["fs", "mount", "thread"] }
+
+# The hook runs as root in every Kata guest, so build it small and static.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
