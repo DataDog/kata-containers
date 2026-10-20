@@ -30,6 +30,7 @@ default: all
 
 include utils.mk
 include ./tools/packaging/kata-deploy/local-build/Makefile
+include .githooks/hooks.mk
 
 # Create the rules
 $(eval $(call create_all_rules,$(COMPONENTS),$(TOOLS),$(STANDARD_TARGETS)))
