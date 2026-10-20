@@ -4,3 +4,8 @@ install-hooks:
 	ln -sf ../../.githooks/pre-push "$$hook" && echo "installed $$hook"
 
 .PHONY: install-hooks
+
+release-tag:
+	@.githooks/release-tag
+
+.PHONY: release-tag
