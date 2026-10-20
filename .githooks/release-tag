@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+git fetch -q origin --tags
+upstream=$(git describe --tags --abbrev=0 --match '[0-9]*.[0-9]*.[0-9]*' --exclude '*-*')
+prefix=$upstream-dd.$(date +%G%V)
+
+last=-1
+for t in $(git tag -l "$prefix" "$prefix.*"); do
+	n=${t#"$prefix"}
+	n=${n#.}
+	if [[ ${n:-0} =~ ^[0-9]+$ ]] && ((${n:-0} > last)); then
+		last=${n:-0}
+	fi
+done
+
+tag=$prefix
+if ((last >= 0)); then
+	tag=$prefix.$((last + 1))
+fi
+
+git tag -a -m "$tag" "$tag"
+echo "created $tag, push it with: git push origin $tag"
