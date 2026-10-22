@@ -1251,7 +1251,20 @@ impl Qmp {
         // `blockdev-add`
         let node_name = block_node_name(index);
         if self.block_fdsets.contains_key(&node_name) {
-            return Err(anyhow!("duplicate QEMU block device ID {node_name}"));
+            warn!(
+                sl!(),
+                "hotplug_block_device(): stale block device state for {}, rolling it back before re-adding",
+                node_name
+            );
+            // Best-effort: either half may legitimately not exist, depending on
+            // how far the previous attempt got before it failed.
+            let _ = self.qmp.execute(&qmp::device_del {
+                id: node_name.clone(),
+            });
+            let _ = self.qmp.execute(&qapi_qmp::blockdev_del {
+                node_name: node_name.clone(),
+            });
+            self.remove_block_fdsets(&node_name);
         }
         let discard_option = || discard_unmap.then_some(BlockdevDiscardOptions::unmap);
 
