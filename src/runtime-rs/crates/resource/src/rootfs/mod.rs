@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use kata_types::mount::Mount;
 mod block_rootfs;
 mod erofs_rootfs;
+mod raw_block_rootfs;
 pub mod virtual_volume;
 
 use hypervisor::{device::device_manager::DeviceManager, Hypervisor};
@@ -121,6 +122,21 @@ impl RootFsResource {
                 // Safe as single_layer_rootfs must have one layer
                 let layer = &rootfs_mounts[0];
                 let mut inner = self.inner.write().await;
+
+                if let Some(volume) = raw_block_rootfs::raw_block_volume(layer)? {
+                    let rootfs: Arc<dyn Rootfs> = Arc::new(
+                        raw_block_rootfs::RawBlockRootfs::new(
+                            device_manager,
+                            cid,
+                            &volume,
+                            annotations,
+                        )
+                        .await
+                        .context("new raw block rootfs")?,
+                    );
+                    inner.rootfs.push(rootfs.clone());
+                    return Ok(rootfs);
+                }
 
                 if is_guest_pull_volume(share_fs, layer) {
                     let mount_options = layer.options.clone();

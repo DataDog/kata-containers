@@ -563,11 +563,18 @@ func handleVirtualVolume(c *Container) ([]*grpc.Storage, string, error) {
 
 			volumeType = virtVolume.VolumeType
 			var vol *grpc.Storage
-			if volumeType == types.KataVirtualVolumeImageGuestPullType {
+			switch volumeType {
+			case types.KataVirtualVolumeImageGuestPullType:
 				vol, err = handleVirtualVolumeStorageObject(c, "", virtVolume)
 				if err != nil {
 					return nil, "", err
 				}
+			case types.KataVirtualVolumeImageRawBlockType:
+				rawBlock, err := handleRawBlockVirtualVolume(c, virtVolume)
+				if err != nil {
+					return nil, "", err
+				}
+				volumes = append(volumes, rawBlock...)
 			}
 
 			if vol != nil {
@@ -577,6 +584,56 @@ func handleVirtualVolume(c *Container) ([]*grpc.Storage, string, error) {
 	}
 
 	return volumes, volumeType, nil
+}
+
+// handleRawBlockVirtualVolume mounts the image of an image_raw_block virtual
+// volume, hot-plugged by createVirtualVolumeDevices, in the guest and stacks
+// the container rootfs overlay on top of it.
+func handleRawBlockVirtualVolume(c *Container, virtVolume *types.KataVirtualVolume) ([]*grpc.Storage, error) {
+	mountPoint := rawBlockVolumeMountPoint(virtVolume.Source)
+	idx := slices.IndexFunc(c.devices, func(d ContainerDevice) bool { return d.ContainerPath == mountPoint })
+	if idx < 0 {
+		return nil, fmt.Errorf("no device for raw block virtual volume %s", virtVolume.Source)
+	}
+	device := c.sandbox.devManager.GetDeviceByID(c.devices[idx].ID)
+	if device == nil {
+		return nil, fmt.Errorf("failed to find device by id %q", c.devices[idx].ID)
+	}
+	image, err := handleBlockVolume(c, device)
+	if err != nil {
+		return nil, err
+	}
+	image.Fstype = virtVolume.FSType
+	image.Options = append(image.Options, virtVolume.Options...)
+	image.MountPoint = mountPoint
+
+	guestPath := filepath.Join("/run/kata-containers/", c.id, c.rootfsSuffix)
+	return []*grpc.Storage{image, rawBlockRootfsStorage(c, guestPath, mountPoint)}, nil
+}
+
+// rawBlockRootfsStorage stacks the container rootfs overlay on a guest-mounted
+// image. The upper/work go on the rootfs-upper block volume when the pod
+// requests one (annotations.RootFSUpperMount), else in the guest.
+func rawBlockRootfsStorage(c *Container, guestPath, lowerMount string) *grpc.Storage {
+	upper := filepath.Join("/run/kata-containers/", c.id, "fs")
+	work := filepath.Join("/run/kata-containers/", c.id, "work")
+	if u := c.GetAnnotations()[annotations.RootFSUpperMount]; u != "" &&
+		slices.ContainsFunc(c.mounts, func(m Mount) bool { return m.Destination == u && m.BlockDeviceID != "" }) {
+		upper = filepath.Join(u, "upper")
+		work = filepath.Join(u, "work")
+	}
+
+	createDir := "io.katacontainers.volume.overlayfs.create_directory="
+	return &grpc.Storage{
+		MountPoint:    guestPath,
+		Source:        typeOverlayFS,
+		Fstype:        typeOverlayFS,
+		Driver:        kataOverlayDevType,
+		DriverOptions: []string{createDir + upper, createDir + work},
+		// index=off: an upper restored from a snapshot was created over another
+		// lower, which the index would reject.
+		Options: []string{lowerDir + "=" + lowerMount, upperDir + "=" + upper, workDir + "=" + work, "index=off"},
+	}
 }
 
 func (f *FilesystemShare) shareRootFilesystemWithVirtualVolume(ctx context.Context, c *Container) (*SharedFile, error) {
@@ -818,6 +875,10 @@ func (f *FilesystemShare) ShareRootFilesystem(ctx context.Context, c *Container)
 }
 
 func (f *FilesystemShare) UnshareRootFilesystem(ctx context.Context, c *Container) error {
+	if isVirtualVolumeRootFs(c.rootFs) {
+		// Set up by the guest, nothing was shared from the host.
+		return nil
+	}
 	if IsNydusRootFSType(c.rootFs.Type) {
 		if err2 := nydusContainerCleanup(ctx, getMountPath(c.sandbox.id), c); err2 != nil {
 			f.Logger().WithError(err2).Error("rollback failed nydusContainerCleanup")
