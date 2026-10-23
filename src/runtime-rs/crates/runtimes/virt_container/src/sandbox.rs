@@ -2009,8 +2009,14 @@ impl Sandbox for VirtSandbox {
             .map(|resp| resp.metrics)
     }
 
+    async fn host_cgroup_usage(&self) -> Result<(u64, u64)> {
+        self.resource_manager.sandbox_cgroup_usage().await
+    }
+
     async fn hypervisor_metrics(&self) -> Result<String> {
-        self.hypervisor.get_hypervisor_metrics().await
+        let mut metrics = self.hypervisor.get_hypervisor_metrics().await?;
+        metrics.push_str(&resource::share_fs::virtiofsd_metrics().unwrap_or_default());
+        Ok(metrics)
     }
 
     async fn set_policy(&self, policy: &str) -> Result<()> {

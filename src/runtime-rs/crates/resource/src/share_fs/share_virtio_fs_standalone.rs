@@ -4,6 +4,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::LazyLock;
 use std::time::Duration;
 use std::{collections::HashMap, path::Path, process::Stdio, sync::Arc};
 
@@ -21,6 +23,7 @@ use tokio::{
 };
 
 use agent::Storage;
+use hypervisor::process_metrics::{ProcessMetrics, ProcessMetricsHelp};
 use hypervisor::{
     device::device_manager::DeviceManager, selinux, utils::chown_to_parent, Hypervisor,
 };
@@ -56,6 +59,31 @@ pub struct ShareVirtioFsStandaloneConfig {
 struct ShareVirtioFsStandaloneInner {
     stop_tx: Option<watch::Sender<bool>>,
     watcher: Option<JoinHandle<Result<()>>>,
+}
+
+static VIRTIOFSD_PID: AtomicU32 = AtomicU32::new(0);
+
+static VIRTIOFSD_METRICS: LazyLock<ProcessMetrics> = LazyLock::new(|| {
+    ProcessMetrics::new(
+        "kata_virtiofsd",
+        ProcessMetricsHelp {
+            threads: "Virtiofsd process threads.",
+            proc_status: "Virtiofsd process status.",
+            proc_stat: "Virtiofsd process statistics.",
+            io_stat: "Process IO statistics.",
+            fds: "Open FDs for virtiofsd.",
+            netdev: None,
+        },
+    )
+    .unwrap()
+});
+
+/// kata_virtiofsd_* metrics of the virtiofsd started by this shim, empty if none.
+pub fn virtiofsd_metrics() -> Result<String> {
+    match VIRTIOFSD_PID.load(Ordering::Relaxed) {
+        0 => Ok(String::new()),
+        pid => VIRTIOFSD_METRICS.text(pid as i32),
+    }
 }
 
 pub(crate) struct ShareVirtioFsStandalone {
@@ -153,6 +181,7 @@ impl ShareVirtioFsStandalone {
             return Err(anyhow!("virtiofsd already initialized"));
         }
         let child = child_cmd.spawn().context("spawn virtiofsd")?;
+        VIRTIOFSD_PID.store(child.id().unwrap_or(0), Ordering::Relaxed);
 
         let (tx, mut rx): (Sender<Result<()>>, Receiver<Result<()>>) = channel(100);
         let (stop_tx, stop_rx) = watch::channel(false);

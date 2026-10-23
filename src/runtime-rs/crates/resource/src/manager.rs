@@ -237,6 +237,11 @@ impl ResourceManager {
         inner.has_passthrough_network_devices().await
     }
 
+    pub async fn sandbox_cgroup_usage(&self) -> Result<(u64, u64)> {
+        let inner = self.inner.read().await;
+        inner.cgroups_resource.sandbox_usage().await
+    }
+
     /// Kills every process left in the sandbox cgroups and waits until
     /// they are empty. Only for a shim that does not run in them.
     pub async fn kill_sandbox_processes(&self, wait: std::time::Duration) -> Result<()> {

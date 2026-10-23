@@ -31,6 +31,7 @@ mod kernel_param;
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 pub mod openvmm;
+pub mod process_metrics;
 pub mod qemu;
 pub mod remote;
 pub mod selinux;
