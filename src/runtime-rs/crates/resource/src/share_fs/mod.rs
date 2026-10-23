@@ -12,6 +12,7 @@ pub use share_virtio_fs::rafs_mount;
 mod share_virtio_fs_inline;
 use share_virtio_fs_inline::ShareVirtioFsInline;
 mod share_virtio_fs_standalone;
+pub use share_virtio_fs_standalone::virtiofsd_metrics;
 use share_virtio_fs_standalone::ShareVirtioFsStandalone;
 mod share_virtio_fs_nydus;
 pub use nydus::nydus_client::NydusClient;

@@ -160,6 +160,7 @@ async fn metrics_url_handler(
     sandbox: Arc<dyn Sandbox>,
     _req: Request<Incoming>,
 ) -> Result<Response<Full<Bytes>>> {
+    crate::pod_overhead::spawn_sample(sandbox.clone());
     // get metrics from agent, hypervisor, and shim
     let agent_metrics = sandbox.agent_metrics().await.unwrap_or_default();
     let hypervisor_metrics = sandbox.hypervisor_metrics().await.unwrap_or_default();

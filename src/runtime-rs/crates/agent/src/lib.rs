@@ -11,6 +11,7 @@ logging::logger_with_subsystem!(sl, "agent");
 
 pub mod kata;
 mod log_forwarder;
+pub mod metrics;
 mod sock;
 pub mod types;
 pub use types::{
