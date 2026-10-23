@@ -360,6 +360,11 @@ func checkAndMount(s *service, r *taskAPI.CreateTaskRequest) (bool, error) {
 			return false, nil
 		}
 
+		// The guest sets up rootfs described by a Kata virtual volume.
+		if virtcontainers.HasOptionPrefix(m.Options, virtcontainers.VirtualVolumePrefix) {
+			return false, nil
+		}
+
 		if virtcontainers.IsNydusRootFSType(m.Type) {
 			// if kata + nydus, do not mount
 			return false, nil
