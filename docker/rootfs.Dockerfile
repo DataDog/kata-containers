@@ -1,8 +1,6 @@
 # syntax=docker/dockerfile:1-labs
 # Build on the native docker-in-docker runner for TARGETARCH. Only the osbuilder
 # RUN needs privileges; the shared rootless CI BuildKit workers cannot run it.
-FROM docker.io/datadog/agent-dev:lebauce-no-agent-ipc-py3-jmx AS system-probe
-
 FROM registry.ddbuild.io/images/base/gbi-ubuntu_2204:release AS builder
 USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -37,17 +35,18 @@ ARG SOURCE_COMMIT
 # /rootfs is also the path expected by the existing SBOM hook. Mount devtmpfs
 # inside this RUN so loop partitions created by the kernel appear in /dev.
 RUN --security=insecure \
-    --mount=type=bind,from=system-probe,source=/opt/datadog-agent/embedded,target=/system-probe \
     test -n "${SOURCE_COMMIT}" && \
     mount -t devtmpfs devtmpfs /dev && \
     trap 'umount -l /dev' EXIT && \
     export OS_VERSION=jammy INSIDE_CONTAINER=1 USER=root GROUP=root target_branch=datadog \
         MAKEFLAGS="COMMIT_NO=${SOURCE_COMMIT}" && \
     tools/osbuilder/rootfs-builder/rootfs.sh -d -o "$(cat VERSION)-${SOURCE_COMMIT}" -r /rootfs ubuntu && \
-    install -m 0755 /system-probe/bin/system-probe /rootfs/opt/datadog-agent/embedded/bin/system-probe && \
-    rm -rf /rootfs/opt/datadog-agent/embedded/share/system-probe && \
-    cp -a /system-probe/share/system-probe /rootfs/opt/datadog-agent/embedded/share/ && \
-    chroot /rootfs /opt/datadog-agent/embedded/bin/system-probe version && \
+    if [ -f datadog-agent.deb ]; then \
+        cp datadog-agent.deb /rootfs/tmp/ && \
+        chroot /rootfs dpkg -i /tmp/datadog-agent.deb && \
+        rm /rootfs/tmp/datadog-agent.deb && \
+        chroot /rootfs /opt/datadog-agent/embedded/bin/system-probe version; \
+    fi && \
     test -x /rootfs/usr/bin/kata-agent && \
     test -x /rootfs/opt/datadog-agent/embedded/bin/system-probe && \
     test -x /rootfs/sbin/apparmor_parser && \
