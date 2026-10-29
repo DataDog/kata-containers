@@ -9,7 +9,7 @@
 kernel_params = "systemd.unified_cgroup_hierarchy=1"
 
 [agent.kata]
-debug_console_enabled = false
+debug_console_enabled = true
 
 [runtime]
 static_sandbox_resource_mgmt=true
