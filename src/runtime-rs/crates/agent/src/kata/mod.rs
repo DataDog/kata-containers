@@ -132,6 +132,9 @@ impl KataAgent {
         );
         let address = inner.socket_address.clone();
         let port = inner.config.log_port;
+        if port == 0 {
+            return Ok(());
+        }
         inner
             .log_forwarder
             .start(&address, port, config)
