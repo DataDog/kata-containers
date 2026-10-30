@@ -37,13 +37,14 @@ use std::time::Instant;
 mod proxy_net;
 
 /// default qmp connection read timeout
-const DEFAULT_QMP_READ_TIMEOUT: u64 = 250;
+// A late reply is read as the next command's reply: stay above slow QEMU replies.
+const DEFAULT_QMP_READ_TIMEOUT: u64 = 5000;
 const DEFAULT_QMP_INIT_READ_TIMEOUT: u64 = 5000;
 const DEFAULT_QMP_CONNECT_DEADLINE_MS: u64 = 50000;
 const DEFAULT_QMP_RETRY_SLEEP_MS: u64 = 50;
 
 const DEVICE_DELETED_TIMEOUT: Duration = Duration::from_secs(10);
-// blockdev-add, device_add and query-pci of a hotplug can exceed the default read timeout.
+// Block hotplug commands can be slow under load.
 const BLOCK_HOTPLUG_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn collect_block_fdsets(fdsets: Vec<qmp::FdsetInfo>) -> HashMap<String, Vec<i64>> {
@@ -1555,9 +1556,7 @@ impl Qmp {
         }
     }
 
-    /// Hotplugs a block device so that a failed attempt leaves no state behind:
-    /// leftovers of an earlier attempt on the same node are removed first, and
-    /// on failure the node is removed again before returning.
+    /// Removes leftovers of earlier attempts first, and its own on failure.
     #[allow(clippy::too_many_arguments)]
     pub fn hotplug_block_device(
         &mut self,
@@ -1607,8 +1606,7 @@ impl Qmp {
         result
     }
 
-    /// Removes the frontend device, backend node and fdsets QEMU or this shim
-    /// still hold for `node_name`.
+    /// Removes what QEMU and the shim still hold for `node_name`.
     fn reclaim_block_node(&mut self, node_name: &str) -> Result<()> {
         let in_qemu = self
             .qmp
