@@ -312,13 +312,32 @@ fn new_agent(toml_config: &TomlConfig) -> Result<Arc<KataAgent>> {
         .get(agent_name)
         .ok_or_else(|| anyhow!("failed to get agent for {}", agent_name))
         .context("get agent")?;
+    let mut agent_config = agent_config.clone();
+    if !guest_logs_on_vsock(toml_config) {
+        agent_config.log_port = 0;
+    }
     match agent_name.as_str() {
         AGENT_KATA => {
-            let agent = KataAgent::new(agent_config.clone());
+            let agent = KataAgent::new(agent_config);
             Ok(Arc::new(agent))
         }
         _ => Err(anyhow!("Unsupported agent {}", agent_name)),
     }
+}
+
+/// The guest agent serves its logs on vsock only when it gets agent.log_vport:
+/// with hypervisor debug, or through the configured kernel parameters.
+fn guest_logs_on_vsock(toml_config: &TomlConfig) -> bool {
+    toml_config
+        .hypervisor
+        .get(&toml_config.runtime.hypervisor_name)
+        .is_some_and(|hv| {
+            hv.debug_info.enable_debug
+                || hv
+                    .boot_info
+                    .kernel_params
+                    .contains(kata_types::config::LOG_VPORT_OPTION)
+        })
 }
 
 #[cfg(test)]
@@ -335,6 +354,30 @@ container_pipe_size=1
 agent_name="kata"
         "#;
         TomlConfig::load(config_content).map_err(|e| anyhow!("can not load config toml: {}", e))
+    }
+
+    #[tokio::test]
+    async fn test_agent_log_forwarder_follows_guest_log_vport() {
+        use agent::AgentManager;
+        VirtContainer::init().unwrap();
+        // The guest serves logs on vsock only with agent.log_vport; otherwise
+        // the forwarder must stay off instead of dialing a closed port.
+        for (hypervisor, log_port) in [
+            ("enable_debug = false", 0),
+            ("enable_debug = true", 1025),
+            ("kernel_params = \"agent.log_vport=1025\"", 1025),
+        ] {
+            let config = TomlConfig::load(&format!(
+                "[hypervisor.qemu]\npath = \"/bin/echo\"\nkernel = \"/bin/echo\"\nimage = \"/bin/echo\"\n{hypervisor}\n\n[agent.kata]\n\n[runtime]\nhypervisor_name = \"qemu\"\nagent_name = \"kata\"\n"
+            ))
+            .unwrap();
+            let agent = new_agent(&config).unwrap();
+            assert_eq!(
+                agent.agent_config().await.log_port,
+                log_port,
+                "{hypervisor}"
+            );
+        }
     }
 
     #[test]
