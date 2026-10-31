@@ -56,11 +56,6 @@ Example of valid exclusion:
 # !s390x !ppc64le
 ```
 
-The fragment gathering tool performs some basic sanity checks, and the `build-kernel.sh` will
-fail and report the error in the cases of:
+When fragments override a setting, the last fragment takes precedence. If the requested value does not appear in the generated `.config`, `build-kernel.sh setup` reports the symbol and fails. The `-s` option skips this check but does not ignore merge failures. Check the spelling and the Kconfig dependencies before adding an exception.
 
-- A duplicate `CONFIG` symbol appearing.
-- A `CONFIG` symbol being in a fragment, but not appearing in the final .config
-  - which indicates that `CONFIG` variable is not a part of the kernel `Kconfig` setup, which
-    can indicate a typing mistake in the name of the symbol.
-- A `CONFIG` symbol appearing in the fragments with multiple different values.
+List exceptions by exact symbol name, one per line, in `fragments/whitelist.conf` or `fragments/whitelist-<kernel-version>.conf`. Use the version-specific file if the exception applies to only one kernel version. Blank lines and comments do not affect validation.

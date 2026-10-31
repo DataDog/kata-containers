@@ -267,13 +267,6 @@ get_kernel_frag_path() {
 		fi
 	fi
 
-	# These are the strings that the kernel merge_config.sh script kicks out
-	# when it reports an error or warning condition. We search for them in the
-	# output to try and fail when we think something has been misconfigured.
-	local not_in_string="not in final"
-	local redefined_string="redefined"
-	local redundant_string="redundant"
-
 	# Later, if we need to add kernel version specific subdirs in order to
 	# handle specific cases, then add the path definition and search/list/cat
 	# here.
@@ -343,54 +336,27 @@ get_kernel_frag_path() {
 
 	info "Constructing config from fragments: ${config_path}"
 
-
 	export KCONFIG_CONFIG=${config_path}
 	export ARCH=${arch_target}
 	cd "${kernel_path}"
 
 	local results
 	# shellcheck disable=SC2086
-	results=$( ${cmdpath} -r -n ${all_configs} )
-	# Only consider results highlighting "not in final"
-	results=$(grep "${not_in_string}" <<< "${results}" || true)
-	# Do not care about options that are in whitelist
-	results=$(grep -v -f "${default_config_whitelist}" <<< "${results}" || true)
-	local version_config_whitelist="${default_config_whitelist%.*}-${kernel_version}.conf"
-	if [[ -f "${version_config_whitelist}" ]]; then
-		results=$(grep -v -f "${version_config_whitelist}" <<< "${results}" || true)
+	if ! results=$("${cmdpath}" -n ${all_configs}); then
+		info "${results}"
+		die "Failed to merge kernel config fragments"
 	fi
 
-	[[ "${skip_config_checks}" == "true" ]] && echo "${config_path}" && return
-
-	# Did we request any entries that did not make it?
-	local missing
-	if echo "${results}" | grep -v -q "${not_in_string}"; then missing=0; else missing=$?; fi
-	if [[ "${missing}" -ne 0 ]]; then
-		info "Some CONFIG elements failed to make the final .config:"
-		info "${results}"
-		info "Generated config file can be found in ${config_path}"
-		die "Failed to construct requested .config file"
-	fi
-
-	# Did we define something as two different values?
-	local redefined
-	if echo "${results}" | grep -v -q "${redefined_string}"; then redefined=0; else redefined=$?; fi
-	if [[ "${redefined}" -ne 0 ]]; then
-		info "Some CONFIG elements are redefined in fragments:"
-		info "${results}"
-		info "Generated config file can be found in ${config_path}"
-		die "Failed to construct requested .config file"
-	fi
-
-	# Did we define something twice? Nominally this may not be an error, and it
-	# might be convenient to allow it, but for now, let's pick up on them.
-	local redundant
-	if echo "${results}" | grep -v -q "${redundant_string}"; then redundant=0; else redundant=$?; fi
-	if [[ "${redundant}" -ne 0 ]]; then
-		info "Some CONFIG elements are redundant in fragments:"
-		info "${results}"
-		info "Generated config file can be found in ${config_path}"
-		die "Failed to construct requested .config file"
+	if [[ "${skip_config_checks}" != "true" ]]; then
+		local whitelists=("${default_config_whitelist}")
+		local version_whitelist="${default_config_whitelist%.*}-${kernel_version}.conf"
+		if [[ -f "${version_whitelist}" ]]; then
+			whitelists+=("${version_whitelist}")
+		fi
+		# shellcheck disable=SC2086
+		awk -f "${script_dir}/check-config.awk" input=exceptions "${whitelists[@]}" \
+			input=fragments ${all_configs} input=generated "${config_path}" >&2 ||
+			die "Failed to validate ${config_path}"
 	fi
 
 	echo "${config_path}"
@@ -414,7 +380,7 @@ get_default_kernel_config() {
 
 	archfragdir="${default_config_frags_dir}/${kernel_arch}"
 	if [[ -d "${archfragdir}" ]]; then
-		config="$(get_kernel_frag_path "${archfragdir}" "${kernel_path}" "${kernel_arch}")"
+		config="$(get_kernel_frag_path "${archfragdir}" "${kernel_path}" "${kernel_arch}")" || return 1
 	else
 		[[ "${hypervisor}" == "firecracker" ]] && hypervisor="kvm"
 		config="${default_kernel_config_dir}/${kernel_arch}_kata_${hypervisor}_${major_kernel}.x"

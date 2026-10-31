@@ -33,6 +33,8 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Test kernel config validation
+        run: bash tools/packaging/kernel/tests/check-config.sh
       - name: Ensure the kernel config version has been updated
         run: |
           kernel_dir="tools/packaging/kernel/"
