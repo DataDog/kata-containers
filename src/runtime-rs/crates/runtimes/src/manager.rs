@@ -23,6 +23,7 @@ use hypervisor::utils::{
 };
 use kata_sys_util::{mount::get_mount_path, netns::remove_netns, spec::load_oci_spec};
 use kata_types::{
+    annotations::KATA_ANNO_CFG_HYPERVISOR_DEFAULT_VCPUS,
     config::{
         default::DEFAULT_GUEST_DNS_FILE, hypervisor::RootlessUser, Hypervisor, TomlConfig,
         KATA_PATH,
@@ -184,6 +185,15 @@ impl RuntimeHandlerManagerInner {
             .get_mut(hypervisor_name)
             .ok_or_else(|| anyhow!("hypervisor {} not found in config", hypervisor_name))?;
 
+        // A default_vcpus annotation is the final vCPU count, not a base for static sizing.
+        let pinned_vcpus = (sandbox_config
+            .annotations
+            .contains_key(KATA_ANNO_CFG_HYPERVISOR_DEFAULT_VCPUS)
+            && hypervisor
+                .security_info
+                .is_annotation_enabled(KATA_ANNO_CFG_HYPERVISOR_DEFAULT_VCPUS))
+        .then_some(hypervisor.cpu_info.default_vcpus);
+
         set_rootless(hypervisor.security_info.rootless);
         let mut rootless_setup_guard = if is_rootless() {
             Some(
@@ -238,6 +248,13 @@ impl RuntimeHandlerManagerInner {
         initial_size_manager
             .setup_config(&mut config)
             .context("failed to setup static resource mgmt config")?;
+        if let (Some(vcpus), Some(hv)) = (
+            pinned_vcpus,
+            config.hypervisor.get_mut(&config.runtime.hypervisor_name),
+        ) {
+            hv.cpu_info.default_vcpus = vcpus;
+            hv.cpu_info.default_maxvcpus = vcpus.ceil() as u32;
+        }
 
         update_component_log_level(&config);
 

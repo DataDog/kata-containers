@@ -876,6 +876,7 @@ func addHypervisorCPUOverrides(ocispec specs.Spec, sbConfig *vc.SandboxConfig) e
 			return fmt.Errorf("Number of cpus %f specified in annotation default_vcpus is greater than the number of CPUs %d on the system", vcpus, numCPUs)
 		}
 		sbConfig.HypervisorConfig.NumVCPUsF = float32(vcpus)
+		sbConfig.SandboxResources.WorkloadCPUs = 0
 		return nil
 	}); err != nil {
 		return err
