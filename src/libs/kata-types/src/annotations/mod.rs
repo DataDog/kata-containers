@@ -187,6 +187,10 @@ pub const KATA_ANNO_CFG_HYPERVISOR_DEFAULT_VCPUS: &str =
 /// A sandbox annotation that specifies the maximum number of vCPUs allocated for the VM by the hypervisor.
 pub const KATA_ANNO_CFG_HYPERVISOR_DEFAULT_MAX_VCPUS: &str =
     "io.katacontainers.config.hypervisor.default_max_vcpus";
+/// A sandbox annotation for the vCPUs of the sandbox workload, used by static sandbox sizing
+/// in place of the CPU sizing derived from the CRI sandbox annotations.
+pub const KATA_ANNO_CFG_HYPERVISOR_WORKLOAD_VCPUS: &str =
+    "io.katacontainers.config.hypervisor.workload_vcpus";
 
 // Hypervisor Device related annotations
 /// PCIeRootPort is used to indicate the number of PCIe Root Port devices
@@ -717,6 +721,12 @@ impl Annotation {
                             return Err(i32_err);
                         }
                     },
+                    // Applied by the runtime's static sandbox sizing.
+                    KATA_ANNO_CFG_HYPERVISOR_WORKLOAD_VCPUS => {
+                        if self.get_value::<f32>(key).is_err() {
+                            return Err(i32_err);
+                        }
+                    }
                     KATA_ANNO_CFG_HYPERVISOR_DEFAULT_MAX_VCPUS => {
                         match self.get_value::<u32>(key) {
                             Ok(r) => {
