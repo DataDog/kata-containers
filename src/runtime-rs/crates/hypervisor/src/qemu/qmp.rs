@@ -37,12 +37,15 @@ use std::time::Instant;
 mod proxy_net;
 
 /// default qmp connection read timeout
-const DEFAULT_QMP_READ_TIMEOUT: u64 = 250;
+// A late reply is read as the next command's reply: stay above slow QEMU replies.
+const DEFAULT_QMP_READ_TIMEOUT: u64 = 5000;
 const DEFAULT_QMP_INIT_READ_TIMEOUT: u64 = 5000;
 const DEFAULT_QMP_CONNECT_DEADLINE_MS: u64 = 50000;
 const DEFAULT_QMP_RETRY_SLEEP_MS: u64 = 50;
 
 const DEVICE_DELETED_TIMEOUT: Duration = Duration::from_secs(10);
+// Block hotplug commands can be slow under load.
+const BLOCK_HOTPLUG_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn collect_block_fdsets(fdsets: Vec<qmp::FdsetInfo>) -> HashMap<String, Vec<i64>> {
     let mut block_fdsets: HashMap<String, Vec<i64>> = HashMap::new();
@@ -845,6 +848,12 @@ impl Qmp {
         Err(anyhow!("no free slots on PCI bridges"))
     }
 
+    fn forget_pci_bridge_slot(&mut self, device_id: &str) {
+        for devices in self.pci_bridge_devices.values_mut() {
+            devices.retain(|_, id| id != device_id);
+        }
+    }
+
     fn record_pci_bridge_slot(&mut self, bridge_id: &str, slot: i64, device_id: &str) {
         if let Some(devices) = self.pci_bridge_devices.get_mut(bridge_id) {
             devices.insert(slot, device_id.to_owned());
@@ -1233,7 +1242,7 @@ impl Qmp {
     /// {"return": {}}
     ///
     #[allow(clippy::too_many_arguments)]
-    pub fn hotplug_block_device(
+    fn do_hotplug_block_device(
         &mut self,
         block_driver: &str,
         index: u64,
@@ -1547,6 +1556,106 @@ impl Qmp {
         }
     }
 
+    /// Removes leftovers of earlier attempts first, and its own on failure.
+    #[allow(clippy::too_many_arguments)]
+    pub fn hotplug_block_device(
+        &mut self,
+        block_driver: &str,
+        index: u64,
+        path_on_host: &str,
+        blkdev_aio: &str,
+        is_direct: Option<bool>,
+        is_readonly: bool,
+        no_drop: bool,
+        discard_unmap: bool,
+        logical_block_size: u32,
+        physical_block_size: u32,
+        source: &BlockSourceFormat,
+        iothread: Option<&str>,
+    ) -> Result<(Option<PciPath>, Option<String>)> {
+        let node_name = block_node_name(index);
+        self.reclaim_block_node(&node_name)
+            .with_context(|| format!("reclaim stale block node {node_name}"))?;
+
+        let read_timeout = self.qmp.inner_mut().get_mut_write().read_timeout()?;
+        self.set_read_timeout(Some(BLOCK_HOTPLUG_READ_TIMEOUT));
+        let result = self.do_hotplug_block_device(
+            block_driver,
+            index,
+            path_on_host,
+            blkdev_aio,
+            is_direct,
+            is_readonly,
+            no_drop,
+            discard_unmap,
+            logical_block_size,
+            physical_block_size,
+            source,
+            iothread,
+        );
+        self.set_read_timeout(read_timeout);
+
+        if result.is_err() {
+            if let Err(e) = self.reclaim_block_node(&node_name) {
+                warn!(
+                    sl!(),
+                    "hotplug_block_device(): rollback of {} failed: {:?}", node_name, e
+                );
+            }
+        }
+        result
+    }
+
+    /// Removes what QEMU and the shim still hold for `node_name`.
+    fn reclaim_block_node(&mut self, node_name: &str) -> Result<()> {
+        let in_qemu = self
+            .qmp
+            .execute(&qapi_qmp::query_named_block_nodes { flat: Some(true) })?
+            .iter()
+            .any(|node| node.node_name.as_deref() == Some(node_name));
+        if !in_qemu && !self.block_fdsets.contains_key(node_name) {
+            return Ok(());
+        }
+        warn!(sl!(), "reclaiming stale block node {}", node_name);
+
+        if self
+            .qmp
+            .execute(&qmp::device_del {
+                id: node_name.to_owned(),
+            })
+            .is_ok()
+        {
+            self.wait_for_device_deleted(node_name, DEVICE_DELETED_TIMEOUT)?;
+        }
+        if in_qemu {
+            self.qmp
+                .execute(&qapi_qmp::blockdev_del {
+                    node_name: node_name.to_owned(),
+                })
+                .map_err(|e| anyhow!("blockdev_del {}: {:?}", node_name, e))?;
+        }
+        self.remove_block_fdsets(node_name);
+        self.forget_pci_bridge_slot(node_name);
+        if self.block_fdsets.contains_key(node_name) {
+            return Err(anyhow!("fdsets of {} could not be removed", node_name));
+        }
+        Ok(())
+    }
+
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) {
+        if let Err(e) = self
+            .qmp
+            .inner_mut()
+            .get_mut_write()
+            .set_read_timeout(timeout)
+        {
+            warn!(
+                sl!(),
+                "failed to set QMP read timeout to {:?}: {:?}", timeout, e
+            );
+        }
+    }
+
     /// Hotunplug block device.
     pub fn hotunplug_block_device(&mut self, block_driver: &str, index: u64) -> Result<()> {
         let node_name = block_node_name(index);
@@ -1573,6 +1682,7 @@ impl Qmp {
                 .map_err(|e| anyhow!("blockdev_del for block device {}: {:?}", node_name, e))?;
 
             self.remove_block_fdsets(&node_name);
+            self.forget_pci_bridge_slot(&node_name);
 
             Ok(())
         })();
