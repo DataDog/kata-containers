@@ -881,13 +881,6 @@ func addHypervisorCPUOverrides(ocispec specs.Spec, sbConfig *vc.SandboxConfig) e
 		return err
 	}
 
-	if err := newAnnotationConfiguration(ocispec, vcAnnotations.WorkloadVCPUs).setFloat32WithCheck(func(vcpus float32) error {
-		sbConfig.SandboxResources.WorkloadCPUs = vcpus
-		return nil
-	}); err != nil {
-		return err
-	}
-
 	return newAnnotationConfiguration(ocispec, vcAnnotations.DefaultMaxVCPUs).setUintWithCheck(func(maxVCPUs uint64) error {
 		max := uint32(maxVCPUs)
 

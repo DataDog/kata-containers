@@ -149,10 +149,6 @@ const (
 	// DefaultVCPUs is a sandbox annotation that specifies the maximum number of vCPUs allocated for the VM by the hypervisor.
 	DefaultMaxVCPUs = kataAnnotHypervisorPrefix + "default_max_vcpus"
 
-	// WorkloadVCPUs is a sandbox annotation for the vCPUs of the sandbox workload, used by
-	// static sandbox sizing in place of the CPU sizing derived from the CRI sandbox annotations.
-	WorkloadVCPUs = kataAnnotHypervisorPrefix + "workload_vcpus"
-
 	//
 	// Memory related annotations
 	//

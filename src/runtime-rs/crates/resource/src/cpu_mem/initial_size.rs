@@ -168,10 +168,6 @@ impl InitialSizeManager {
         Ok(())
     }
 
-    pub fn set_workload_vcpus(&mut self, vcpus: f32) {
-        self.resource.vcpu = vcpus;
-    }
-
     pub fn setup_config(&mut self, config: &mut TomlConfig) -> Result<()> {
         // update this data to the hypervisor config for later use by hypervisor
         let hypervisor_name = &config.runtime.hypervisor_name;
