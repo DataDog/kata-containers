@@ -3,7 +3,8 @@ include: https://gitlab-templates.ddbuild.io/compute-delivery/v3/compute-deliver
 variables:
   CI_IMAGE: 4
   CI_IMAGE_DIGEST: sha256:2cff3f03ed8a1ab9884fab60ca967fddae91b05b7802aa030995f78d13c8f04e
-  KERNEL_VERSION: 6.8
+  # renovate: datasource=git-tags depName=linux packageName=https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+  KERNEL_VERSION: v6.12.115
   KUBERNETES_CPU_REQUEST: "10"
   KUBERNETES_MEMORY_REQUEST: "20Gi"
   KUBERNETES_MEMORY_LIMIT: "40Gi"
