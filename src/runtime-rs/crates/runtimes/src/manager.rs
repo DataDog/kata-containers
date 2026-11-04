@@ -23,7 +23,6 @@ use hypervisor::utils::{
 };
 use kata_sys_util::{mount::get_mount_path, netns::remove_netns, spec::load_oci_spec};
 use kata_types::{
-    annotations::KATA_ANNO_CFG_HYPERVISOR_DEFAULT_VCPUS,
     config::{
         default::DEFAULT_GUEST_DNS_FILE, hypervisor::RootlessUser, Hypervisor, TomlConfig,
         KATA_PATH,
@@ -184,18 +183,6 @@ impl RuntimeHandlerManagerInner {
             .hypervisor
             .get_mut(hypervisor_name)
             .ok_or_else(|| anyhow!("hypervisor {} not found in config", hypervisor_name))?;
-
-        // Like the Go runtime, an annotated default_vcpus is the base the workload vCPUs
-        // are added to by static sizing.
-        if sandbox_config
-            .annotations
-            .contains_key(KATA_ANNO_CFG_HYPERVISOR_DEFAULT_VCPUS)
-            && hypervisor
-                .security_info
-                .is_annotation_enabled(KATA_ANNO_CFG_HYPERVISOR_DEFAULT_VCPUS)
-        {
-            hypervisor.cpu_info.overhead_vcpus = hypervisor.cpu_info.default_vcpus;
-        }
 
         set_rootless(hypervisor.security_info.rootless);
         let mut rootless_setup_guard = if is_rootless() {
