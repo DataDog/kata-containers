@@ -38,6 +38,11 @@ use slog::Logger;
 use std::str::FromStr;
 
 const EPHEMERAL_ENCRYPTION_DRIVER_OPTION: &str = "encryption_key=ephemeral";
+const SYS_DEV_BLOCK: &str = "/sys/dev/block";
+/// Readahead of read-only EROFS image disks, in KiB. The host may load their data lazily
+/// from a remote registry, each request paying a round trip: with the kernel default of
+/// 128 KiB, sequential reads of a cold image are latency bound.
+const IMAGE_DISK_READ_AHEAD_KB: u32 = 32 << 10;
 const MKFS_EXT4: &str = "mkfs.ext4";
 const BLOCK_EMPTYDIR_EXT4_MKFS_OPTS: [&str; 8] =
     ["-O", "^has_journal", "-m", "0", "-i", "163840", "-I", "128"];
@@ -83,8 +88,34 @@ async fn handle_block_storage(
         if options.should_create_filesystem {
             ensure_block_filesystem(logger, storage).await?;
         }
+        if is_image_disk(storage) {
+            tune_image_disk(logger, Path::new(SYS_DEV_BLOCK), dev_num);
+        }
         let path = common_storage_handler(logger, storage)?;
         new_device(path)
+    }
+}
+
+/// Whether a block storage is a read-only EROFS image, e.g. an `image_raw_block` volume.
+fn is_image_disk(storage: &Storage) -> bool {
+    storage.fstype == "erofs" && storage.options.iter().any(|o| o == "ro")
+}
+
+/// Raise the readahead and the request size of an image disk to make fewer, larger reads.
+/// These are only tunings: failures are logged.
+fn tune_image_disk(logger: &Logger, sys_dev_block: &Path, dev_num: &str) {
+    let queue = sys_dev_block.join(dev_num).join("queue");
+    let settings = [
+        ("read_ahead_kb", Ok(IMAGE_DISK_READ_AHEAD_KB.to_string())),
+        (
+            "max_sectors_kb",
+            fs::read_to_string(queue.join("max_hw_sectors_kb")).map(|v| v.trim().to_string()),
+        ),
+    ];
+    for (attr, value) in settings {
+        if let Err(e) = value.and_then(|v| fs::write(queue.join(attr), v)) {
+            warn!(logger, "failed to tune image disk"; "device" => dev_num, "attr" => attr, "error" => e.to_string());
+        }
     }
 }
 
@@ -165,6 +196,55 @@ async fn ensure_ext4_filesystem(logger: &Logger, source: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_image_disk() {
+        let tests = [
+            ("ReadOnlyErofs", "erofs", vec!["ro"], true),
+            ("ReadWriteErofs", "erofs", vec![], false),
+            ("ReadOnlyExt4", "ext4", vec!["ro"], false),
+        ];
+        for (name, fstype, options, want) in tests {
+            let storage = Storage {
+                fstype: fstype.to_string(),
+                options: options.iter().map(|o| o.to_string()).collect(),
+                ..Default::default()
+            };
+            assert_eq!(is_image_disk(&storage), want, "{}", name);
+        }
+    }
+
+    #[test]
+    fn test_tune_image_disk() {
+        let logger = slog::Logger::root(slog::Discard, slog::o!());
+        // (name, devices in the fake sysfs, device tuned, expected readahead and request size)
+        let tests = [
+            ("Tuned", vec!["8:0"], "8:0", Some(("32768", "32767"))),
+            ("MissingDevice", vec![], "8:0", None),
+        ];
+        for (name, devices, dev_num, want) in tests {
+            let sys = tempfile::tempdir().unwrap();
+            for d in &devices {
+                let queue = sys.path().join(d).join("queue");
+                fs::create_dir_all(&queue).unwrap();
+                fs::write(queue.join("max_hw_sectors_kb"), "32767\n").unwrap();
+                fs::write(queue.join("read_ahead_kb"), "128").unwrap();
+                fs::write(queue.join("max_sectors_kb"), "1280").unwrap();
+            }
+
+            tune_image_disk(&logger, sys.path(), dev_num);
+
+            let queue = sys.path().join(dev_num).join("queue");
+            match want {
+                Some((ra, max_sectors)) => {
+                    let read = |attr: &str| fs::read_to_string(queue.join(attr)).unwrap();
+                    assert_eq!(read("read_ahead_kb"), ra, "{}", name);
+                    assert_eq!(read("max_sectors_kb"), max_sectors, "{}", name);
+                }
+                None => assert!(!queue.exists(), "{}", name),
+            }
+        }
+    }
 
     fn storage_with_driver_options(options: &[&str]) -> Storage {
         Storage {
