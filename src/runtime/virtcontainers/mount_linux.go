@@ -151,6 +151,10 @@ func getVirtiofsDaemonForNydus(sandbox *Sandbox) (VirtiofsDaemon, error) {
 }
 
 func nydusContainerCleanup(ctx context.Context, sharedDir string, c *Container) error {
+	// A rootfs described by a Kata virtual volume is set up by the guest, nothing was shared.
+	if HasOptionPrefix(c.rootFs.Options, VirtualVolumePrefix) {
+		return nil
+	}
 	sandbox := c.sandbox
 	virtiofsDaemon, err := getVirtiofsDaemonForNydus(sandbox)
 	if err != nil {
@@ -184,10 +188,6 @@ func bindUnmountAllRootfs(ctx context.Context, sharedDir string, sandbox *Sandbo
 		if c.state.Fstype == "" {
 			// even if error found, don't break out of loop until all mounts attempted
 			// to be unmounted, and collect all errors
-			if isVirtualVolumeRootFs(c.rootFs) {
-				// Set up by the guest, nothing shared from the host.
-				continue
-			}
 			if IsNydusRootFSType(c.rootFs.Type) {
 				errors = merr.Append(errors, nydusContainerCleanup(ctx, sharedDir, c))
 			} else {
