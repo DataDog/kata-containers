@@ -96,7 +96,9 @@ pub async fn apply(
     Ok(())
 }
 
-fn overlay_storage(cid: &str, lower: &str, upper: &str) -> Storage {
+/// Stacks the container rootfs as an overlay of `lower`, with its upper/work directories under
+/// `upper`.
+pub(super) fn overlay_storage(cid: &str, lower: &str, upper: &str) -> Storage {
     let upper_dir = format!("{upper}/upper");
     let work_dir = format!("{upper}/work");
     Storage {

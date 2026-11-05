@@ -23,16 +23,14 @@ use hypervisor::{
 };
 use kata_types::{
     annotations::KATA_ANNO_VOLUME_ROOTFS_UPPER,
-    device::DRIVER_OVERLAYFS_TYPE,
     mount::{
         KataVirtualVolume, Mount, KATA_VIRTUAL_VOLUME_IMAGE_RAW_BLOCK, KATA_VIRTUAL_VOLUME_PREFIX,
-        KATA_VOLUME_OVERLAYFS_CREATE_DIR,
     },
 };
 use oci_spec::runtime as oci;
 use tokio::sync::RwLock;
 
-use super::{Rootfs, ROOTFS, TYPE_OVERLAY_FS};
+use super::{rootfs_upper, Rootfs};
 use crate::block_device::agent_storage_source_from_block_config;
 
 const KATA_GUEST_ROOT: &str = "/run/kata-containers";
@@ -96,7 +94,14 @@ impl RawBlockRootfs {
             mount_point: image_mount.clone(),
             ..Default::default()
         };
-        let rootfs = overlay_storage(cid, &image_mount, annotations);
+        // Upper/work go on the rootfs-upper block volume when the pod requests one, else in the
+        // guest.
+        let upper = annotations
+            .get(KATA_ANNO_VOLUME_ROOTFS_UPPER)
+            .filter(|u| !u.is_empty())
+            .cloned()
+            .unwrap_or_else(|| format!("{KATA_GUEST_ROOT}/{cid}"));
+        let rootfs = rootfs_upper::overlay_storage(cid, &image_mount, &upper);
 
         Ok(Self {
             guest_path: rootfs.mount_point.clone(),
@@ -111,41 +116,6 @@ impl RawBlockRootfs {
 fn image_mount_point(source: &str) -> String {
     let name = base64::engine::general_purpose::URL_SAFE.encode(source);
     format!("{KATA_GUEST_VIRTUAL_VOLUME_DIR}/{name}")
-}
-
-/// Stacks the container rootfs overlay on the guest-mounted image. Upper/work
-/// go on the rootfs-upper block volume when the pod requests one (see
-/// rootfs_upper), else in the guest.
-fn overlay_storage(cid: &str, lower: &str, annotations: &HashMap<String, String>) -> Storage {
-    let (upper_dir, work_dir) = match annotations
-        .get(KATA_ANNO_VOLUME_ROOTFS_UPPER)
-        .filter(|u| !u.is_empty())
-    {
-        Some(upper) => (format!("{upper}/upper"), format!("{upper}/work")),
-        None => (
-            format!("{KATA_GUEST_ROOT}/{cid}/fs"),
-            format!("{KATA_GUEST_ROOT}/{cid}/work"),
-        ),
-    };
-    Storage {
-        driver: DRIVER_OVERLAYFS_TYPE.to_string(),
-        driver_options: vec![
-            format!("{KATA_VOLUME_OVERLAYFS_CREATE_DIR}={upper_dir}"),
-            format!("{KATA_VOLUME_OVERLAYFS_CREATE_DIR}={work_dir}"),
-        ],
-        source: TYPE_OVERLAY_FS.to_string(),
-        fs_type: TYPE_OVERLAY_FS.to_string(),
-        // index=off: an upper restored from a snapshot was created over another
-        // lower, which the index would reject.
-        options: vec![
-            format!("lowerdir={lower}"),
-            format!("upperdir={upper_dir}"),
-            format!("workdir={work_dir}"),
-            "index=off".to_string(),
-        ],
-        mount_point: format!("{KATA_GUEST_ROOT}/{cid}/{ROOTFS}"),
-        ..Default::default()
-    }
 }
 
 #[async_trait]
@@ -234,53 +204,6 @@ mod tests {
         for (name, options, want) in cases {
             let got = raw_block_volume(&mount_with(options)).map_err(|_| ());
             assert_eq!(got, want, "{name}");
-        }
-    }
-
-    #[test]
-    fn test_overlay_storage() {
-        let upper = "/run/kata-containers/sandbox/layers/rootfs-upper";
-        let cases = [
-            (
-                "guest upper",
-                HashMap::new(),
-                "/run/kata-containers/cid/fs".to_string(),
-                "/run/kata-containers/cid/work".to_string(),
-            ),
-            (
-                "rootfs upper volume",
-                HashMap::from([(KATA_ANNO_VOLUME_ROOTFS_UPPER.to_string(), upper.to_string())]),
-                format!("{upper}/upper"),
-                format!("{upper}/work"),
-            ),
-        ];
-        for (name, annotations, upper_dir, work_dir) in cases {
-            let got = overlay_storage(
-                "cid",
-                "/run/kata-containers/virtual-volumes/img",
-                &annotations,
-            );
-            assert_eq!(
-                got,
-                Storage {
-                    driver: "overlayfs".to_string(),
-                    driver_options: vec![
-                        format!("io.katacontainers.volume.overlayfs.create_directory={upper_dir}"),
-                        format!("io.katacontainers.volume.overlayfs.create_directory={work_dir}"),
-                    ],
-                    source: "overlay".to_string(),
-                    fs_type: "overlay".to_string(),
-                    options: vec![
-                        "lowerdir=/run/kata-containers/virtual-volumes/img".to_string(),
-                        format!("upperdir={upper_dir}"),
-                        format!("workdir={work_dir}"),
-                        "index=off".to_string(),
-                    ],
-                    mount_point: "/run/kata-containers/cid/rootfs".to_string(),
-                    ..Default::default()
-                },
-                "{name}"
-            );
         }
     }
 }

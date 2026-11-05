@@ -913,13 +913,6 @@ func rawBlockVolumeMountPoint(source string) string {
 	return filepath.Join(defaultKataGuestVirtualVolumedir, b64.URLEncoding.EncodeToString([]byte(source)))
 }
 
-// isVirtualVolumeRootFs reports whether the rootfs is described by a Kata
-// virtual volume: the guest sets it up, nothing is mounted or shared from the
-// host.
-func isVirtualVolumeRootFs(rootFs RootFs) bool {
-	return HasOptionPrefix(rootFs.Options, VirtualVolumePrefix)
-}
-
 // getFilesystemCapacity return the total size in bytes of the filesystem
 // under path.
 func getFilesystemCapacity(path string) (uint64, error) {
@@ -1304,7 +1297,7 @@ func (c *Container) rollbackFailingContainerCreation(ctx context.Context) {
 		c.Logger().WithError(err).Error("rollback failed unmountHostMounts()")
 	}
 
-	if IsNydusRootFSType(c.rootFs.Type) && !isVirtualVolumeRootFs(c.rootFs) {
+	if IsNydusRootFSType(c.rootFs.Type) {
 		if err := nydusContainerCleanup(ctx, getMountPath(c.sandbox.id), c); err != nil {
 			c.Logger().WithError(err).Error("rollback failed nydusContainerCleanup()")
 		}
@@ -1550,7 +1543,7 @@ func (c *Container) create(ctx context.Context) (err error) {
 		}
 	}()
 
-	if c.checkBlockDeviceSupport(ctx) && !IsNydusRootFSType(c.rootFs.Type) && !IsErofsRootFS(c.rootFs) && !isVirtualVolumeRootFs(c.rootFs) {
+	if c.checkBlockDeviceSupport(ctx) && !IsNydusRootFSType(c.rootFs.Type) && !IsErofsRootFS(c.rootFs) {
 		// If the rootfs is backed by a block device, go ahead and hotplug it to the guest
 		if err = c.hotplugDrive(ctx); err != nil {
 			return
@@ -1734,7 +1727,7 @@ func (c *Container) stop(ctx context.Context, force bool) error {
 		return err
 	}
 
-	if IsNydusRootFSType(c.rootFs.Type) && !isVirtualVolumeRootFs(c.rootFs) {
+	if IsNydusRootFSType(c.rootFs.Type) {
 		if err := nydusContainerCleanup(ctx, getMountPath(c.sandbox.id), c); err != nil && !force {
 			return err
 		}
