@@ -607,32 +607,36 @@ func handleRawBlockVirtualVolume(c *Container, virtVolume *types.KataVirtualVolu
 	image.Options = append(image.Options, virtVolume.Options...)
 	image.MountPoint = mountPoint
 
+	// The upper/work go on the rootfs-upper block volume when the pod requests one, else in the guest.
+	upper, ok := rootfsUpperMount(c)
+	if !ok {
+		upper = filepath.Join("/run/kata-containers/", c.id)
+	}
 	guestPath := filepath.Join("/run/kata-containers/", c.id, c.rootfsSuffix)
-	return []*grpc.Storage{image, rawBlockRootfsStorage(c, guestPath, mountPoint)}, nil
+	return []*grpc.Storage{image, rootfsUpperOverlay(guestPath, mountPoint, upper)}, nil
 }
 
-// rawBlockRootfsStorage stacks the container rootfs overlay on a guest-mounted
-// image. The upper/work go on the rootfs-upper block volume when the pod
-// requests one (annotations.RootFSUpperMount), else in the guest.
-func rawBlockRootfsStorage(c *Container, guestPath, lowerMount string) *grpc.Storage {
-	upper := filepath.Join("/run/kata-containers/", c.id, "fs")
-	work := filepath.Join("/run/kata-containers/", c.id, "work")
-	if u := c.GetAnnotations()[annotations.RootFSUpperMount]; u != "" &&
-		slices.ContainsFunc(c.mounts, func(m Mount) bool { return m.Destination == u && m.BlockDeviceID != "" }) {
-		upper = filepath.Join(u, "upper")
-		work = filepath.Join(u, "work")
-	}
+// rootfsUpperMount returns the destination of the block volume selected by
+// annotations.RootFSUpperMount, if the pod requests one.
+func rootfsUpperMount(c *Container) (string, bool) {
+	upper := c.GetAnnotations()[annotations.RootFSUpperMount]
+	ok := upper != "" && slices.ContainsFunc(c.mounts, func(m Mount) bool { return m.Destination == upper && m.BlockDeviceID != "" })
+	return upper, ok
+}
 
+// rootfsUpperOverlay stacks the container rootfs at guestPath as an overlay of
+// lower, with its upper/work directories under upper.
+func rootfsUpperOverlay(guestPath, lower, upper string) *grpc.Storage {
 	createDir := "io.katacontainers.volume.overlayfs.create_directory="
 	return &grpc.Storage{
 		MountPoint:    guestPath,
 		Source:        typeOverlayFS,
 		Fstype:        typeOverlayFS,
 		Driver:        kataOverlayDevType,
-		DriverOptions: []string{createDir + upper, createDir + work},
+		DriverOptions: []string{createDir + upper + "/upper", createDir + upper + "/work"},
 		// index=off: an upper restored from a snapshot was created over another
 		// lower, which the index would reject.
-		Options: []string{lowerDir + "=" + lowerMount, upperDir + "=" + upper, workDir + "=" + work, "index=off"},
+		Options: []string{lowerDir + "=" + lower, upperDir + "=" + upper + "/upper", workDir + "=" + upper + "/work", "index=off"},
 	}
 }
 
@@ -849,22 +853,13 @@ func (f *FilesystemShare) ShareRootFilesystem(ctx context.Context, c *Container)
 	// Stack the rootfs shared above under an upper/work pair on the block
 	// volume selected by annotations.RootFSUpperMount, which is mounted first
 	// as a layer (see handleBlkOCIMounts).
-	if upper := c.GetAnnotations()[annotations.RootFSUpperMount]; upper != "" &&
-		slices.ContainsFunc(c.mounts, func(m Mount) bool { return m.Destination == upper && m.BlockDeviceID != "" }) {
+	if upper, ok := rootfsUpperMount(c); ok {
 		guestPath := filepath.Join("/run/kata-containers/", c.id, c.rootfsSuffix)
-		createDir := "io.katacontainers.volume.overlayfs.create_directory="
+		// The trailing "/" makes the kernel mount the rootfs virtio-fs submount
+		// (--announce-submounts) before overlayfs checks the lower.
 		return &SharedFile{
-			containerStorages: []*grpc.Storage{{
-				MountPoint:    guestPath,
-				Source:        typeOverlayFS,
-				Fstype:        typeOverlayFS,
-				Driver:        kataOverlayDevType,
-				DriverOptions: []string{createDir + upper + "/upper", createDir + upper + "/work"},
-				// The trailing "/" makes the kernel mount the rootfs virtio-fs submount
-				// (--announce-submounts) before overlayfs checks the lower.
-				Options: []string{lowerDir + "=" + rootfsGuestPath + "/", upperDir + "=" + upper + "/upper", workDir + "=" + upper + "/work", "index=off"},
-			}},
-			guestPath: guestPath,
+			containerStorages: []*grpc.Storage{rootfsUpperOverlay(guestPath, rootfsGuestPath+"/", upper)},
+			guestPath:         guestPath,
 		}, nil
 	}
 
@@ -875,10 +870,6 @@ func (f *FilesystemShare) ShareRootFilesystem(ctx context.Context, c *Container)
 }
 
 func (f *FilesystemShare) UnshareRootFilesystem(ctx context.Context, c *Container) error {
-	if isVirtualVolumeRootFs(c.rootFs) {
-		// Set up by the guest, nothing was shared from the host.
-		return nil
-	}
 	if IsNydusRootFSType(c.rootFs.Type) {
 		if err2 := nydusContainerCleanup(ctx, getMountPath(c.sandbox.id), c); err2 != nil {
 			f.Logger().WithError(err2).Error("rollback failed nydusContainerCleanup")
