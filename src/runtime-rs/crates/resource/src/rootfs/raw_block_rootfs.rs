@@ -30,11 +30,8 @@ use kata_types::{
 use oci_spec::runtime as oci;
 use tokio::sync::RwLock;
 
-use super::{rootfs_upper, Rootfs};
+use super::{erofs_rootfs::DEFAULT_KATA_GUEST_ROOT_SHARED_FS, rootfs_upper, Rootfs};
 use crate::block_device::agent_storage_source_from_block_config;
-
-const KATA_GUEST_ROOT: &str = "/run/kata-containers";
-const KATA_GUEST_VIRTUAL_VOLUME_DIR: &str = "/run/kata-containers/virtual-volumes";
 
 pub(crate) struct RawBlockRootfs {
     guest_path: String,
@@ -100,7 +97,7 @@ impl RawBlockRootfs {
             .get(KATA_ANNO_VOLUME_ROOTFS_UPPER)
             .filter(|u| !u.is_empty())
             .cloned()
-            .unwrap_or_else(|| format!("{KATA_GUEST_ROOT}/{cid}"));
+            .unwrap_or_else(|| format!("{DEFAULT_KATA_GUEST_ROOT_SHARED_FS}{cid}"));
         let rootfs = rootfs_upper::overlay_storage(cid, &image_mount, &upper);
 
         Ok(Self {
@@ -115,7 +112,7 @@ impl RawBlockRootfs {
 /// the same image in a sandbox share the mount.
 fn image_mount_point(source: &str) -> String {
     let name = base64::engine::general_purpose::URL_SAFE.encode(source);
-    format!("{KATA_GUEST_VIRTUAL_VOLUME_DIR}/{name}")
+    format!("{DEFAULT_KATA_GUEST_ROOT_SHARED_FS}virtual-volumes/{name}")
 }
 
 #[async_trait]
