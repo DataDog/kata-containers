@@ -1,0 +1,72 @@
+From: Sean Duncan <sean.duncan@datadoghq.com>
+Subject: [PATCH] fuse: disable export ops without export support
+
+Ported to v6.12.115 from the Datadog 6.8.x patch of the same name
+(DataDog/kata-containers#131). The guest kernel moved from 6.8 to 6.12
+in DataDog/kata-containers#140 without this patch.
+
+virtiofsd assigns FUSE node IDs in the order files are accessed, so the
+IDs are only valid for the lifetime of one virtiofsd process. virtiofsd
+does not set FUSE_EXPORT_SUPPORT.
+
+FUSE still installs full export operations when the server does not
+claim export support. overlayfs therefore treats a virtiofs lower layer
+as able to decode file handles. It records trusted.overlay.origin with
+the temporary node ID on copy-up, and follows it on lookup. With a Kata
+rootfs-upper volume, the upper layer is snapshotted and restored into a
+new VM with a new virtiofsd. The stored node ID then resolves to an
+unrelated cached inode, and open() returns ESTALE.
+
+Upstream commit e022f6a1c711 ("fuse: add support for explicit export
+disabling", v6.9) installs encode-only export operations only when the
+server sends FUSE_NO_EXPORT_SUPPORT. virtiofsd 1.14 never sends that
+flag, so v6.12 still has the problem.
+
+Install encode-only export operations whenever the server does not
+claim export support, and reject file handle decoding in that case even
+for inodes that are in the cache. overlayfs then stops recording origin
+file handles and ignores origin xattrs on existing upper layers.
+
+Submounts already inherit s_export_op from the parent super block in
+v6.12, so no change is needed there.
+
+---
+ fs/fuse/inode.c | 13 +++++++++----
+ 1 file changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/fs/fuse/inode.c b/fs/fuse/inode.c
+--- a/fs/fuse/inode.c
++++ b/fs/fuse/inode.c
+@@ -1045,16 +1045,13 @@
+ 	struct dentry *entry;
+ 	int err = -ESTALE;
+ 
+-	if (handle->nodeid == 0)
++	if (handle->nodeid == 0 || !fc->export_support)
+ 		goto out_err;
+ 
+ 	inode = ilookup5(sb, handle->nodeid, fuse_inode_eq, &handle->nodeid);
+ 	if (!inode) {
+ 		struct fuse_entry_out outarg;
+ 		const struct qstr name = QSTR_INIT(".", 1);
+-
+-		if (!fc->export_support)
+-			goto out_err;
+ 
+ 		err = fuse_lookup_name(sb, handle->nodeid, &name, &outarg,
+ 				       &inode);
+@@ -1394,6 +1391,14 @@
+ 		fc->max_write = arg->minor < 5 ? 4096 : arg->max_write;
+ 		fc->max_write = max_t(unsigned, 4096, fc->max_write);
+ 		fc->conn_init = 1;
++		/*
++		 * Without FUSE_EXPORT_SUPPORT the server's node IDs are not
++		 * persistent. Expose encode-only export ops so overlayfs does
++		 * not record or follow origin file handles that can resolve to
++		 * an unrelated inode after the server restarts.
++		 */
++		if (!fc->export_support)
++			fm->sb->s_export_op = &fuse_export_fid_operations;
+ 	}
+ 	kfree(ia);
+ 
