@@ -151,6 +151,10 @@ func getVirtiofsDaemonForNydus(sandbox *Sandbox) (VirtiofsDaemon, error) {
 }
 
 func nydusContainerCleanup(ctx context.Context, sharedDir string, c *Container) error {
+	// A rootfs described by a Kata virtual volume is set up by the guest, nothing was shared.
+	if HasOptionPrefix(c.rootFs.Options, VirtualVolumePrefix) {
+		return nil
+	}
 	sandbox := c.sandbox
 	virtiofsDaemon, err := getVirtiofsDaemonForNydus(sandbox)
 	if err != nil {
