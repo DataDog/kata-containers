@@ -89,8 +89,12 @@ macro_rules! impl_agent {
                     timeout = v;
                 }
 
-                let resp = client.$name(new_ttrpc_ctx(timeout * MILLISECOND_TO_NANOSECOND), &r).await?;
-                Ok(resp.into())
+                let start = std::time::Instant::now();
+                let resp = client.$name(new_ttrpc_ctx(timeout * MILLISECOND_TO_NANOSECOND), &r).await;
+                crate::metrics::AGENT_RPC_DURATIONS
+                    .with_label_values(&[protobuf::MessageDyn::descriptor_dyn(&r).full_name()])
+                    .observe(start.elapsed().as_millis() as f64);
+                Ok(resp?.into())
             })*
         }
     };

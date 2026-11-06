@@ -3,184 +3,126 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-extern crate procfs;
+use std::sync::LazyLock;
+use std::time::Instant;
 
-use anyhow::{anyhow, Result};
-use prometheus::{Encoder, Gauge, GaugeVec, Opts, Registry, TextEncoder};
-use slog::warn;
-use std::sync::Mutex;
+use anyhow::Result;
+use hypervisor::process_metrics::{encode, ProcessMetrics, ProcessMetricsHelp};
+use prometheus::process_collector::ProcessCollector;
+use prometheus::{exponential_buckets, Gauge, HistogramOpts, HistogramVec, Opts, Registry};
 
 const NAMESPACE_KATA_SHIM: &str = "kata_shim";
 
-// Convenience macro to obtain the scope logger
-macro_rules! sl {
-    () => {
-        slog_scope::logger().new(o!("subsystem" => "metrics"))
-    };
-}
+static SHIM_PROCESS: LazyLock<ProcessMetrics> = LazyLock::new(|| {
+    ProcessMetrics::new(
+        NAMESPACE_KATA_SHIM,
+        ProcessMetricsHelp {
+            threads: "Kata containerd shim v2 process threads.",
+            proc_status: "Kata containerd shim v2 process status.",
+            proc_stat: "Kata containerd shim v2 process statistics.",
+            io_stat: "Kata containerd shim v2 process IO statistics.",
+            fds: "Kata containerd shim v2 open FDs.",
+            netdev: None,
+        },
+    )
+    .unwrap()
+});
 
-lazy_static! {
-    static ref REGISTERED: Mutex<bool> = Mutex::new(false);
+static RPC_DURATIONS: LazyLock<HistogramVec> = LazyLock::new(|| {
+    HistogramVec::new(
+        HistogramOpts::new(
+            "rpc_durations_histogram_milliseconds",
+            "RPC latency distributions.",
+        )
+        .namespace(NAMESPACE_KATA_SHIM)
+        .buckets(exponential_buckets(1.0, 2.0, 10).unwrap()),
+        &["action"],
+    )
+    .unwrap()
+});
 
-    // custom registry
-    static ref REGISTRY: Registry = Registry::new();
+static POD_OVERHEAD_CPU: LazyLock<Gauge> = LazyLock::new(|| {
+    Gauge::with_opts(
+        Opts::new(
+            "pod_overhead_cpu",
+            "Kata Pod overhead for CPU resources(percent).",
+        )
+        .namespace(NAMESPACE_KATA_SHIM),
+    )
+    .unwrap()
+});
 
-    // shim metrics
-    static ref SHIM_THREADS: Gauge = Gauge::new(format!("{}_{}", NAMESPACE_KATA_SHIM, "threads"),"Kata containerd shim v2 process threads.").unwrap();
+static POD_OVERHEAD_MEMORY: LazyLock<Gauge> = LazyLock::new(|| {
+    Gauge::with_opts(
+        Opts::new(
+            "pod_overhead_memory_in_bytes",
+            "Kata Pod overhead for memory resources(bytes).",
+        )
+        .namespace(NAMESPACE_KATA_SHIM),
+    )
+    .unwrap()
+});
 
-    static ref SHIM_PROC_STATUS: GaugeVec =
-        GaugeVec::new(Opts::new(format!("{}_{}",NAMESPACE_KATA_SHIM,"proc_status"), "Kata containerd shim v2 process status."), &["item"]).unwrap();
-
-    static ref SHIM_PROC_STAT: GaugeVec = GaugeVec::new(Opts::new(format!("{}_{}",NAMESPACE_KATA_SHIM,"proc_stat"), "Kata containerd shim v2 process statistics."), &["item"]).unwrap();
-
-    static ref SHIM_IO_STAT: GaugeVec = GaugeVec::new(Opts::new(format!("{}_{}",NAMESPACE_KATA_SHIM,"io_stat"), "Kata containerd shim v2 process IO statistics."), &["item"]).unwrap();
-
-    static ref SHIM_OPEN_FDS: Gauge = Gauge::new(format!("{}_{}", NAMESPACE_KATA_SHIM, "fds"), "Kata containerd shim v2 open FDs.").unwrap();
-}
+static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
+    let registry = Registry::new();
+    SHIM_PROCESS.register(&registry).unwrap();
+    registry.register(Box::new(RPC_DURATIONS.clone())).unwrap();
+    registry
+        .register(Box::new(agent::metrics::AGENT_RPC_DURATIONS.clone()))
+        .unwrap();
+    registry
+        .register(Box::new(POD_OVERHEAD_CPU.clone()))
+        .unwrap();
+    registry
+        .register(Box::new(POD_OVERHEAD_MEMORY.clone()))
+        .unwrap();
+    registry
+        .register(Box::new(ProcessCollector::for_self()))
+        .unwrap();
+    registry
+});
 
 pub fn get_shim_metrics() -> Result<String> {
-    let mut registered = REGISTERED
-        .lock()
-        .map_err(|e| anyhow!("failed to check shim metrics register status {:?}", e))?;
-
-    if !(*registered) {
-        register_shim_metrics()?;
-        *registered = true;
-    }
-
-    update_shim_metrics()?;
-
-    // gather all metrics and return as a String
-    let metric_families = REGISTRY.gather();
-
-    let mut buffer = Vec::new();
-    let encoder = TextEncoder::new();
-    encoder.encode(&metric_families, &mut buffer)?;
-
-    Ok(String::from_utf8(buffer)?)
+    SHIM_PROCESS.update(std::process::id() as i32)?;
+    encode(&REGISTRY)
 }
 
-fn register_shim_metrics() -> Result<()> {
-    REGISTRY.register(Box::new(SHIM_THREADS.clone()))?;
-    REGISTRY.register(Box::new(SHIM_PROC_STATUS.clone()))?;
-    REGISTRY.register(Box::new(SHIM_PROC_STAT.clone()))?;
-    REGISTRY.register(Box::new(SHIM_IO_STAT.clone()))?;
-    REGISTRY.register(Box::new(SHIM_OPEN_FDS.clone()))?;
-
-    // TODO:
-    // REGISTRY.register(Box::new(RPC_DURATIONS_HISTOGRAM.clone()))?;
-    // REGISTRY.register(Box::new(SHIM_POD_OVERHEAD_CPU.clone()))?;
-    // REGISTRY.register(Box::new(SHIM_POD_OVERHEAD_MEMORY.clone()))?;
-
-    Ok(())
+pub fn observe_shim_rpc(action: &str, start: Instant) {
+    RPC_DURATIONS
+        .with_label_values(&[action])
+        .observe(start.elapsed().as_millis() as f64);
 }
 
-fn update_shim_metrics() -> Result<()> {
-    let me = procfs::process::Process::myself();
-
-    let me = match me {
-        Ok(p) => p,
-        Err(e) => {
-            warn!(sl!(), "failed to create process instance: {:?}", e);
-            return Ok(());
-        }
-    };
-
-    SHIM_THREADS.set(me.stat.num_threads as f64);
-
-    match me.status() {
-        Err(err) => error!(sl!(), "failed to get process status: {:?}", err),
-        Ok(status) => set_gauge_vec_proc_status(&SHIM_PROC_STATUS, &status),
-    }
-
-    match me.stat() {
-        Err(err) => {
-            error!(sl!(), "failed to get process stat: {:?}", err);
-        }
-        Ok(stat) => {
-            set_gauge_vec_proc_stat(&SHIM_PROC_STAT, &stat);
-        }
-    }
-
-    match me.io() {
-        Err(err) => {
-            error!(sl!(), "failed to get process io stat: {:?}", err);
-        }
-        Ok(io) => {
-            set_gauge_vec_proc_io(&SHIM_IO_STAT, &io);
-        }
-    }
-
-    match me.fd_count() {
-        Err(err) => {
-            error!(sl!(), "failed to get process open fds number: {:?}", err);
-        }
-        Ok(fds) => {
-            SHIM_OPEN_FDS.set(fds as f64);
-        }
-    }
-
-    // TODO:
-    // RPC_DURATIONS_HISTOGRAM & SHIM_POD_OVERHEAD_CPU & SHIM_POD_OVERHEAD_MEMORY
-
-    Ok(())
+pub(crate) fn set_pod_overhead(memory: f64, cpu: f64) {
+    POD_OVERHEAD_MEMORY.set(memory);
+    POD_OVERHEAD_CPU.set(cpu);
 }
 
-fn set_gauge_vec_proc_status(gv: &prometheus::GaugeVec, status: &procfs::process::Status) {
-    gv.with_label_values(&["vmpeak"])
-        .set(status.vmpeak.unwrap_or(0) as f64);
-    gv.with_label_values(&["vmsize"])
-        .set(status.vmsize.unwrap_or(0) as f64);
-    gv.with_label_values(&["vmlck"])
-        .set(status.vmlck.unwrap_or(0) as f64);
-    gv.with_label_values(&["vmpin"])
-        .set(status.vmpin.unwrap_or(0) as f64);
-    gv.with_label_values(&["vmhwm"])
-        .set(status.vmhwm.unwrap_or(0) as f64);
-    gv.with_label_values(&["vmrss"])
-        .set(status.vmrss.unwrap_or(0) as f64);
-    gv.with_label_values(&["rssanon"])
-        .set(status.rssanon.unwrap_or(0) as f64);
-    gv.with_label_values(&["rssfile"])
-        .set(status.rssfile.unwrap_or(0) as f64);
-    gv.with_label_values(&["rssshmem"])
-        .set(status.rssshmem.unwrap_or(0) as f64);
-    gv.with_label_values(&["vmdata"])
-        .set(status.vmdata.unwrap_or(0) as f64);
-    gv.with_label_values(&["vmstk"])
-        .set(status.vmstk.unwrap_or(0) as f64);
-    gv.with_label_values(&["vmexe"])
-        .set(status.vmexe.unwrap_or(0) as f64);
-    gv.with_label_values(&["vmlib"])
-        .set(status.vmlib.unwrap_or(0) as f64);
-    gv.with_label_values(&["vmpte"])
-        .set(status.vmpte.unwrap_or(0) as f64);
-    gv.with_label_values(&["vmswap"])
-        .set(status.vmswap.unwrap_or(0) as f64);
-    gv.with_label_values(&["hugetlbpages"])
-        .set(status.hugetlbpages.unwrap_or(0) as f64);
-    gv.with_label_values(&["voluntary_ctxt_switches"])
-        .set(status.voluntary_ctxt_switches.unwrap_or(0) as f64);
-    gv.with_label_values(&["nonvoluntary_ctxt_switches"])
-        .set(status.nonvoluntary_ctxt_switches.unwrap_or(0) as f64);
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn set_gauge_vec_proc_stat(gv: &prometheus::GaugeVec, stat: &procfs::process::Stat) {
-    gv.with_label_values(&["utime"]).set(stat.utime as f64);
-    gv.with_label_values(&["stime"]).set(stat.stime as f64);
-    gv.with_label_values(&["cutime"]).set(stat.cutime as f64);
-    gv.with_label_values(&["cstime"]).set(stat.cstime as f64);
-}
-
-fn set_gauge_vec_proc_io(gv: &prometheus::GaugeVec, io_stat: &procfs::process::Io) {
-    gv.with_label_values(&["rchar"]).set(io_stat.rchar as f64);
-    gv.with_label_values(&["wchar"]).set(io_stat.wchar as f64);
-    gv.with_label_values(&["syscr"]).set(io_stat.syscr as f64);
-    gv.with_label_values(&["syscw"]).set(io_stat.syscw as f64);
-    gv.with_label_values(&["read_bytes"])
-        .set(io_stat.read_bytes as f64);
-    gv.with_label_values(&["write_bytes"])
-        .set(io_stat.write_bytes as f64);
-    gv.with_label_values(&["cancelled_write_bytes"])
-        .set(io_stat.cancelled_write_bytes as f64);
+    #[test]
+    fn test_shim_metrics_match_go_shim() {
+        observe_shim_rpc("create", Instant::now());
+        agent::metrics::AGENT_RPC_DURATIONS
+            .with_label_values(&["grpc.CheckRequest"])
+            .observe(1.0);
+        let out = get_shim_metrics().unwrap();
+        for name in [
+            "kata_shim_threads",
+            "kata_shim_fds",
+            "kata_shim_proc_status{item=\"vmrss\"}",
+            "kata_shim_proc_stat{item=\"utime\"}",
+            "kata_shim_io_stat{item=\"readbytes\"}",
+            "kata_shim_rpc_durations_histogram_milliseconds_bucket{action=\"create\",le=\"512\"}",
+            "kata_shim_agent_rpc_durations_histogram_milliseconds_bucket{action=\"grpc.CheckRequest\",le=\"1\"}",
+            "kata_shim_pod_overhead_cpu",
+            "kata_shim_pod_overhead_memory_in_bytes",
+            "process_cpu_seconds_total",
+            "process_resident_memory_bytes",
+        ] {
+            assert!(out.contains(name), "{} missing from:\n{}", name, out);
+        }
+    }
 }

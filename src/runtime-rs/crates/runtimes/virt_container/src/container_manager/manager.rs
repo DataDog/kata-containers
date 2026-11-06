@@ -467,6 +467,23 @@ impl ContainerManager for VirtContainerManager {
         Ok(StatsInfo::from(stats))
     }
 
+    async fn containers_cgroup_usage(&self) -> Result<(u64, u64)> {
+        let (mut cpu, mut memory) = (0, 0);
+        for c in self.containers.read().await.values() {
+            if let Some(cgroup) = c.stats().await?.and_then(|s| s.cgroup_stats) {
+                cpu += cgroup
+                    .cpu_stats
+                    .and_then(|s| s.cpu_usage)
+                    .map_or(0, |u| u.total_usage);
+                memory += cgroup
+                    .memory_stats
+                    .and_then(|s| s.usage)
+                    .map_or(0, |u| u.usage);
+            }
+        }
+        Ok((cpu, memory))
+    }
+
     #[instrument]
     async fn update_container(&self, req: UpdateRequest) -> Result<()> {
         let resource = serde_json::from_slice::<oci::LinuxResources>(&req.value)

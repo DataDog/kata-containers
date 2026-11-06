@@ -37,4 +37,9 @@ pub trait ContainerManager: Send + Sync {
     async fn pid(&self) -> Result<PID>;
     async fn need_shutdown_sandbox(&self, req: &ShutdownRequest) -> bool;
     async fn is_sandbox_container(&self, process_id: &ContainerProcess) -> bool;
+
+    /// Sum of the containers' guest CPU time (ns) and memory usage (bytes).
+    async fn containers_cgroup_usage(&self) -> Result<(u64, u64)> {
+        Err(anyhow::anyhow!("containers cgroup usage not supported"))
+    }
 }
