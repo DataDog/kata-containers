@@ -12,11 +12,26 @@ variables:
   KERNEL_DATADOG_ENABLED: "yes"
 
 stages:
+  - check
   - ci-image
   - build
   - publish
   - nydus
   - notify
+
+# Fail fast when KERNEL_VERSION points at a patches/<major>.<minor>.x/ directory
+# that lacks a Datadog patch listed in patches/datadog-required-patches.txt.
+# A kernel bump once dropped the FUSE ESTALE fix this way (#140). This job
+# runs in the first stage, so the kernel build jobs do not start when it fails.
+check-kernel-patches:
+  image: registry.ddbuild.io/$CI_PROJECT_NAME/ci:$CI_IMAGE@$CI_IMAGE_DIGEST
+  stage: check
+  needs: []
+  tags: [ "arch:amd64" ]
+  variables:
+    GIT_DEPTH: 1
+  script:
+    - tools/packaging/kernel/check-datadog-patches.sh "$KERNEL_VERSION"
 
 ci-image:
   stage: ci-image
