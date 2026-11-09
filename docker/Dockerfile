@@ -32,10 +32,9 @@ RUN mkdir -p /kata-build/opt/kata/bin \
 # carries configuration-qemu.toml, no runtime-rs/ configs) and kata-static (the
 # runtime-rs/Rust runtime — carries the runtime-rs/ configs, no configuration-qemu.toml).
 # The Go OCI image uses the former (default); the -rust image passes kata-static.
-# We only take qemu/virtiofsd/kernel-adjacent bits and config templates. The
-# Datadog guest rootfs and shim are built from this checkout by CI and COPY'd below.
-# The whole defaults/kata-containers config tree is extracted (tiny) so the right base
-# config is present regardless of bundle; KATA_BASE_CONFIG selects it below.
+# We only take qemu/virtiofsd/kernel-adjacent bits; the guest rootfs, shim and
+# BASE CONFIG are built from this checkout by CI and COPY'd below (the bundle's
+# defaults config ships upstream's allowlist and is no longer used).
 ARG KATA_PKG=kata-go-static
 ARG TARGETARCH
 COPY VERSION /tmp/kata-version
@@ -84,18 +83,19 @@ RUN chmod +x /kata-build/opt/kata/bin/containerd-shim-kata-v2
 RUN ln -s /opt/kata/share/kata-containers/kata-containers-datadog.img /kata-build/opt/kata/share/kata-containers/kata-containers.img && \
     ln -s /opt/kata/share/kata-containers/vmlinux-datadog /kata-build/opt/kata/share/kata-containers/vmlinux.container
 
-# Copy the base qemu config into each runtime-variant conf dir. A real copy (not a
-# symlink) is required: kata resolves config.d/ relative to the config file's own
-# directory, so the base config must physically live under each conf/<variant>/.
-#
-# KATA_BASE_CONFIG selects which base: configuration-qemu.toml (default), or the
-# runtime-rs config for the -rust image. The runtime-rs config carries the
-# [runtime] name/hypervisor_name/agent_name identity the Rust shim needs.
-ARG KATA_BASE_CONFIG=share/defaults/kata-containers/configuration-qemu.toml
-RUN base=/kata-build/opt/kata/${KATA_BASE_CONFIG} && \
-    cp -a "$base" /kata-build/opt/kata/conf/qemu/configuration-qemu.toml && \
-    cp -a "$base" /kata-build/opt/kata/conf/qemu-tapnet/configuration-qemu-tapnet.toml && \
-    cp -a "$base" /kata-build/opt/kata/conf/qemu-jailnet/configuration-qemu-jailnet.toml
+# Base config, rendered by the build-shim(-rust) CI jobs from this repo's Makefile
+# templates (so the fork's DEFENABLEANNOTATIONS allowlist — #139, #144 — ships;
+# the upstream bundle's prebuilt config ships upstream's). KATA_BASE_CONFIG selects
+# the variant: configuration-qemu (Go shim, default) or configuration-qemu-runtime-rs
+# (-rust image; carries the [runtime] identity the Rust shim needs).
+ARG KATA_BASE_CONFIG=configuration-qemu
+COPY ${KATA_BASE_CONFIG}-${TARGETARCH}.toml /tmp/base-configuration.toml
+
+# A real copy (not a symlink) is required: kata resolves config.d/ relative to the
+# config file's own directory, so the base must live under each conf/<variant>/.
+RUN cp -a /tmp/base-configuration.toml /kata-build/opt/kata/conf/qemu/configuration-qemu.toml && \
+    cp -a /tmp/base-configuration.toml /kata-build/opt/kata/conf/qemu-tapnet/configuration-qemu-tapnet.toml && \
+    cp -a /tmp/base-configuration.toml /kata-build/opt/kata/conf/qemu-jailnet/configuration-qemu-jailnet.toml
 
 # Copy the per-variant override fragments. The multiruntime shim routes the
 # kata-tapnet / kata-jailnet backends here via KATA_CONF_FILE, so they must ship in
@@ -107,6 +107,9 @@ COPY docker/containerd/config.d/qemu-jailnet/10-override.toml /kata-build/opt/ka
 
 # Copy containerd runtime dropin
 COPY docker/containerd/config.d/20-kata-runtime.toml /kata-build/etc/containerd/config.d/20-kata-runtime.toml
+
+# Kata backend registrations for the containerd-shim-multiruntime registry.
+COPY docker/containerd/backends.d/10-kata.toml /kata-build/etc/multiruntime/backends.d/10-kata.toml
 
 # Stamp the image version into /opt/kata so the node-installer validation can
 # prove the /opt/kata bind-mounted on the host is THIS OCI image (not the
