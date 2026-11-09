@@ -108,6 +108,9 @@ COPY docker/containerd/config.d/qemu-jailnet/10-override.toml /kata-build/opt/ka
 # Copy containerd runtime dropin
 COPY docker/containerd/config.d/20-kata-runtime.toml /kata-build/etc/containerd/config.d/20-kata-runtime.toml
 
+# Kata backend registrations for the containerd-shim-multiruntime registry.
+COPY docker/containerd/backends.d/10-kata.toml /kata-build/etc/multiruntime/backends.d/10-kata.toml
+
 # Stamp the image version into /opt/kata so the node-installer validation can
 # prove the /opt/kata bind-mounted on the host is THIS OCI image (not the
 # AMI-baked copy): the validation compares this file against the tag the kata

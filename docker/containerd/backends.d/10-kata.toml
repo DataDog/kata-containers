@@ -1,0 +1,13 @@
+# kata backend registrations for the containerd-shim-multiruntime registry.
+
+[backends.kata-qemu]
+  shim = "/opt/kata/bin/containerd-shim-kata-v2"
+  config_path = "/opt/kata/conf/qemu/configuration-qemu.toml"
+
+[backends.kata-tapnet]
+  shim = "/opt/kata/bin/containerd-shim-kata-v2"
+  config_path = "/opt/kata/conf/qemu-tapnet/configuration-qemu-tapnet.toml"
+
+[backends.kata-jailnet]
+  shim = "/opt/kata/bin/containerd-shim-kata-v2"
+  config_path = "/opt/kata/conf/qemu-jailnet/configuration-qemu-jailnet.toml"

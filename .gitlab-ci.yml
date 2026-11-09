@@ -123,9 +123,6 @@ build-shim-amd64:
     # Export the Go shim at the context root. This is the default the OCI image build
     # copies unless SHIM_BINARY overrides it (see docker/Dockerfile).
     - mv containerd-shim-kata-v2 ../../containerd-shim-kata-v2-amd64
-    # Base config for the OCI image (docker/Dockerfile): rendered from this repo's
-    # Makefile template with upstream's static-build vars, so the fork's
-    # DEFENABLEANNOTATIONS allowlist (#139, #144) ships instead of the bundle's.
     - make ARCH=x86_64 PREFIX=/opt/kata QEMUCMD=qemu-system-x86_64 config/configuration-qemu.toml
     - cp config/configuration-qemu.toml ../../configuration-qemu-amd64.toml
   artifacts:
@@ -176,8 +173,6 @@ build-shim-rust-amd64:
     # Export the Rust shim at the context root under a -rust name (selected by the
     # SHIM_BINARY build-arg; see docker/Dockerfile).
     - cp ../../target/x86_64-unknown-linux-musl/release/containerd-shim-kata-v2 ../../containerd-shim-kata-v2-rust-amd64
-    # Base config for the -rust OCI image (KATA_BASE_CONFIG selects it; the make
-    # above already renders it with the right vars).
     - cp config/configuration-qemu-runtime-rs.toml ../../configuration-qemu-runtime-rs-amd64.toml
   artifacts:
     paths:
