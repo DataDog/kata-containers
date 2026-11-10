@@ -23,14 +23,16 @@ use hypervisor::{
 };
 use kata_types::{
     annotations::KATA_ANNO_VOLUME_ROOTFS_UPPER,
+    device::DRIVER_OVERLAYFS_TYPE,
     mount::{
         KataVirtualVolume, Mount, KATA_VIRTUAL_VOLUME_IMAGE_RAW_BLOCK, KATA_VIRTUAL_VOLUME_PREFIX,
+        KATA_VOLUME_OVERLAYFS_CREATE_DIR,
     },
 };
 use oci_spec::runtime as oci;
 use tokio::sync::RwLock;
 
-use super::{erofs_rootfs::DEFAULT_KATA_GUEST_ROOT_SHARED_FS, rootfs_upper, Rootfs};
+use super::{erofs_rootfs::DEFAULT_KATA_GUEST_ROOT_SHARED_FS, Rootfs, ROOTFS, TYPE_OVERLAY_FS};
 use crate::block_device::agent_storage_source_from_block_config;
 
 pub(crate) struct RawBlockRootfs {
@@ -98,13 +100,37 @@ impl RawBlockRootfs {
             .filter(|u| !u.is_empty())
             .cloned()
             .unwrap_or_else(|| format!("{DEFAULT_KATA_GUEST_ROOT_SHARED_FS}{cid}"));
-        let rootfs = rootfs_upper::overlay_storage(cid, &image_mount, &upper);
+        let rootfs = overlay_storage(cid, &image_mount, &upper);
 
         Ok(Self {
             guest_path: rootfs.mount_point.clone(),
             device_id: device.device_id,
             storages: vec![image, rootfs],
         })
+    }
+}
+
+/// Stacks the container rootfs as an overlay of the image, with its upper/work directories under
+/// `upper`. index=off: an upper restored from a snapshot was created over another lower.
+fn overlay_storage(cid: &str, lower: &str, upper: &str) -> Storage {
+    let upper_dir = format!("{upper}/upper");
+    let work_dir = format!("{upper}/work");
+    Storage {
+        driver: DRIVER_OVERLAYFS_TYPE.to_string(),
+        driver_options: vec![
+            format!("{KATA_VOLUME_OVERLAYFS_CREATE_DIR}={upper_dir}"),
+            format!("{KATA_VOLUME_OVERLAYFS_CREATE_DIR}={work_dir}"),
+        ],
+        source: TYPE_OVERLAY_FS.to_string(),
+        fs_type: TYPE_OVERLAY_FS.to_string(),
+        options: vec![
+            format!("lowerdir={lower}"),
+            format!("upperdir={upper_dir}"),
+            format!("workdir={work_dir}"),
+            "index=off".to_string(),
+        ],
+        mount_point: format!("{DEFAULT_KATA_GUEST_ROOT_SHARED_FS}{cid}/{ROOTFS}"),
+        ..Default::default()
     }
 }
 
