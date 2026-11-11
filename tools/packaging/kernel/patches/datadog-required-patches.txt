@@ -1,0 +1,20 @@
+# Datadog guest kernel patches that every kernel version we build must carry.
+#
+# check-datadog-patches.sh reads this file. For the kernel version in
+# KERNEL_VERSION, it expects each listed file in patches/<major>.<minor>.x/,
+# the same directory that build-kernel.sh applies. CI fails if one is missing.
+#
+# Format: one patch basename per line. Lines that start with '#' and blank
+# lines are ignored. Put a comment above each entry that says why we need the
+# patch and links the PR.
+#
+# When you bump KERNEL_VERSION, port every patch below to the new directory.
+# See .claude/skills/porting-kernel-patches/SKILL.md.
+
+# FUSE: do not advertise NFS export ops when the FUSE server has no export
+# support. Without it, virtiofs returns ESTALE for files in a ZFS rootfs-upper
+# snapshot that is restored on a new VM. Upstream e022f6a1c711 (6.12) is not
+# enough: it only activates on FUSE_NO_EXPORT_SUPPORT, and virtiofsd never
+# sends that flag.
+# Added in DataDog/kata-containers#131. Dropped by the 6.12 bump in #140.
+0001-fuse-disable-export-ops-without-export-support.patch
