@@ -126,3 +126,4 @@ FROM scratch
 LABEL baseimage.isgbi="scratch"
 COPY --from=builder /kata-build/opt/kata /opt/kata
 COPY --from=builder /kata-build/etc/containerd /etc/containerd
+COPY --from=builder /kata-build/etc/multiruntime /etc/multiruntime
