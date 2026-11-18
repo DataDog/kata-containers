@@ -57,7 +57,10 @@ macro_rules! impl_service {
         #[async_trait]
         impl shim_async::Task for TaskService {
             $(async fn $name(&self, ctx: &TtrpcContext, req: $req) -> ttrpc::Result<$resp> {
-                self.handler_message(ctx, req).await
+                let start = std::time::Instant::now();
+                let resp = self.handler_message(ctx, req).await;
+                runtimes::shim_metrics::observe_shim_rpc(stringify!($name), start);
+                resp
             })*
         }
     };

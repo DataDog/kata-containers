@@ -64,4 +64,9 @@ pub trait Sandbox: Send + Sync {
 
     // set agent policy
     async fn set_policy(&self, policy: &str) -> Result<()>;
+
+    /// Host CPU time (ns) and memory usage (bytes) of the sandbox cgroup.
+    async fn host_cgroup_usage(&self) -> Result<(u64, u64)> {
+        Err(anyhow::anyhow!("host cgroup usage not supported"))
+    }
 }

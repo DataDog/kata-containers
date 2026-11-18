@@ -24,6 +24,8 @@ nix = { workspace = true }
 once_cell = "1.21.3"
 path-clean = "1.0.1"
 pcilibs-rs = { workspace = true }
+procfs = { version = "0.17", default-features = false }
+prometheus = "0.14.0"
 protobuf = { optional = true, workspace = true }
 qapi = { features = ["async-tokio-all", "qmp"], version = "0.15" }
 qapi-qmp = "0.15.0"

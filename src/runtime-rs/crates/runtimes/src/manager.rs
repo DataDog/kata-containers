@@ -261,6 +261,13 @@ impl RuntimeHandlerManagerInner {
         // the sandbox creation can reach here only once and the sandbox is created
         // so we can safely create the shim management socket right now
         // the unwrap here is safe because the runtime handler is correctly created
+        crate::pod_overhead::init(
+            self.runtime_instance
+                .as_ref()
+                .unwrap()
+                .container_manager
+                .clone(),
+        );
         let shim_mgmt_svr = MgmtServer::new(
             &self.id,
             self.runtime_instance.as_ref().unwrap().sandbox.clone(),

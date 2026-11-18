@@ -47,6 +47,10 @@ impl CgroupsResource {
 }
 
 impl CgroupsResource {
+    pub async fn sandbox_usage(&self) -> Result<(u64, u64)> {
+        self.inner.read().await.sandbox_usage()
+    }
+
     pub async fn delete(&self) -> Result<()> {
         let mut inner = self.inner.write().await;
         info!(sl!(), "cgroup cleanup lock acquired");
