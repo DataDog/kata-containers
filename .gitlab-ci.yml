@@ -134,15 +134,17 @@ build-shim-amd64:
     GOTOOLCHAIN: auto
   script:
     - cd src/runtime
-    - make containerd-shim-v2
+    - make containerd-shim-v2 "$PWD/kata-runtime"
     # Export the Go shim at the context root. This is the default the OCI image build
     # copies unless SHIM_BINARY overrides it (see docker/Dockerfile).
     - mv containerd-shim-kata-v2 ../../containerd-shim-kata-v2-amd64
+    - mv kata-runtime ../../kata-runtime-amd64
     - make ARCH=x86_64 PREFIX=/opt/kata QEMUCMD=qemu-system-x86_64 config/configuration-qemu.toml
     - cp config/configuration-qemu.toml ../../configuration-qemu-amd64.toml
   artifacts:
     paths:
       - containerd-shim-kata-v2-amd64
+      - kata-runtime-amd64
       - configuration-qemu-amd64.toml
     expire_in: 1 week
 
@@ -154,14 +156,16 @@ build-shim-arm64:
     GOTOOLCHAIN: auto
   script:
     - cd src/runtime
-    - make containerd-shim-v2
+    - make containerd-shim-v2 "$PWD/kata-runtime"
     # Export the Go shim at the context root (see build-shim-amd64).
     - mv containerd-shim-kata-v2 ../../containerd-shim-kata-v2-arm64
+    - mv kata-runtime ../../kata-runtime-arm64
     - make ARCH=aarch64 PREFIX=/opt/kata QEMUCMD=qemu-system-aarch64 config/configuration-qemu.toml
     - cp config/configuration-qemu.toml ../../configuration-qemu-arm64.toml
   artifacts:
     paths:
       - containerd-shim-kata-v2-arm64
+      - kata-runtime-arm64
       - configuration-qemu-arm64.toml
     expire_in: 1 week
 
@@ -310,6 +314,8 @@ publish-oci-image-rust:
     - "build-rootfs-arm64"
     - "build-kernel-amd64"
     - "build-kernel-arm64"
+    - "build-shim-amd64"
+    - "build-shim-arm64"
     - "build-shim-rust-amd64"
     - "build-shim-rust-arm64"
   variables:
