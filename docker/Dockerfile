@@ -79,6 +79,11 @@ ARG SHIM_BINARY=containerd-shim-kata-v2
 COPY ${SHIM_BINARY}-${TARGETARCH} /kata-build/opt/kata/bin/containerd-shim-kata-v2
 RUN chmod +x /kata-build/opt/kata/bin/containerd-shim-kata-v2
 
+# nodectl uses this client to attach to the guest debug console. The /opt/kata
+# image mount hides any copy previously installed in the node image.
+COPY kata-runtime-${TARGETARCH} /kata-build/opt/kata/bin/kata-runtime
+RUN chmod +x /kata-build/opt/kata/bin/kata-runtime
+
 # Create symlinks for kata-containers.img and vmlinux.container
 RUN ln -s /opt/kata/share/kata-containers/kata-containers-datadog.img /kata-build/opt/kata/share/kata-containers/kata-containers.img && \
     ln -s /opt/kata/share/kata-containers/vmlinux-datadog /kata-build/opt/kata/share/kata-containers/vmlinux.container
