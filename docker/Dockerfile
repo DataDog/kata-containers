@@ -110,6 +110,12 @@ COPY docker/containerd/config.d/10-override.toml /kata-build/opt/kata/conf/qemu/
 COPY docker/containerd/config.d/qemu-tapnet/10-override.toml /kata-build/opt/kata/conf/qemu-tapnet/config.d/10-override.toml
 COPY docker/containerd/config.d/qemu-jailnet/10-override.toml /kata-build/opt/kata/conf/qemu-jailnet/config.d/10-override.toml
 
+# The Go and Rust shims use different QEMU seccomp keys.
+COPY docker/containerd/config.d/20-qemu-hardening.toml /tmp/20-qemu-hardening.toml
+RUN if [ "$KATA_BASE_CONFIG" = configuration-qemu ]; then \
+        install -m 0644 /tmp/20-qemu-hardening.toml /kata-build/opt/kata/conf/qemu/config.d/20-qemu-hardening.toml; \
+    fi
+
 # Copy containerd runtime dropin
 COPY docker/containerd/config.d/20-kata-runtime.toml /kata-build/etc/containerd/config.d/20-kata-runtime.toml
 
