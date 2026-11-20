@@ -11,7 +11,7 @@ ARG KATA_VERSION=""
 
 # Install packages
 RUN apt-get update && \
-    apt-get install -y curl wget unzip xz-utils zstd ca-certificates && \
+    apt-get install -y curl wget unzip xz-utils zstd ca-certificates util-linux && \
     rm -rf /var/lib/apt/lists/*
 
 # Create directory structure. conf/{qemu,qemu-tapnet,qemu-jailnet} mirror the
@@ -95,6 +95,15 @@ RUN ln -s /opt/kata/share/kata-containers/kata-containers-datadog.img /kata-buil
 # (-rust image; carries the [runtime] identity the Rust shim needs).
 ARG KATA_BASE_CONFIG=configuration-qemu
 COPY ${KATA_BASE_CONFIG}-${TARGETARCH}.toml /tmp/base-configuration.toml
+
+RUN image=/kata-build/opt/kata/share/kata-containers/kata-containers-datadog.img && \
+    start_sector="$(partx --raw --noheadings --nr 1 --output START "$image")" && \
+    test -n "$start_sector" && \
+    filesystem="$(blkid -p -O "$((start_sector * 512))" -s TYPE -o value "$image")" && \
+    if [ "$filesystem" != ext4 ] || ! grep -Eq '^[[:space:]]*rootfs_type[[:space:]]*=[[:space:]]*"ext4"[[:space:]]*$' /tmp/base-configuration.toml; then \
+        echo "Expected an ext4 guest disk and QEMU rootfs_type. Detected disk filesystem: $filesystem" >&2; \
+        exit 1; \
+    fi
 
 # A real copy (not a symlink) is required: kata resolves config.d/ relative to the
 # config file's own directory, so the base must live under each conf/<variant>/.

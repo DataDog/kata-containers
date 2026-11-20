@@ -139,7 +139,7 @@ build-shim-amd64:
     # copies unless SHIM_BINARY overrides it (see docker/Dockerfile).
     - mv containerd-shim-kata-v2 ../../containerd-shim-kata-v2-amd64
     - mv kata-runtime ../../kata-runtime-amd64
-    - make ARCH=x86_64 PREFIX=/opt/kata QEMUCMD=qemu-system-x86_64 config/configuration-qemu.toml
+    - make ARCH=x86_64 PREFIX=/opt/kata QEMUCMD=qemu-system-x86_64 DEFROOTFSTYPE='$(ROOTFSTYPE_EXT4)' config/configuration-qemu.toml
     - cp config/configuration-qemu.toml ../../configuration-qemu-amd64.toml
   artifacts:
     paths:
@@ -160,7 +160,7 @@ build-shim-arm64:
     # Export the Go shim at the context root (see build-shim-amd64).
     - mv containerd-shim-kata-v2 ../../containerd-shim-kata-v2-arm64
     - mv kata-runtime ../../kata-runtime-arm64
-    - make ARCH=aarch64 PREFIX=/opt/kata QEMUCMD=qemu-system-aarch64 config/configuration-qemu.toml
+    - make ARCH=aarch64 PREFIX=/opt/kata QEMUCMD=qemu-system-aarch64 DEFROOTFSTYPE='$(ROOTFSTYPE_EXT4)' config/configuration-qemu.toml
     - cp config/configuration-qemu.toml ../../configuration-qemu-arm64.toml
   artifacts:
     paths:
@@ -184,11 +184,11 @@ build-shim-rust-amd64:
     - tests/install_rust.sh
     - cd src/runtime-rs
     - make clean-generated-files
-    - make check
+    - make DEFROOTFSTYPE='$(ROOTFSTYPE_EXT4)' check
     # DD runs qemu only, never the in-process Dragonball VMM. USE_BUILTIN_DB=false
     # skips building the dragonball crate + its ~13 dbs-* deps (the bulk of this
     # job's compile time). Cloud-hypervisor / firecracker drivers still build.
-    - make PREFIX=/opt/kata QEMUCMD=qemu-system-x86_64 USE_BUILTIN_DB=false
+    - make PREFIX=/opt/kata QEMUCMD=qemu-system-x86_64 USE_BUILTIN_DB=false DEFROOTFSTYPE='$(ROOTFSTYPE_EXT4)'
     # Export the Rust shim at the context root under a -rust name (selected by the
     # SHIM_BINARY build-arg; see docker/Dockerfile).
     - cp ../../target/x86_64-unknown-linux-musl/release/containerd-shim-kata-v2 ../../containerd-shim-kata-v2-rust-amd64
@@ -211,9 +211,9 @@ build-shim-rust-arm64:
     - tests/install_rust.sh
     - cd src/runtime-rs
     - make clean-generated-files
-    - make check
+    - make DEFROOTFSTYPE='$(ROOTFSTYPE_EXT4)' check
     # See build-shim-rust-amd64: qemu-only, skip building the Dragonball VMM.
-    - ARCH=aarch64 make PREFIX=/opt/kata QEMUCMD=qemu-system-aarch64 USE_BUILTIN_DB=false
+    - ARCH=aarch64 make PREFIX=/opt/kata QEMUCMD=qemu-system-aarch64 USE_BUILTIN_DB=false DEFROOTFSTYPE='$(ROOTFSTYPE_EXT4)'
     # Export the Rust shim at the context root under a -rust name (see -amd64).
     - cp ../../target/aarch64-unknown-linux-musl/release/containerd-shim-kata-v2 ../../containerd-shim-kata-v2-rust-arm64
     - cp config/configuration-qemu-runtime-rs.toml ../../configuration-qemu-runtime-rs-arm64.toml
