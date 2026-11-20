@@ -23,6 +23,8 @@ import (
 	govmmQemu "github.com/kata-containers/kata-containers/src/runtime/pkg/govmm/qemu"
 	ktu "github.com/kata-containers/kata-containers/src/runtime/pkg/katatestutils"
 	"github.com/kata-containers/kata-containers/src/runtime/virtcontainers/persist"
+	persistapi "github.com/kata-containers/kata-containers/src/runtime/virtcontainers/persist/api"
+	pbTypes "github.com/kata-containers/kata-containers/src/runtime/virtcontainers/pkg/agent/protocols"
 	"github.com/kata-containers/kata-containers/src/runtime/virtcontainers/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -49,9 +51,12 @@ func TestSandboxStopRestoresPassthroughDeviceOnlyOnConfirmedVMMExit(t *testing.T
 		name         string
 		stopVMErr    error
 		wantDetaches int
+		released     bool
+		legacy       bool
 	}{
 		{
 			name:         "a confirmed exit hands the device back",
+			released:     true,
 			stopVMErr:    nil,
 			wantDetaches: 1,
 		},
@@ -62,8 +67,20 @@ func TestSandboxStopRestoresPassthroughDeviceOnlyOnConfirmedVMMExit(t *testing.T
 		},
 		{
 			name:         "an unrelated stop failure still hands the device back",
+			released:     true,
 			stopVMErr:    errors.New("failed to stop the virtiofs daemon"),
 			wantDetaches: 1,
+		},
+		{
+			name:         "device safety does not depend on error classification",
+			stopVMErr:    errors.New("cannot confirm exit"),
+			wantDetaches: 0,
+		},
+		{
+			name:         "other hypervisors retain their existing teardown policy",
+			stopVMErr:    errors.New("helper cleanup failed"),
+			wantDetaches: 1,
+			legacy:       true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -96,10 +113,17 @@ func TestSandboxStopRestoresPassthroughDeviceOnlyOnConfirmedVMMExit(t *testing.T
 				devManager: manager.NewDeviceManager(config.VirtioSCSI, false, "", 0, nil),
 				network:    &LinuxNetwork{eps: []Endpoint{endpoint}},
 				hypervisor: &mockHypervisor{
+					devicesReleasedFunc: func() bool { return tc.released },
 					stopVMFunc: func(ctx context.Context, waitOnly bool) error {
 						return tc.stopVMErr
 					},
 				},
+			}
+
+			if tc.legacy {
+				// Expose only Hypervisor's public API, without the optional
+				// device-release query provided by QEMU.
+				s.hypervisor = struct{ Hypervisor }{s.hypervisor}
 			}
 
 			// Only a force stop carries on past the hypervisor failure,
@@ -234,10 +258,13 @@ func TestSandboxRollbackPreservesPassthroughDevice(t *testing.T) {
 				config:  &SandboxConfig{NetworkConfig: NetworkConfig{DisableNewNetwork: true}},
 				agent:   &startupFailingAgent{err: startErr},
 				network: &LinuxNetwork{eps: []Endpoint{endpoint}},
-				hypervisor: &mockHypervisor{stopVMFunc: func(context.Context, bool) error {
-					stops++
-					return stopErr
-				}},
+				hypervisor: &mockHypervisor{
+					devicesReleasedFunc: func() bool { return false },
+					stopVMFunc: func(context.Context, bool) error {
+						stops++
+						return stopErr
+					},
+				},
 			}
 			if startupFailure {
 				require.ErrorIs(t, s.startVM(context.Background(), nil), startErr)
@@ -251,6 +278,7 @@ func TestSandboxRollbackPreservesPassthroughDevice(t *testing.T) {
 
 			// A later confirmed exit allows the retained device to be restored.
 			s.hypervisor.(*mockHypervisor).stopVMFunc = nil
+			s.hypervisor.(*mockHypervisor).devicesReleasedFunc = nil
 			require.NoError(t, s.stopVM(context.Background()))
 			require.NoError(t, s.removeNetwork(context.Background()))
 			assert.Equal(t, 1, endpoint.detached)
@@ -358,6 +386,69 @@ func TestSandboxStartupFailureRestoresNeverLaunchedDevice(t *testing.T) {
 			require.Nil(t, q.exitCh, "QEMU must not have launched")
 			require.NoError(t, s.removeNetwork(context.Background()))
 			assert.Equal(t, 1, endpoint.detached, "startup rollback must restore a VF QEMU never owned")
+		})
+	}
+}
+
+type interfaceRemovalEndpoint struct {
+	PhysicalEndpoint
+	hotDetaches int
+}
+
+func (ep *interfaceRemovalEndpoint) HotDetach(context.Context, *Sandbox, bool, string) error {
+	ep.hotDetaches++
+	return nil
+}
+
+type interfaceRemovalStore struct {
+	persistapi.PersistDriver
+	saves int
+}
+
+func (s *interfaceRemovalStore) ToDisk(persistapi.SandboxState, map[string]persistapi.ContainerState) error {
+	s.saves++
+	return nil
+}
+
+func TestSandboxRemoveInterfaceDeviceOwnership(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		endpointType EndpointType
+		state        qemuLifecycle
+		blocked      bool
+	}{
+		{"physical device still owned", PhysicalEndpointType, qemuMayOwnDevices, true},
+		{"physical device released", PhysicalEndpointType, qemuExited, false},
+		{"virtual device on running VM", VethEndpointType, qemuMayOwnDevices, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ep := &interfaceRemovalEndpoint{PhysicalEndpoint: PhysicalEndpoint{
+				IfaceName: "eth0", HardAddr: "02:00:00:00:00:01", EndpointType: tc.endpointType,
+			}}
+			q := &qemu{}
+			q.setVMState(tc.state)
+			store := &interfaceRemovalStore{}
+			n := &LinuxNetwork{eps: []Endpoint{ep}}
+			s := &Sandbox{
+				id: testSandboxID, config: &SandboxConfig{}, store: store,
+				agent: NewMockAgent(), network: n,
+				devManager: manager.NewDeviceManager(config.VirtioSCSI, false, "", 0, nil),
+				hypervisor: &mockHypervisor{devicesReleasedFunc: q.devicesReleased},
+			}
+			inf := &pbTypes.Interface{HwAddr: ep.HardwareAddr()}
+			result, err := s.RemoveInterface(context.Background(), inf)
+			if tc.blocked {
+				require.ErrorContains(t, err, "VMM may still own it")
+				require.Same(t, inf, result)
+				require.Equal(t, []Endpoint{ep}, n.Endpoints())
+				require.Zero(t, ep.hotDetaches)
+				require.Zero(t, store.saves, "refusal must not persist a successful removal")
+			} else {
+				require.NoError(t, err)
+				require.Empty(t, n.Endpoints())
+				require.Equal(t, 1, ep.hotDetaches)
+				require.Equal(t, 1, store.saves)
+			}
 		})
 	}
 }

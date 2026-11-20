@@ -770,6 +770,8 @@ func TestQemuStartSandbox(t *testing.T) {
 		virtiofsDaemon: &virtiofsdMock{},
 	}
 
+	q.setVMState(qemuNotStarted)
+
 	err = q.CreateVM(context.Background(), sandbox.id, network, &sandbox.config.HypervisorConfig)
 	assert.NoError(err)
 
@@ -2164,6 +2166,10 @@ func TestQemuStopVMRestoredWithoutPID(t *testing.T) {
 			q.qemuConfig.PidFile = filepath.Join(dir, "missing-pid")
 			q.qmpMonitorCh.ctx = context.Background()
 			q.qmpMonitorCh.path = filepath.Join(dir, "missing-qmp.sock")
+			// Loading must discard any proof associated with a previous VM.
+			q.setVMState(qemuExited)
+			q.exitCh = make(chan struct{})
+			close(q.exitCh)
 			if viaGRPC {
 				state, err := json.Marshal(qemuGrpc{ID: q.id, QmpChannelpath: q.qmpMonitorCh.path})
 				require.NoError(t, err)
@@ -2172,6 +2178,8 @@ func TestQemuStopVMRestoredWithoutPID(t *testing.T) {
 				q.Load(hv.HypervisorState{})
 			}
 
+			require.Nil(t, q.exitCh)
+			require.False(t, q.devicesReleased())
 			assert.ErrorIs(t, q.StopVM(context.Background(), false), errVMMExitUnconfirmed)
 		})
 	}
@@ -2207,6 +2215,7 @@ func TestQemuStopVMWaitsForReaperWithoutQMP(t *testing.T) {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), "set up QMP")
 				assert.Contains(t, err.Error(), "still running after waiting")
+				require.False(t, q.devicesReleased(), "a timeout must not authorize device restoration")
 				return
 			}
 
