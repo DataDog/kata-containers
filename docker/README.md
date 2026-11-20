@@ -10,7 +10,9 @@ Datadog packages, AppArmor profiles, and `datadog-files` overlay.
 The `build-rootfs-amd64` and `build-rootfs-arm64` GitLab jobs export
 `kata-rootfs-${arch}.img` and its SBOM with the `docker buildx` local exporter.
 Both the Go and Rust OCI jobs consume the same per-architecture guest. The rootfs
-uses the existing osbuilder scripts and Ubuntu 22.04 (Jammy).
+uses the existing osbuilder scripts to package Ubuntu 22.04 (Jammy) as compressed
+EROFS. The OCI build checks the disk's root partition and the packaged QEMU config
+for EROFS before publication.
 The build checks the guest agent, system-probe binary and launcher, AppArmor
 parser and profiles, agent confinement configuration, and enabled guest services
 before exporting the image. These checks verify the artifact contents; boot
@@ -24,9 +26,7 @@ avoid emulation during package installation and agent compilation.
 The usual compute-delivery image builds use shared, rootless Kubernetes
 BuildKit workers. Those workers cannot perform osbuilder's mounts and loop-device
 operations. The rootfs builder therefore enables `security.insecure` on its own
-daemon and build request; only the osbuilder `RUN` uses that entitlement. A
-`devtmpfs` mount inside that step makes loop partitions visible to the existing
-image builder. This preserves its ext4 partition and DAX header format.
+daemon and build request. Only the osbuilder `RUN` uses that entitlement.
 
 Runner setup was checked against compute-delivery's v3 `.build-docker-image`
 template and dd-source's `domains/devex/ci/gitlab/config/k8s/gitlab-runner/`

@@ -5,11 +5,11 @@ FROM registry.ddbuild.io/images/base/gbi-ubuntu_2204:release AS builder
 USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# Ubuntu rootfs-builder dependencies plus the ext4/DAX image-builder tools.
+# Ubuntu rootfs-builder dependencies plus the EROFS image-builder tools.
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates curl g++ git gnupg2 libclang-dev make makedev mmdebstrap \
         musl-dev musl-tools pkg-config protobuf-compiler xz-utils file wget zstd \
-        e2fsprogs gdisk parted qemu-utils util-linux xfsprogs && \
+        e2fsprogs erofs-utils gdisk parted qemu-utils util-linux xfsprogs && \
     rm -rf /var/lib/apt/lists/*
 
 # The existing mmdebstrap customize hook generates the guest's SBOM with Trivy.
@@ -51,7 +51,7 @@ RUN --security=insecure \
     test "$(chroot /rootfs systemctl is-enabled system-probe.service)" = enabled && \
     test "$(chroot /rootfs systemctl is-enabled datadog-apparmor.service)" = enabled && \
     mkdir /out && \
-    tools/osbuilder/image-builder/image_builder.sh -o "/out/kata-rootfs-${TARGETARCH}.img" /rootfs && \
+    tools/osbuilder/image-builder/image_builder.sh -f erofs -o "/out/kata-rootfs-${TARGETARCH}.img" /rootfs && \
     cp sbom.cdx.gz "/out/kata-rootfs-${TARGETARCH}.sbom.cdx.gz"
 
 FROM scratch AS artifacts
