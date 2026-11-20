@@ -102,6 +102,11 @@ RUN cp -a /tmp/base-configuration.toml /kata-build/opt/kata/conf/qemu/configurat
     cp -a /tmp/base-configuration.toml /kata-build/opt/kata/conf/qemu-tapnet/configuration-qemu-tapnet.toml && \
     cp -a /tmp/base-configuration.toml /kata-build/opt/kata/conf/qemu-jailnet/configuration-qemu-jailnet.toml
 
+# All packaged QEMU variants boot the ext4 disk from docker/rootfs.Dockerfile.
+COPY docker/containerd/config.d/05-datadog-rootfs.toml /kata-build/opt/kata/conf/qemu/config.d/05-datadog-rootfs.toml
+COPY docker/containerd/config.d/05-datadog-rootfs.toml /kata-build/opt/kata/conf/qemu-tapnet/config.d/05-datadog-rootfs.toml
+COPY docker/containerd/config.d/05-datadog-rootfs.toml /kata-build/opt/kata/conf/qemu-jailnet/config.d/05-datadog-rootfs.toml
+
 # Copy the per-variant override fragments. The multiruntime shim routes the
 # kata-tapnet / kata-jailnet backends here via KATA_CONF_FILE, so they must ship in
 # the OCI image — otherwise the /opt/kata bind-mount hides the AMI-baked copies and
