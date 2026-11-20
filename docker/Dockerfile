@@ -102,6 +102,11 @@ RUN cp -a /tmp/base-configuration.toml /kata-build/opt/kata/conf/qemu/configurat
     cp -a /tmp/base-configuration.toml /kata-build/opt/kata/conf/qemu-tapnet/configuration-qemu-tapnet.toml && \
     cp -a /tmp/base-configuration.toml /kata-build/opt/kata/conf/qemu-jailnet/configuration-qemu-jailnet.toml
 
+# All packaged QEMU variants boot the ext4 disk from docker/rootfs.Dockerfile.
+COPY docker/containerd/config.d/05-datadog-rootfs.toml /kata-build/opt/kata/conf/qemu/config.d/05-datadog-rootfs.toml
+COPY docker/containerd/config.d/05-datadog-rootfs.toml /kata-build/opt/kata/conf/qemu-tapnet/config.d/05-datadog-rootfs.toml
+COPY docker/containerd/config.d/05-datadog-rootfs.toml /kata-build/opt/kata/conf/qemu-jailnet/config.d/05-datadog-rootfs.toml
+
 # Copy the per-variant override fragments. The multiruntime shim routes the
 # kata-tapnet / kata-jailnet backends here via KATA_CONF_FILE, so they must ship in
 # the OCI image — otherwise the /opt/kata bind-mount hides the AMI-baked copies and
@@ -109,6 +114,12 @@ RUN cp -a /tmp/base-configuration.toml /kata-build/opt/kata/conf/qemu/configurat
 COPY docker/containerd/config.d/10-override.toml /kata-build/opt/kata/conf/qemu/config.d/10-override.toml
 COPY docker/containerd/config.d/qemu-tapnet/10-override.toml /kata-build/opt/kata/conf/qemu-tapnet/config.d/10-override.toml
 COPY docker/containerd/config.d/qemu-jailnet/10-override.toml /kata-build/opt/kata/conf/qemu-jailnet/config.d/10-override.toml
+
+# The Go and Rust shims use different QEMU seccomp keys.
+COPY docker/containerd/config.d/20-qemu-hardening.toml /tmp/20-qemu-hardening.toml
+RUN if [ "$KATA_BASE_CONFIG" = configuration-qemu ]; then \
+        install -m 0644 /tmp/20-qemu-hardening.toml /kata-build/opt/kata/conf/qemu/config.d/20-qemu-hardening.toml; \
+    fi
 
 # Copy containerd runtime dropin
 COPY docker/containerd/config.d/20-kata-runtime.toml /kata-build/etc/containerd/config.d/20-kata-runtime.toml
