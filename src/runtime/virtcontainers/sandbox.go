@@ -97,7 +97,8 @@ const (
 )
 
 var (
-	errSandboxNotRunning = errors.New("Sandbox not running")
+	errSandboxNotRunning   = errors.New("Sandbox not running")
+	loadResourceController = resCtrl.LoadResourceController
 )
 
 // HypervisorPidKey is the context key for hypervisor pid
@@ -265,6 +266,20 @@ type Sandbox struct {
 	seccompSupported  bool
 	disableVMShutdown bool
 	isVCPUsPinningOn  bool
+
+	vmmExitUnconfirmed bool
+}
+
+// errVMMExitUnconfirmed marks a stop whose VMM may still be running, and so
+// may still hold the file descriptors of the devices passed through to it.
+var errVMMExitUnconfirmed = errors.New("VMM exit was not confirmed")
+
+// canRestorePassthroughDevices reports whether the teardown may hand a
+// passed-through device back to its host driver.  It may not while the VMM
+// might still hold the device open, as the unbind then blocks in the kernel
+// until the owner lets go.
+func (s *Sandbox) canRestorePassthroughDevices() bool {
+	return !s.vmmExitUnconfirmed
 }
 
 // ID returns the sandbox identifier string.
@@ -325,6 +340,19 @@ func (s *Sandbox) GetHypervisorPid() (int, error) {
 	}
 
 	return pids[0], nil
+}
+
+// HasPhysicalEndpoint reports whether the sandbox passes a host PCI netdev
+// through to the guest, and so holds host state that only the teardown puts
+// back.
+func (s *Sandbox) HasPhysicalEndpoint() bool {
+	for _, endpoint := range s.network.Endpoints() {
+		if endpoint.Type() == PhysicalEndpointType {
+			return true
+		}
+	}
+
+	return false
 }
 
 // RescanNetwork re-scans the network namespace for endpoints if none have
@@ -1674,7 +1702,9 @@ func (s *Sandbox) startVM(ctx context.Context, prestartHookFunc func(context.Con
 		if err != nil {
 			// Log error, otherwise nobody might see it - StopVM could kill this process.
 			s.Logger().WithError(err).Error("Cannot start VM")
-			s.hypervisor.StopVM(ctx, false)
+			if stopErr := s.stopHypervisor(ctx, false); stopErr != nil {
+				s.Logger().WithError(stopErr).Warn("Failed to stop VM after startup failure")
+			}
 			if s.cw != nil {
 				s.cw.stop()
 			}
@@ -1781,7 +1811,15 @@ func (s *Sandbox) stopVM(ctx context.Context) error {
 
 	s.Logger().Info("Stopping VM")
 
-	return s.hypervisor.StopVM(ctx, s.disableVMShutdown)
+	return s.stopHypervisor(ctx, s.disableVMShutdown)
+}
+
+// stopHypervisor records exit confirmation for normal teardown and creation
+// rollback alike, before either path can remove the network.
+func (s *Sandbox) stopHypervisor(ctx context.Context, waitOnly bool) error {
+	err := s.hypervisor.StopVM(ctx, waitOnly)
+	s.vmmExitUnconfirmed = errors.Is(err, errVMMExitUnconfirmed)
+	return err
 }
 
 func (s *Sandbox) addContainer(c *Container) error {
@@ -2218,12 +2256,26 @@ func (s *Sandbox) Stop(ctx context.Context, force bool) error {
 
 	for _, c := range s.containers {
 		if err := c.stop(ctx, force); err != nil {
-			return err
+			if !force {
+				return err
+			}
+			// Giving up here would skip the VMM stop and the network
+			// teardown, which is what hands a passed-through device back.
+			s.Logger().WithError(err).WithField("container", c.id).Warn("Tearing the sandbox down past a container that would not stop")
 		}
 	}
 
-	if err := s.stopVM(ctx); err != nil && !force {
-		return err
+	if err := s.stopVM(ctx); err != nil {
+		if !force {
+			return err
+		}
+
+		// A force stop carries on through guest-related failures, but the
+		// network teardown below still needs to know whether the VMM let
+		// go of the sandbox's passed-through devices.
+		if errors.Is(err, errVMMExitUnconfirmed) {
+			s.Logger().WithError(err).Warn("Tearing the sandbox down without restoring its passed-through devices")
+		}
 	}
 
 	// shutdown console watcher if exists
@@ -2883,16 +2935,8 @@ func (s *Sandbox) resourceControllerUpdate(ctx context.Context) error {
 	return nil
 }
 
-// resourceControllerDelete will move the running processes in the sandbox resource
-// cvontroller to the parent and then delete the sandbox controller.
-func (s *Sandbox) resourceControllerDelete() error {
-	s.Logger().Debugf("Deleting sandbox %s resource controler", s.sandboxController)
-	if s.state.SandboxCgroupPath == "" {
-		s.Logger().Warnf("sandbox %s resource controler path is empty", s.sandboxController)
-		return nil
-	}
-
-	sandboxController, err := resCtrl.LoadResourceController(s.state.SandboxCgroupPath, s.config.SandboxCgroupOnly)
+func deleteResourceController(path string, sandboxCgroupOnly bool) error {
+	controller, err := loadResourceController(path, sandboxCgroupOnly)
 	if err != nil {
 		return err
 	}
@@ -2904,34 +2948,45 @@ func (s *Sandbox) resourceControllerDelete() error {
 	// Keep MoveTo for the case of using cgroupfs paths and for the
 	// non-sandbox_cgroup_only mode. In that mode, Kata may use an overhead
 	// cgroup in which case an explicit MoveTo is used to drain tasks.
-	if !resCtrl.IsSystemdCgroup(s.state.SandboxCgroupPath) || !s.config.SandboxCgroupOnly {
-		resCtrlParent := sandboxController.Parent()
-		if err := sandboxController.MoveTo(resCtrlParent); err != nil {
+	if !resCtrl.IsSystemdCgroup(path) || !sandboxCgroupOnly {
+		resCtrlParent := controller.Parent()
+		if err := controller.MoveTo(resCtrlParent); err != nil {
 			return err
 		}
 	}
 
-	if err := sandboxController.Delete(); err != nil {
-		return err
+	return controller.Delete()
+}
+
+// resourceControllerDelete will move the running processes in the sandbox resource
+// controller to the parent and then delete the sandbox and overhead controllers.
+func (s *Sandbox) resourceControllerDelete() error {
+	s.Logger().Debugf("Deleting sandbox %s resource controler", s.sandboxController)
+	if s.state.SandboxCgroupPath == "" && s.state.OverheadCgroupPath == "" {
+		s.Logger().Warnf("sandbox %s resource controler path is empty", s.sandboxController)
+		return nil
+	}
+
+	var errs []error
+	if s.state.SandboxCgroupPath != "" {
+		if err := deleteResourceController(s.state.SandboxCgroupPath, s.config.SandboxCgroupOnly); err != nil {
+			errs = append(errs, err)
+		}
+	} else {
+		s.Logger().Warnf("sandbox %s resource controler path is empty", s.sandboxController)
 	}
 
 	if s.state.OverheadCgroupPath != "" {
-		overheadController, err := resCtrl.LoadResourceController(s.state.OverheadCgroupPath, s.config.SandboxCgroupOnly)
-		if err != nil {
-			return err
+		if err := deleteResourceController(s.state.OverheadCgroupPath, s.config.SandboxCgroupOnly); err != nil {
+			errs = append(errs, err)
 		}
+	}
 
-		// See comment at above MoveTo: Avoid this action as systemd moves tasks on unit deletion.
-		if !resCtrl.IsSystemdCgroup(s.state.OverheadCgroupPath) || !s.config.SandboxCgroupOnly {
-			resCtrlParent := overheadController.Parent()
-			if err := s.overheadController.MoveTo(resCtrlParent); err != nil {
-				return err
-			}
-		}
-
-		if err := overheadController.Delete(); err != nil {
-			return err
-		}
+	if len(errs) == 1 {
+		return errs[0]
+	}
+	if len(errs) > 1 {
+		return fmt.Errorf("%v; %w", errs[0], errs[1])
 	}
 
 	return nil
