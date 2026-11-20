@@ -158,12 +158,10 @@ type service struct {
 	// binary).
 	teardownWg sync.WaitGroup
 
-	// teardownOnce guarantees the sandbox Stop/Delete runs exactly once even
-	// when both wait() (normal/early exit) and watchSandbox() (killed-VMM)
-	// try to tear the sandbox down.  Sandbox.Stop/Delete are not internally
-	// synchronized, so this serializes the two paths without holding s.mu
-	// across the teardown.
-	teardownOnce sync.Once
+	// Both normal exit and the VMM watcher advance the same teardown phases.
+	// Separate from mu so the normal waiter can advance without holding mu.
+	teardownMu    sync.Mutex
+	teardownPhase sandboxTeardownPhase
 
 	// hypervisor pid, Since this shimv2 cannot get the container processes pid from VM,
 	// thus for the returned values needed pid, just return the hypervisor's

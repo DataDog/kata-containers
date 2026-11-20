@@ -266,20 +266,29 @@ type Sandbox struct {
 	seccompSupported  bool
 	disableVMShutdown bool
 	isVCPUsPinningOn  bool
-
-	vmmExitUnconfirmed bool
 }
 
 // errVMMExitUnconfirmed marks a stop whose VMM may still be running, and so
 // may still hold the file descriptors of the devices passed through to it.
 var errVMMExitUnconfirmed = errors.New("VMM exit was not confirmed")
 
+// deviceReleaseReporter supplies device-ownership facts independently of
+// StopVM's errors. Hypervisors without it retain their existing teardown policy.
+type deviceReleaseReporter interface {
+	devicesReleased() bool
+}
+
 // canRestorePassthroughDevices reports whether the teardown may hand a
 // passed-through device back to its host driver.  It may not while the VMM
 // might still hold the device open, as the unbind then blocks in the kernel
 // until the owner lets go.
 func (s *Sandbox) canRestorePassthroughDevices() bool {
-	return !s.vmmExitUnconfirmed
+	// QEMU owns its exit state. Other hypervisors retain their existing
+	// teardown policy until they provide the same confirmation contract.
+	if vm, ok := s.hypervisor.(deviceReleaseReporter); ok {
+		return vm.devicesReleased()
+	}
+	return true
 }
 
 // ID returns the sandbox identifier string.
@@ -1319,6 +1328,11 @@ func (s *Sandbox) AddInterface(ctx context.Context, inf *pbTypes.Interface) (*pb
 func (s *Sandbox) RemoveInterface(ctx context.Context, inf *pbTypes.Interface) (*pbTypes.Interface, error) {
 	for _, endpoint := range s.network.Endpoints() {
 		if endpoint.HardwareAddr() == inf.HwAddr {
+			// RemoveEndpoints is best-effort cleanup and suppresses endpoint
+			// errors. Reject unsafe live removal before reporting success.
+			if endpoint.Type() == PhysicalEndpointType && !s.canRestorePassthroughDevices() {
+				return inf, fmt.Errorf("cannot remove physical interface %s: VMM may still own it", endpoint.Name())
+			}
 			s.Logger().WithField("endpoint-type", endpoint.Type()).Info("Hot detaching endpoint")
 			if err := s.network.RemoveEndpoints(ctx, s, []Endpoint{endpoint}, true); err != nil {
 				return inf, err
@@ -1702,7 +1716,7 @@ func (s *Sandbox) startVM(ctx context.Context, prestartHookFunc func(context.Con
 		if err != nil {
 			// Log error, otherwise nobody might see it - StopVM could kill this process.
 			s.Logger().WithError(err).Error("Cannot start VM")
-			if stopErr := s.stopHypervisor(ctx, false); stopErr != nil {
+			if stopErr := s.hypervisor.StopVM(ctx, false); stopErr != nil {
 				s.Logger().WithError(stopErr).Warn("Failed to stop VM after startup failure")
 			}
 			if s.cw != nil {
@@ -1811,15 +1825,7 @@ func (s *Sandbox) stopVM(ctx context.Context) error {
 
 	s.Logger().Info("Stopping VM")
 
-	return s.stopHypervisor(ctx, s.disableVMShutdown)
-}
-
-// stopHypervisor records exit confirmation for normal teardown and creation
-// rollback alike, before either path can remove the network.
-func (s *Sandbox) stopHypervisor(ctx context.Context, waitOnly bool) error {
-	err := s.hypervisor.StopVM(ctx, waitOnly)
-	s.vmmExitUnconfirmed = errors.Is(err, errVMMExitUnconfirmed)
-	return err
+	return s.hypervisor.StopVM(ctx, s.disableVMShutdown)
 }
 
 func (s *Sandbox) addContainer(c *Container) error {
@@ -2273,7 +2279,7 @@ func (s *Sandbox) Stop(ctx context.Context, force bool) error {
 		// A force stop carries on through guest-related failures, but the
 		// network teardown below still needs to know whether the VMM let
 		// go of the sandbox's passed-through devices.
-		if errors.Is(err, errVMMExitUnconfirmed) {
+		if !s.canRestorePassthroughDevices() {
 			s.Logger().WithError(err).Warn("Tearing the sandbox down without restoring its passed-through devices")
 		}
 	}

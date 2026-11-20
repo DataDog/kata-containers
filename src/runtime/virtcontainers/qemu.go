@@ -118,15 +118,12 @@ type qemu struct {
 
 	nvdimmCount int
 
-	stopped int32
+	// Lifecycle transitions are serialized by mu. Atomic reads allow Check,
+	// Save and device restoration to inspect the outcome without waiting.
+	lifecycle atomic.Int32
 
-	// exitCh is closed once QEMU has been reaped.  Nil when this process
-	// did not launch it, e.g. a sandbox restored from its persisted state.
+	// Closed by the sole process reaper; nil for a restored QEMU.
 	exitCh chan struct{}
-
-	// Only a fresh hypervisor can prove it has never held any devices.
-	// Restoring state or successfully launching QEMU clears this proof.
-	neverLaunched bool
 
 	mu sync.Mutex
 }
@@ -1711,6 +1708,9 @@ func (q *qemu) LogAndWait(qemuCmd *exec.Cmd, reader io.ReadCloser, exitCh chan s
 
 // StartVM will start the Sandbox's VM.
 func (q *qemu) StartVM(ctx context.Context, timeout int) error {
+	if err := q.checkLaunchState(); err != nil {
+		return err
+	}
 	span, ctx := katatrace.Trace(ctx, q.Logger(), "StartVM", qemuTracingTags, map[string]string{"sandbox_id": q.id})
 	defer span.End()
 
@@ -1783,13 +1783,15 @@ func (q *qemu) StartVM(ctx context.Context, timeout int) error {
 
 	q.mu.Lock()
 	// StopVM may have completed while we were preparing the launch.
-	if atomic.LoadInt32(&q.stopped) != 0 {
+	if err = q.checkLaunchState(); err != nil {
 		q.mu.Unlock()
-		err = errors.New("QEMU was stopped before launch")
 		return err
 	}
+	// Reserve device ownership before the process can inherit descriptors.
+	q.setVMState(qemuMayOwnDevices)
 	qemuCmd, reader, err := govmmQemu.LaunchQemu(q.qemuConfig, newQMPLogger())
 	if err != nil {
+		q.setVMState(qemuNotStarted)
 		q.mu.Unlock()
 		q.Logger().WithError(err).Error("failed to launch qemu")
 		return fmt.Errorf("failed to launch qemu: %s", err)
@@ -1797,7 +1799,6 @@ func (q *qemu) StartVM(ctx context.Context, timeout int) error {
 
 	// Log QEMU errors and ensure the QEMU process is reaped after
 	// termination.
-	q.neverLaunched = false
 	q.exitCh = make(chan struct{})
 	exitCh := q.exitCh
 	q.mu.Unlock()
@@ -1941,83 +1942,84 @@ func (q *qemu) waitForExit(pid int, exitCh chan struct{}, timeout time.Duration)
 	}
 }
 
-// StopVM will stop the Sandbox's VM.
-func (q *qemu) StopVM(ctx context.Context, waitOnly bool) (err error) {
+// stopProcess confirms exit of an active or restored VM. The caller holds
+// q.mu; an error leaves MayOwnDevices and prevents physical-device restoration.
+func (q *qemu) stopProcess(waitOnly bool) (err error) {
+	if q.devicesReleased() {
+		return nil
+	}
+	defer func() {
+		if err == nil {
+			q.setVMState(qemuExited)
+		}
+	}()
+
+	if q.reaped() {
+		return nil
+	}
+	pids := q.GetPids()
+	if len(pids) == 0 || pids[0] <= 0 {
+		// Startup rollback may have removed the PID file before the child
+		// reaper finishes. Its channel still provides exit confirmation.
+		if q.exitCh != nil {
+			return q.waitForExit(0, q.exitCh, qemuStopSandboxTimeout)
+		}
+		return errors.New("cannot determine QEMU PID")
+	}
+	pid := pids[0]
+	if err := q.qmpSetup(); err != nil {
+		if q.hasExited(pid) {
+			return nil
+		}
+		if q.exitCh == nil {
+			return fmt.Errorf("set up QMP: %w", err)
+		}
+		// QMP may disconnect before the child is reaped. A zombie still
+		// answers kill(pid, 0), so wait for the reaper's confirmation.
+		if werr := q.waitForExit(pid, q.exitCh, qemuStopSandboxTimeout); werr != nil {
+			return fmt.Errorf("set up QMP: %v; %w", err, werr)
+		}
+		return nil
+	}
+
+	// The reaper may have completed while QMP was being established.
+	if q.reaped() {
+		return nil
+	}
+	if waitOnly {
+		if err := utils.WaitLocalProcess(pid, qemuStopSandboxTimeoutSecs, syscall.Signal(0), q.Logger()); err != nil {
+			return err
+		}
+	} else if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+		if err == syscall.ESRCH {
+			return nil
+		}
+		return fmt.Errorf("send SIGKILL to QEMU process %d: %w", pid, err)
+	}
+	return q.waitForExit(pid, q.exitCh, qemuStopSandboxTimeout)
+}
+
+// StopVM confirms process exit before stopping helpers. Helper failures leave
+// the VM Exited (devices are safe) and can be retried without signalling its PID.
+func (q *qemu) StopVM(ctx context.Context, waitOnly bool) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	span, _ := katatrace.Trace(ctx, q.Logger(), "StopVM", qemuTracingTags, map[string]string{"sandbox_id": q.id})
 	defer span.End()
 
-	q.Logger().Info("Stopping Sandbox")
-	if atomic.LoadInt32(&q.stopped) != 0 {
-		q.Logger().Info("Already stopped")
+	if q.vmState() == qemuStopped {
 		return nil
 	}
-
-	defer func() {
-		q.cleanupVM()
-		if err == nil {
-			atomic.StoreInt32(&q.stopped, 1)
-		}
-	}()
-
-	var pid int
-	if !q.neverLaunched {
-		pids := q.GetPids()
-		if len(pids) == 0 {
-			return fmt.Errorf("%w: cannot determine QEMU PID", errVMMExitUnconfirmed)
-		}
-		pid = pids[0]
-
-		if err := q.qmpSetup(); err != nil {
-			if !q.hasExited(pid) {
-				if q.exitCh == nil {
-					return fmt.Errorf("%w: set up QMP: %v", errVMMExitUnconfirmed, err)
-				}
-				// QMP can disconnect before our child reaper reports exit.
-				// kill(pid, 0) still succeeds for an unreaped zombie.
-				if werr := q.waitForExit(pid, q.exitCh, qemuStopSandboxTimeout); werr != nil {
-					return fmt.Errorf("%w: set up QMP: %v; %v", errVMMExitUnconfirmed, err, werr)
-				}
-			}
-		}
+	defer q.cleanupVM()
+	if err := q.stopProcess(waitOnly); err != nil {
+		return fmt.Errorf("%w: %v", errVMMExitUnconfirmed, err)
 	}
-
-	switch {
-	case q.neverLaunched:
-		// Startup failed before QEMU could inherit any device descriptors.
-	case q.reaped():
-		// Gone for good, and its pid may since have been recycled by a
-		// process we must not signal.
-	case pid <= 0:
-		return fmt.Errorf("%w: lost track of the QEMU process", errVMMExitUnconfirmed)
-	case waitOnly:
-		if werr := utils.WaitLocalProcess(pid, qemuStopSandboxTimeoutSecs, syscall.Signal(0), q.Logger()); werr != nil {
-			return fmt.Errorf("%w: %v", errVMMExitUnconfirmed, werr)
-		}
-		// The helper cannot reap a restored QEMU, so its SIGKILL fallback
-		// alone does not confirm that QEMU has released its devices.
-		if werr := q.waitForExit(pid, q.exitCh, qemuStopSandboxTimeout); werr != nil {
-			return fmt.Errorf("%w: %v", errVMMExitUnconfirmed, werr)
-		}
-	default:
-		// ESRCH is the exit we were asking for.
-		if kerr := syscall.Kill(pid, syscall.SIGKILL); kerr != nil && kerr != syscall.ESRCH {
-			q.Logger().WithError(kerr).Error("Fail to send SIGKILL to qemu")
-			return fmt.Errorf("%w: send SIGKILL to QEMU process %d: %v", errVMMExitUnconfirmed, pid, kerr)
-		} else if kerr == nil {
-			if werr := q.waitForExit(pid, q.exitCh, qemuStopSandboxTimeout); werr != nil {
-				return fmt.Errorf("%w: %v", errVMMExitUnconfirmed, werr)
-			}
-		}
-	}
-
 	if q.config.SharedFS == config.VirtioFS || q.config.SharedFS == config.VirtioFSNydus {
 		if err := q.stopVirtiofsDaemon(ctx); err != nil {
 			return err
 		}
 	}
-
+	q.setVMState(qemuStopped)
 	return nil
 }
 
@@ -3783,7 +3785,8 @@ func (q *qemu) fromGrpc(ctx context.Context, hypervisorConfig *HypervisorConfig,
 		return err
 	}
 
-	q.neverLaunched = false
+	q.setVMState(qemuMayOwnDevices)
+	q.exitCh = nil
 	q.id = qp.ID
 	q.config = *hypervisorConfig
 	q.qmpMonitorCh.ctx = ctx
@@ -3822,7 +3825,7 @@ func (q *qemu) toGrpc(ctx context.Context) ([]byte, error) {
 func (q *qemu) Save() (s hv.HypervisorState) {
 
 	// If QEMU isn't even running, there isn't any state to Save
-	if atomic.LoadInt32(&q.stopped) != 0 {
+	if q.vmState() == qemuStopped {
 		return
 	}
 
@@ -3855,7 +3858,8 @@ func (q *qemu) Save() (s hv.HypervisorState) {
 }
 
 func (q *qemu) Load(s hv.HypervisorState) {
-	q.neverLaunched = false
+	q.setVMState(qemuMayOwnDevices)
+	q.exitCh = nil
 	q.state.UUID = s.UUID
 	q.state.HotpluggedMemory = s.HotpluggedMemory
 	q.state.VirtiofsDaemonPid = s.VirtiofsDaemonPid
@@ -3876,7 +3880,7 @@ func (q *qemu) Load(s hv.HypervisorState) {
 }
 
 func (q *qemu) Check() error {
-	if atomic.LoadInt32(&q.stopped) != 0 {
+	if q.vmState() == qemuStopped {
 		return fmt.Errorf("qemu is not running")
 	}
 

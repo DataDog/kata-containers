@@ -29,7 +29,9 @@ func generateVMSocket(id string, vmStogarePath string) (interface{}, error) {
 func NewHypervisor(hType HypervisorType) (Hypervisor, error) {
 	switch hType {
 	case QemuHypervisor:
-		return &qemu{neverLaunched: true}, nil
+		q := &qemu{}
+		q.setVMState(qemuNotStarted)
+		return q, nil
 	case FirecrackerHypervisor:
 		return &firecracker{}, nil
 	case ClhHypervisor:
