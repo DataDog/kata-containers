@@ -1,0 +1,23 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "enabledManagers": ["custom.regex"],
+  "includePaths": [".gitlab-ci.yml"],
+  "packageRules": [
+    {
+      // Only track linux dependency updates
+      "matchDepNames": ["!linux"],
+      "enabled": false
+    },
+    {
+      // Disable automated major/minor upgrades
+      "matchDepNames": ["linux"],
+      "matchUpdateTypes": ["minor", "major"],
+      "enabled": false
+    },
+    {
+      "matchDepNames": ["linux"],
+      "separateMinorPatch": true,
+      "automerge": true
+    }
+  ]
+}
