@@ -569,6 +569,13 @@ func handleVirtualVolume(c *Container) ([]*grpc.Storage, string, error) {
 					return nil, "", err
 				}
 			}
+			if volumeType == types.KataVirtualVolumeImageRawBlockType {
+				rawBlock, err := handleRawBlockVirtualVolume(c, virtVolume)
+				if err != nil {
+					return nil, "", err
+				}
+				volumes = append(volumes, rawBlock...)
+			}
 
 			if vol != nil {
 				volumes = append(volumes, vol)
@@ -577,6 +584,43 @@ func handleVirtualVolume(c *Container) ([]*grpc.Storage, string, error) {
 	}
 
 	return volumes, volumeType, nil
+}
+
+// handleRawBlockVirtualVolume mounts the image of an image_raw_block virtual volume,
+// hot-plugged by createVirtualVolumeDevices, and stacks the container rootfs on it. The
+// upper/work go on the block volume selected by annotations.RootFSUpperMount, else in the guest.
+func handleRawBlockVirtualVolume(c *Container, virtVolume *types.KataVirtualVolume) ([]*grpc.Storage, error) {
+	mountPoint := rawBlockVolumeMountPoint(virtVolume.Source)
+	idx := slices.IndexFunc(c.devices, func(d ContainerDevice) bool { return d.ContainerPath == mountPoint })
+	if idx < 0 {
+		return nil, fmt.Errorf("no device for raw block virtual volume %s", virtVolume.Source)
+	}
+	device := c.sandbox.devManager.GetDeviceByID(c.devices[idx].ID)
+	if device == nil {
+		return nil, fmt.Errorf("failed to find device by id %q", c.devices[idx].ID)
+	}
+	image, err := handleBlockVolume(c, device)
+	if err != nil {
+		return nil, err
+	}
+	image.Fstype = virtVolume.FSType
+	image.Options = append(image.Options, virtVolume.Options...)
+	image.MountPoint = mountPoint
+
+	upper := c.GetAnnotations()[annotations.RootFSUpperMount]
+	if upper == "" || !slices.ContainsFunc(c.mounts, func(m Mount) bool { return m.Destination == upper && m.BlockDeviceID != "" }) {
+		upper = filepath.Join("/run/kata-containers/", c.id)
+	}
+	createDir := "io.katacontainers.volume.overlayfs.create_directory="
+	rootfs := &grpc.Storage{
+		MountPoint:    filepath.Join("/run/kata-containers/", c.id, c.rootfsSuffix),
+		Source:        typeOverlayFS,
+		Fstype:        typeOverlayFS,
+		Driver:        kataOverlayDevType,
+		DriverOptions: []string{createDir + upper + "/upper", createDir + upper + "/work"},
+		Options:       []string{lowerDir + "=" + mountPoint, upperDir + "=" + upper + "/upper", workDir + "=" + upper + "/work", "index=off"},
+	}
+	return []*grpc.Storage{image, rootfs}, nil
 }
 
 func (f *FilesystemShare) shareRootFilesystemWithVirtualVolume(ctx context.Context, c *Container) (*SharedFile, error) {
