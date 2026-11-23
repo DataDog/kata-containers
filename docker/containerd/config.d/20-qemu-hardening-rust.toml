@@ -1,0 +1,6 @@
+# Copyright (c) 2026 Datadog, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+[hypervisor.qemu]
+rootless = true
+seccomp_sandbox = "on,spawn=deny"
