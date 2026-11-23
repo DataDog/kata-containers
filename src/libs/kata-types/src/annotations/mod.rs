@@ -712,6 +712,8 @@ impl Annotation {
                                 ));
                             } else {
                                 hv.cpu_info.default_vcpus = num_cpus;
+                                // As in the Go shim, static sizing adds the workload to an annotated default.
+                                hv.cpu_info.overhead_vcpus = num_cpus;
                             }
                         }
                         Err(_e) => {
@@ -829,6 +831,7 @@ impl Annotation {
                                 ));
                             }
                             hv.memory_info.default_memory = memory_size;
+                            hv.memory_info.overhead_memory = memory_size;
                         }
                     }
                     KATA_ANNO_CFG_HYPERVISOR_MEMORY_SLOTS => match self.get_value::<u32>(key) {
