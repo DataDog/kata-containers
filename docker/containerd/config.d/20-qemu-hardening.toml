@@ -1,0 +1,3 @@
+[hypervisor.qemu]
+rootless = true
+seccompsandbox = "on,spawn=deny"
