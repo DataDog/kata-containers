@@ -14,4 +14,3 @@ debug_console_enabled = false
 [runtime]
 internetworking_model = "jailnet"
 static_sandbox_resource_mgmt=true
-sandbox_bind_mounts = ["/etc/datadog-agent"]

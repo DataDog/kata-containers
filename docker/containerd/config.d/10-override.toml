@@ -13,4 +13,3 @@ debug_console_enabled = false
 
 [runtime]
 static_sandbox_resource_mgmt=true
-sandbox_bind_mounts = ["/etc/datadog-agent"]

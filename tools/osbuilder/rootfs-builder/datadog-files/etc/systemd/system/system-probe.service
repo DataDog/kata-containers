@@ -6,6 +6,8 @@ After=sys-kernel-debug.mount
 [Service]
 Type=simple
 PIDFile=/tmp/system-probe.pid
+RuntimeDirectory=kata-system-probe
+RuntimeDirectoryMode=0700
 Restart=always
 RestartSec=10
 ExecStart=/usr/local/bin/start-system-probe run --pid=/tmp/system-probe.pid
