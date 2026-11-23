@@ -51,7 +51,7 @@ RUN --security=insecure \
     test "$(chroot /rootfs systemctl is-enabled system-probe.service)" = enabled && \
     test "$(chroot /rootfs systemctl is-enabled datadog-apparmor.service)" = enabled && \
     mkdir /out && \
-    tools/osbuilder/image-builder/image_builder.sh -o "/out/kata-rootfs-${TARGETARCH}.img" /rootfs && \
+    tools/osbuilder/image-builder/image_builder.sh -f ext4 -o "/out/kata-rootfs-${TARGETARCH}.img" /rootfs && \
     cp sbom.cdx.gz "/out/kata-rootfs-${TARGETARCH}.sbom.cdx.gz"
 
 FROM scratch AS artifacts
