@@ -185,8 +185,10 @@ mod tests {
             );
             assert!(!hv.memory_info.enable_mem_prealloc);
             assert_eq!(hv.cpu_info.default_vcpus, 12.0);
+            assert_eq!(hv.cpu_info.overhead_vcpus, 12.0);
             assert!(!hv.memory_info.enable_guest_swap);
             assert_eq!(hv.memory_info.default_memory, 100);
+            assert_eq!(hv.memory_info.overhead_memory, 100);
             assert!(!hv.enable_iothreads);
             assert_eq!(hv.indep_iothreads, 3);
             assert!(!hv.memory_info.enable_hugepages);
