@@ -185,6 +185,11 @@ build-shim-rust-amd64:
     - cd src/runtime-rs
     - make clean-generated-files
     - make DEFROOTFSTYPE='$(ROOTFSTYPE_EXT4)' check
+    # 'make check' renders the QEMU config with the default /usr prefix (the arch
+    # options default QEMUCMD, so the TOML is part of the check build), and the
+    # mtime-based %.toml: %.toml.in rule makes the release 'make PREFIX=/opt/kata'
+    # reuse it. Clear the generated files so the release build re-renders them.
+    - make clean-generated-files
     # DD runs qemu only, never the in-process Dragonball VMM. USE_BUILTIN_DB=false
     # skips building the dragonball crate + its ~13 dbs-* deps (the bulk of this
     # job's compile time). Cloud-hypervisor / firecracker drivers still build.
@@ -212,6 +217,8 @@ build-shim-rust-arm64:
     - cd src/runtime-rs
     - make clean-generated-files
     - make DEFROOTFSTYPE='$(ROOTFSTYPE_EXT4)' check
+    # See build-shim-rust-amd64: re-render the config with the release prefix.
+    - make clean-generated-files
     # See build-shim-rust-amd64: qemu-only, skip building the Dragonball VMM.
     - ARCH=aarch64 make PREFIX=/opt/kata QEMUCMD=qemu-system-aarch64 USE_BUILTIN_DB=false DEFROOTFSTYPE='$(ROOTFSTYPE_EXT4)'
     # Export the Rust shim at the context root under a -rust name (see -amd64).
