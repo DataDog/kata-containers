@@ -177,10 +177,7 @@ impl CpuResource {
                 .sum();
             if total_shares > 0 {
                 let shares_vcpu = total_shares as f32 / 1024.0;
-                info!(
-                    sl!(),
-                    "(from cpu_shares) get vcpus # {}", shares_vcpu
-                );
+                info!(sl!(), "(from cpu_shares) get vcpus # {}", shares_vcpu);
                 return Ok(shares_vcpu.max(1.0));
             }
         }
