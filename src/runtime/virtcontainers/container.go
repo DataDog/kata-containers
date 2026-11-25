@@ -7,6 +7,7 @@ package virtcontainers
 
 import (
 	"context"
+	b64 "encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -887,9 +888,29 @@ func (c *Container) createVirtualVolumeDevices() ([]config.DeviceInfo, error) {
 				return nil, err
 			}
 			c.Logger().Infof("KataVirtualVolume volumetype = %s", virtVolume.VolumeType)
+			if virtVolume.VolumeType != types.KataVirtualVolumeImageRawBlockType {
+				continue
+			}
+			if virtVolume.Source == "" || virtVolume.FSType == "" {
+				return nil, fmt.Errorf("raw block virtual volume needs a source and a filesystem type: %+v", virtVolume)
+			}
+			// The image is read-only: containers only write to the overlay upper.
+			di, err := c.createDeviceInfo(virtVolume.Source, rawBlockVolumeMountPoint(virtVolume.Source), true, true)
+			if err != nil {
+				return nil, err
+			}
+			deviceInfos = append(deviceInfos, *di)
 		}
 	}
 	return deviceInfos, nil
+}
+
+// rawBlockVolumeMountPoint is where the guest mounts the image of a raw block
+// virtual volume. It is keyed by the source so that containers of the same
+// image share the mount, and lives under the virtual volume directory so that
+// the device is not exposed to the container (see kataAgent.appendDevices).
+func rawBlockVolumeMountPoint(source string) string {
+	return filepath.Join(defaultKataGuestVirtualVolumedir, b64.URLEncoding.EncodeToString([]byte(source)))
 }
 
 // getFilesystemCapacity return the total size in bytes of the filesystem

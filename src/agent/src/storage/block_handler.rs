@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-use crate::linux_abi::pcipath_from_dev_tree_path;
+use crate::linux_abi::{pcipath_from_dev_tree_path, SYSFS_DIR};
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
@@ -38,6 +38,10 @@ use slog::Logger;
 use std::str::FromStr;
 
 const EPHEMERAL_ENCRYPTION_DRIVER_OPTION: &str = "encryption_key=ephemeral";
+/// Readahead of read-only EROFS image disks, in KiB. The host may load their data lazily
+/// from a remote registry, each request paying a round trip: with the kernel default of
+/// 128 KiB, sequential reads of a cold image are latency bound.
+const IMAGE_DISK_READ_AHEAD_KB: &str = "32768";
 const MKFS_EXT4: &str = "mkfs.ext4";
 const BLOCK_EMPTYDIR_EXT4_MKFS_OPTS: [&str; 8] =
     ["-O", "^has_journal", "-m", "0", "-i", "163840", "-I", "128"];
@@ -83,8 +87,23 @@ async fn handle_block_storage(
         if options.should_create_filesystem {
             ensure_block_filesystem(logger, storage).await?;
         }
+        if is_image_disk(storage) {
+            set_image_disk_read_ahead(logger, dev_num);
+        }
         let path = common_storage_handler(logger, storage)?;
         new_device(path)
+    }
+}
+
+/// Whether a block storage is a read-only EROFS image, e.g. an `image_raw_block` volume.
+fn is_image_disk(storage: &Storage) -> bool {
+    storage.fstype == "erofs" && storage.options.iter().any(|o| o == "ro")
+}
+
+fn set_image_disk_read_ahead(logger: &Logger, dev_num: &str) {
+    let path = format!("{SYSFS_DIR}/dev/block/{dev_num}/queue/read_ahead_kb");
+    if let Err(e) = fs::write(&path, IMAGE_DISK_READ_AHEAD_KB) {
+        warn!(logger, "failed to set the readahead of an image disk"; "path" => &path, "error" => e.to_string());
     }
 }
 
@@ -165,6 +184,23 @@ async fn ensure_ext4_filesystem(logger: &Logger, source: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_image_disk() {
+        let tests = [
+            ("ReadOnlyErofs", "erofs", vec!["ro"], true),
+            ("ReadWriteErofs", "erofs", vec![], false),
+            ("ReadOnlyExt4", "ext4", vec!["ro"], false),
+        ];
+        for (name, fstype, options, want) in tests {
+            let storage = Storage {
+                fstype: fstype.to_string(),
+                options: options.iter().map(|o| o.to_string()).collect(),
+                ..Default::default()
+            };
+            assert_eq!(is_image_disk(&storage), want, "{}", name);
+        }
+    }
 
     fn storage_with_driver_options(options: &[&str]) -> Storage {
         Storage {
