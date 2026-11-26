@@ -29,6 +29,8 @@ use crate::cgroups::utils::get_tgid_from_pid;
 use crate::cgroups::CgroupConfig;
 use crate::ResourceUpdateOp;
 
+mod usage;
+
 pub type CgroupManager = Box<dyn Manager>;
 
 const KILL_POLL_INTERVAL: Duration = Duration::from_millis(50);

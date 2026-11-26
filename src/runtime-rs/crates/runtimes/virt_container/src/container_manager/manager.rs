@@ -34,6 +34,8 @@ use crate::oom::CrioOomNotifier;
 
 use super::{logger_with_process, Container};
 
+mod cgroup_usage;
+
 pub struct VirtContainerManager {
     sid: String,
     pid: u32,
@@ -465,6 +467,10 @@ impl ContainerManager for VirtContainerManager {
             .ok_or_else(|| Error::ContainerNotFound(id.container_id.clone()))?;
         let stats = c.stats().await.context("stats")?;
         Ok(StatsInfo::from(stats))
+    }
+
+    async fn containers_cgroup_usage(&self) -> Result<(u64, u64)> {
+        self.sum_containers_cgroup_usage().await
     }
 
     #[instrument]

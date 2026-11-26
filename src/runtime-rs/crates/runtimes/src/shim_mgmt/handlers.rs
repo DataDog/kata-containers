@@ -7,7 +7,7 @@
 // This defines the handlers corresponding to the url when a request is sent to destined url,
 // the handler function should be invoked, and the corresponding data will be in the response
 
-use crate::shim_metrics::get_shim_metrics;
+use crate::kata_shim_metrics::get_shim_metrics;
 use agent::ResizeVolumeRequest;
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
@@ -160,6 +160,7 @@ async fn metrics_url_handler(
     sandbox: Arc<dyn Sandbox>,
     _req: Request<Incoming>,
 ) -> Result<Response<Full<Bytes>>> {
+    crate::pod_overhead::spawn_sample(sandbox.clone());
     // get metrics from agent, hypervisor, and shim
     let agent_metrics = sandbox.agent_metrics().await.unwrap_or_default();
     let hypervisor_metrics = sandbox.hypervisor_metrics().await.unwrap_or_default();

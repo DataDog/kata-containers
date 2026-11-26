@@ -153,6 +153,7 @@ impl ShareVirtioFsStandalone {
             return Err(anyhow!("virtiofsd already initialized"));
         }
         let child = child_cmd.spawn().context("spawn virtiofsd")?;
+        super::virtiofsd_metrics::set_virtiofsd_pid(child.id().unwrap_or(0));
 
         let (tx, mut rx): (Sender<Result<()>>, Receiver<Result<()>>) = channel(100);
         let (stop_tx, stop_rx) = watch::channel(false);
