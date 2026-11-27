@@ -1,4 +1,6 @@
 # syntax=docker/dockerfile:1-labs
+ARG SYSTEM_PROBE_IMAGE=scratch
+FROM ${SYSTEM_PROBE_IMAGE} AS system-probe
 # Build on the native docker-in-docker runner for TARGETARCH. Only the osbuilder
 # RUN needs privileges; the shared rootless CI BuildKit workers cannot run it.
 FROM registry.ddbuild.io/images/base/gbi-ubuntu_2204:release AS builder
@@ -30,17 +32,29 @@ RUN ci/install_yq.sh && target_branch=datadog tests/install_rust.sh && \
 
 ARG TARGETARCH
 ARG SOURCE_COMMIT
+ARG SYSTEM_PROBE_IMAGE
 # Match .github/workflows/build-kata-os.yml. Run the same two osbuilder scripts
 # directly inside BuildKit, without nested docker run or remote bind mounts.
 # /rootfs is also the path expected by the existing SBOM hook. Mount devtmpfs
 # inside this RUN so loop partitions created by the kernel appear in /dev.
 RUN --security=insecure \
+    --mount=type=bind,from=system-probe,target=/system-probe-image \
     test -n "${SOURCE_COMMIT}" && \
     mount -t devtmpfs devtmpfs /dev && \
     trap 'umount -l /dev' EXIT && \
     export OS_VERSION=jammy INSIDE_CONTAINER=1 USER=root GROUP=root target_branch=datadog \
         MAKEFLAGS="COMMIT_NO=${SOURCE_COMMIT}" && \
     tools/osbuilder/rootfs-builder/rootfs.sh -d -o "$(cat VERSION)-${SOURCE_COMMIT}" -r /rootfs ubuntu && \
+    if [ "${SYSTEM_PROBE_IMAGE}" != scratch ]; then \
+        embedded=opt/datadog-agent/embedded && \
+        install -m 0755 "/system-probe-image/${embedded}/bin/system-probe" "/rootfs/${embedded}/bin/system-probe" && \
+        rm -rf "/rootfs/${embedded}/share/system-probe" && \
+        cp -a "/system-probe-image/${embedded}/share/system-probe" "/rootfs/${embedded}/share/" && \
+        chown -R root:root "/rootfs/${embedded}/share/system-probe" && \
+        policy=etc/datadog-agent/runtime-security.d/default.policy && \
+        install -D -m 0644 "/system-probe-image/${policy}" "/rootfs/${policy}" && \
+        rm -f sbom.cdx.gz && tools/osbuilder/hooks/download_generate_sbom.sh; \
+    fi && \
     test -x /rootfs/usr/bin/kata-agent && \
     test -x /rootfs/opt/datadog-agent/embedded/bin/system-probe && \
     test -x /rootfs/sbin/apparmor_parser && \

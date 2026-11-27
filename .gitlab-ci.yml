@@ -94,6 +94,8 @@ build-kernel-arm64:
     - if: $GBILITE_GITLAB_ACTION
       when: never
     - if: $CI_COMMIT_TAG || $CI_COMMIT_BRANCH
+  variables:
+    SYSTEM_PROBE_IMAGE: "registry.ddbuild.io/datadog-agent:7.86.0-jmx@sha256:44a75dba9f0178f4b867b47a9a606b156343b905de2f0fa76cd0b94d47e3b60b"
   script:
     - docker buildx create --name "kata-rootfs-${CI_JOB_ID}" --driver docker-container --buildkitd-flags '--allow-insecure-entitlement security.insecure'
     - >-
@@ -104,6 +106,7 @@ build-kernel-arm64:
       --ulimit nofile=262144:262144
       --file docker/rootfs.Dockerfile
       --build-arg "SOURCE_COMMIT=${CI_COMMIT_SHA}"
+      --build-arg "SYSTEM_PROBE_IMAGE=${SYSTEM_PROBE_IMAGE:-scratch}"
       --output type=local,dest=.
       .
   after_script:
