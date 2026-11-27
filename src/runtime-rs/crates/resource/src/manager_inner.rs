@@ -631,6 +631,10 @@ impl ResourceManagerInner {
         crate::rootfs::rootfs_upper::claim(self.device_manager.as_ref(), &self.sid, spec).await
     }
 
+    pub async fn handler_layers(&self, spec: &mut oci::Spec) -> Result<Vec<Arc<dyn Volume>>> {
+        crate::rootfs::layers::claim_layers(self.device_manager.as_ref(), spec).await
+    }
+
     pub async fn handler_devices(
         &self,
         _cid: &str,

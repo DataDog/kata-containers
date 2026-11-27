@@ -56,6 +56,20 @@ pub const SANDBOX_BIND_MOUNTS_RW: &str = ":rw";
 /// KATA_VIRTUAL_VOLUME_PREFIX is for container image guest pull
 pub const KATA_VIRTUAL_VOLUME_PREFIX: &str = "io.katacontainers.volume=";
 
+/// Mount option of the container rootfs describing one layer of an overlay
+/// filesystem. The remainder is `<source>,<fstype>[,<mount option>...]`: the
+/// layer source is attached to the guest, mounted there before the container
+/// rootfs, and the rootfs is assembled as an overlay of the layers by the
+/// guest agent.
+pub const KATA_FS_OPT_LAYER_PREFIX: &str = "io.katacontainers.fs-opt.layer=";
+/// Mount option marking a mount as a layer of an overlay filesystem.
+pub const KATA_FS_OPT_IS_LAYER: &str = "io.katacontainers.fs-opt.is-layer";
+/// Mount option marking a layer whose source is a regular file on the host,
+/// attached to the guest as a block device backed by that file.
+pub const KATA_FS_OPT_BLOCK_DEVICE_FILE: &str = "io.katacontainers.fs-opt.block_device=file";
+/// Guest directory under which the layers of an overlay rootfs are mounted.
+pub const KATA_GUEST_SANDBOX_LAYERS_DIR: &str = "/run/kata-containers/sandbox/layers";
+
 /// Directly assign a block volume to vm and mount it inside guest.
 pub const KATA_VIRTUAL_VOLUME_DIRECT_BLOCK: &str = "direct_block";
 /// Present a container image as a generic block device.

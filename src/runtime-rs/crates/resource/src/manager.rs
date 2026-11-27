@@ -247,6 +247,11 @@ impl ResourceManager {
         inner.handler_rootfs_upper(spec).await
     }
 
+    pub async fn handler_layers(&self, spec: &mut oci::Spec) -> Result<Vec<Arc<dyn Volume>>> {
+        let inner = self.inner.read().await;
+        inner.handler_layers(spec).await
+    }
+
     pub async fn handler_devices(
         &self,
         cid: &str,

@@ -45,6 +45,7 @@ use persist::sandbox_persist::Persist;
 use resource::{
     cpu_mem::initial_size::InitialSizeManager,
     network::{dan_config_path, generate_netns_name},
+    rootfs::layers::copy_layers_to_mounts,
 };
 use runtime_spec as spec;
 use shim_interface::shim_mgmt::ERR_NO_SHIM_SERVER;
@@ -648,6 +649,11 @@ impl RuntimeHandlerManager {
                 spec::OCI_SPEC_CONFIG_FILE_NAME
             );
             let mut spec = oci::Spec::load(&bundler_path).context("load spec")?;
+            // Rootfs mounts carrying fs-opt.layer options describe layers
+            // the guest mounts before the rootfs: surface them as spec mounts,
+            // like the Go shim's copyLayersToMounts.
+            copy_layers_to_mounts(&container_config.rootfs_mounts, &mut spec)
+                .context("copy fs-opt layers to mounts")?;
             let state = spec::State {
                 version: spec.version().clone(),
                 id: container_config.container_id.to_string(),

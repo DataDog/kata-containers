@@ -13,6 +13,8 @@ use async_trait::async_trait;
 use kata_types::mount::Mount;
 mod block_rootfs;
 mod erofs_rootfs;
+mod kata_overlay_rootfs;
+pub mod layers;
 mod raw_block_rootfs;
 pub mod virtual_volume;
 
@@ -146,6 +148,18 @@ impl RootFsResource {
                             .context("kata virtual volume failed.")?,
                     );
                     return Ok(virtual_volume);
+                }
+
+                // A rootfs carrying fs-opt.layer options is an overlay of
+                // layers attached to the guest; it is never mounted on the
+                // host, like the Go shim's checkAndMount.
+                if kata_overlay_rootfs::has_layer_options(layer) {
+                    let rootfs: Arc<dyn Rootfs> = Arc::new(
+                        kata_overlay_rootfs::KataOverlayRootfs::new(cid, layer)
+                            .context("new kata overlay rootfs")?,
+                    );
+                    inner.rootfs.push(rootfs.clone());
+                    return Ok(rootfs);
                 }
 
                 let rootfs = if let Some((dev_id, layer)) = is_block_rootfs(layer) {

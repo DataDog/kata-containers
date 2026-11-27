@@ -185,6 +185,15 @@ impl Container {
             .await
             .context("handler rootfs upper")?;
 
+        // The layer mounts of a kata overlay rootfs are mounted in the guest
+        // before the rootfs, which overlays them, and are hidden from the
+        // container.
+        let layer_volumes = self
+            .resource_manager
+            .handler_layers(&mut spec)
+            .await
+            .context("handler layers")?;
+
         // handler volumes
         let volumes = self
             .resource_manager
@@ -205,6 +214,20 @@ impl Container {
             inner.volumes.push(v);
         }
         spec.set_mounts(Some(oci_mounts));
+        if !layer_volumes.is_empty() {
+            let mut layer_storages = Vec::with_capacity(layer_volumes.len());
+            for v in &layer_volumes {
+                layer_storages.append(&mut v.get_storage().context("get layer storage")?);
+            }
+            // In front of the rootfs storages: the rootfs overlay mounts
+            // over the layers.
+            for s in layer_storages.into_iter().rev() {
+                storages.insert(0, s);
+            }
+            for v in layer_volumes {
+                inner.volumes.push(v);
+            }
+        }
         if let Some(v) = rootfs_upper {
             rootfs_upper::apply(
                 &config.container_id,
