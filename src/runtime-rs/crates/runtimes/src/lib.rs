@@ -15,6 +15,9 @@ logging::logger_with_subsystem!(sl, "runtimes");
 pub mod manager;
 pub use manager::{CleanupOutcome, RuntimeHandlerManager};
 pub use shim_interface;
+pub mod kata_shim_metrics;
+mod pod_overhead;
+#[allow(dead_code)]
 mod shim_metrics;
 mod shim_mgmt;
 pub mod tracer;

@@ -26,6 +26,8 @@ pub(crate) use virtio_fs_share_mount::cleanup_host_share_path;
 pub use virtio_fs_share_mount::ephemeral_path;
 use virtio_fs_share_mount::VirtiofsShareMount;
 pub mod sandbox_bind_mounts;
+mod virtiofsd_metrics;
+pub use virtiofsd_metrics::virtiofsd_metrics;
 
 use std::{collections::HashMap, fmt::Debug, path::PathBuf, sync::Arc};
 
