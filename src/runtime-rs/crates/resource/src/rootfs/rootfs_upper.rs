@@ -3,19 +3,21 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
+use std::collections::HashMap;
 use std::{path::Path, sync::Arc};
 
 use agent::Storage;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use hypervisor::device::device_manager::DeviceManager;
 use kata_sys_util::mount::{get_mount_options, get_mount_path};
-use kata_types::{
-    annotations::KATA_ANNO_VOLUME_ROOTFS_UPPER, device::DRIVER_OVERLAYFS_TYPE,
-    mount::KATA_VOLUME_OVERLAYFS_CREATE_DIR,
-};
+use kata_types::annotations::KATA_ANNO_VOLUME_ROOTFS_UPPER;
+use kata_types::device::DRIVER_OVERLAYFS_TYPE;
+use kata_types::mount::{DirectVolumeMountInfo, KATA_VOLUME_OVERLAYFS_CREATE_DIR};
+use nix::sys::stat::{self, SFlag};
 use oci_spec::runtime as oci;
 use tokio::sync::RwLock;
 
+use super::layers::filter_layer_storage_options;
 use super::{Rootfs, ROOTFS, TYPE_OVERLAY_FS};
 use crate::volume::{
     direct_volumes::{rawblock_volume::RawblockVolume, volume_mount_info, KATA_DIRECT_VOLUME_TYPE},
@@ -28,6 +30,33 @@ fn upper_path(spec: &oci::Spec) -> Option<String> {
         .and_then(|a| a.get(KATA_ANNO_VOLUME_ROOTFS_UPPER))
         .filter(|u| !u.is_empty())
         .cloned()
+}
+
+/// Mount info for a rootfs-upper layer source with no CSI direct-volume
+/// metadata: the source itself, attached as a block device, with the mount's
+/// own filesystem type and the kata transport options removed.
+fn layer_volume_info(m: &oci::Mount) -> Result<DirectVolumeMountInfo> {
+    let source = get_mount_path(m.source());
+    let fs_type = m.typ().clone().unwrap_or_default();
+    if fs_type.is_empty() {
+        return Err(anyhow!("rootfs upper mount has no filesystem type"));
+    }
+    let fstat = stat::stat(source.as_str())
+        .with_context(|| format!("stat rootfs upper source {}", source))?;
+    let file_type = SFlag::from_bits_truncate(fstat.st_mode);
+    if file_type != SFlag::S_IFBLK && file_type != SFlag::S_IFREG {
+        return Err(anyhow!(
+            "rootfs upper source {} is neither a block device nor a file",
+            source
+        ));
+    }
+    Ok(DirectVolumeMountInfo {
+        volume_type: KATA_DIRECT_VOLUME_TYPE.to_string(),
+        device: source,
+        fs_type,
+        metadata: HashMap::new(),
+        options: filter_layer_storage_options(&get_mount_options(m.options())),
+    })
 }
 
 /// Hotplugs the direct-assigned block volume named by the rootfs-upper annotation and
@@ -50,8 +79,26 @@ pub async fn claim(
         return Ok(None);
     };
 
-    let mut info = volume_mount_info(&get_mount_path(m.source()))
-        .with_context(|| format!("get direct volume info for rootfs upper {upper}"))?;
+    // CSI direct volumes (e.g. the ZFS driver) describe themselves with
+    // mountinfo.json. Layer sources exported by snapshotters (e.g. nydus NBD)
+    // carry none: build the info from the mount, like the Go runtime's
+    // createBlockDevices path.
+    let mut info = match volume_mount_info(&get_mount_path(m.source())) {
+        Ok(info) => info,
+        Err(e) => {
+            info!(
+                sl!(),
+                "no direct volume info for rootfs upper {} ({}), trying a plain block source",
+                upper,
+                e
+            );
+            layer_volume_info(&m).with_context(|| {
+                format!(
+                    "rootfs upper {upper} is neither a direct volume ({e:#}) nor an attachable block source"
+                )
+            })?
+        }
+    };
     // Producers such as the ZFS CSI driver declare "block"; it is handled as a raw block volume.
     info.volume_type = KATA_DIRECT_VOLUME_TYPE.to_string();
     let read_only = get_mount_options(m.options()).iter().any(|o| o == "ro");
